@@ -341,13 +341,22 @@ export async function executeWithKeyRotation<T>(
             msg.includes('resource_exhausted') ||
             msg.includes('rate limit') ||
             msg.includes('429');
+          // 503/high-demand is a model/service availability failure, not a
+          // credential failure. Try the next configured model on the SAME key
+          // before rotating the key. The old code rotated immediately on 503,
+          // so it could exhaust all keys while never trying the fallback models.
           const isModelUnavailable =
             status === 404 ||
+            status === 503 ||
             status === 'NOT_FOUND' ||
+            status === 'UNAVAILABLE' ||
             msg.includes('not found') ||
             msg.includes('no longer available') ||
             msg.includes('model not found') ||
-            msg.includes('unsupported model');
+            msg.includes('unsupported model') ||
+            msg.includes('high demand') ||
+            msg.includes('unavailable') ||
+            /\"code\"\s*:\s*503\b/.test(msg);
 
           if ((isQuotaOrRateLimit || isModelUnavailable) && m < preferredModels.length - 1) {
             continue;
@@ -367,12 +376,7 @@ export async function executeWithKeyRotation<T>(
 }
 
 
-export async function executeWithKeyRotationStream(
-  action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>,
-  onChunk: (text: string) => void,
-  preferredModels: string[] = GEMINI_MODELS,
-  clientFallbackKey?: string
-): Promise<void> {
+export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, clientFallbackKey?: string ): Promise<void> {
   // Always merge centrally stored server keys. A stale/invalid client key
   // must never prevent the backend from loading the valid keys from Supabase.
   const localAndEnvKeys = getVercelGeminiKeys(clientFallbackKey);
@@ -441,13 +445,22 @@ export async function executeWithKeyRotationStream(
             msg.includes('resource_exhausted') ||
             msg.includes('rate limit') ||
             msg.includes('429');
+          // 503/high-demand is a model/service availability failure, not a
+          // credential failure. Try the next configured model on the SAME key
+          // before rotating the key. The old code rotated immediately on 503,
+          // so it could exhaust all keys while never trying the fallback models.
           const isModelUnavailable =
             status === 404 ||
+            status === 503 ||
             status === 'NOT_FOUND' ||
+            status === 'UNAVAILABLE' ||
             msg.includes('not found') ||
             msg.includes('no longer available') ||
             msg.includes('model not found') ||
-            msg.includes('unsupported model');
+            msg.includes('unsupported model') ||
+            msg.includes('high demand') ||
+            msg.includes('unavailable') ||
+            /\"code\"\s*:\s*503\b/.test(msg);
 
           if ((isQuotaOrRateLimit || isModelUnavailable) && m < preferredModels.length - 1) {
             continue;
@@ -472,4 +485,3 @@ export async function executeWithKeyRotationStream(
 export default function handler(req: any, res: any) {
   return res.status(200).json({ ok: true, activeKeys: getKeysStatus().totalCount });
 }
-
