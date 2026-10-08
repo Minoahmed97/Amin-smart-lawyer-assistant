@@ -1,0 +1,281 @@
+@import "tailwindcss";
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    font-family: 'Cairo', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #080c16;
+    color: #f8fafc;
+    direction: rtl;
+    text-align: right;
+    overflow-x: hidden;
+    min-height: 100vh;
+    min-height: 100dvh;
+    transition: background-color 0.25s ease, color 0.25s ease;
+  }
+
+  #root {
+    width: 100%;
+    min-width: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  img,
+  svg,
+  video,
+  canvas {
+    max-width: 100%;
+  }
+
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid #d97706;
+    outline-offset: 2px;
+  }
+
+  button,
+  a {
+    overflow-wrap: anywhere;
+  }
+}
+
+.font-amiri {
+  font-family: 'Amiri', 'Traditional Arabic', serif;
+}
+
+.font-traditional {
+  font-family: 'Traditional Arabic', 'Amiri', serif;
+}
+
+.font-cairo {
+  font-family: 'Cairo', system-ui, -apple-system, sans-serif;
+}
+
+/* Custom crisp judicial scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #080c16;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b45309;
+}
+
+/* Mobile & iPhone Safari input zoom prevention */
+@media screen and (max-width: 768px) {
+  input[type="text"],
+  input[type="password"],
+  input[type="number"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* Touch-friendly controls on phones/tablets without changing desktop sizing. */
+@media screen and (max-width: 768px) {
+  button,
+  [role="button"],
+  a.button {
+    min-height: 40px;
+  }
+
+  main {
+    min-width: 0;
+  }
+
+  main table {
+    max-width: 100%;
+  }
+}
+
+/* iPhone/iPad safe-area support for the full-screen app shell. */
+@supports (padding: max(0px)) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* ========================================================
+   الأناقة القضائية الفاخرة - تباين فائق 100% لكافة الشاشات
+   ======================================================== */
+
+/* تأكيد قراءة العناوين والفقرات بوضوح لا تشوبه شائبة */
+h1, h2, h3, h4, h5, h6 {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* تحسين حاويات النصوص القضائية والمحررات */
+.prose-judicial {
+  line-height: 2.2;
+  text-align: justify;
+}
+
+/* تنسيقات الطباعة الرسمية والمحاكم */
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+}
+
+
+/* Compact dropdown used by the header navigation on desktop and mobile. */
+@layer components {
+  .header-menu-item {
+    @apply w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-right text-sm font-bold text-slate-200 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer;
+  }
+}
+
+/* ========================================================
+   تحسين التباين في الوضع النهاري على شاشات الكمبيوتر فقط.
+   لا يغيّر التخطيط أو الألوان الأساسية للوضع الليلي، ولا يفرض
+   إعادة تصميم للمكونات الحالية.
+   ======================================================== */
+@media screen and (min-width: 769px) {
+  body:not(.dark-theme) [class*="bg-[#0f172a]"],
+  body:not(.dark-theme) [class*="bg-[#090d16]"],
+  body:not(.dark-theme) [class~="bg-slate-900"],
+  body:not(.dark-theme) [class~="bg-slate-800"] {
+    border-color: #64748b !important;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16) !important;
+  }
+
+  /* النصوص الخافتة داخل البطاقات الداكنة تبقى واضحة في الوضع النهاري. */
+  body:not(.dark-theme) [class*="bg-[#0f172a]"] .text-slate-300,
+  body:not(.dark-theme) [class*="bg-[#0f172a]"] .text-slate-400,
+  body:not(.dark-theme) [class*="bg-[#090d16]"] .text-slate-300,
+  body:not(.dark-theme) [class*="bg-[#090d16]"] .text-slate-400,
+  body:not(.dark-theme) [class~="bg-slate-900"] .text-slate-300,
+  body:not(.dark-theme) [class~="bg-slate-900"] .text-slate-400,
+  body:not(.dark-theme) [class~="bg-slate-800"] .text-slate-300,
+  body:not(.dark-theme) [class~="bg-slate-800"] .text-slate-400 {
+    color: #e2e8f0 !important;
+  }
+
+  /* أي نص داكن موضوع بالخطأ داخل سطح داكن لا يختفي. */
+  body:not(.dark-theme) [class*="bg-[#0f172a]"] .text-slate-900,
+  body:not(.dark-theme) [class*="bg-[#0f172a]"] .text-slate-800,
+  body:not(.dark-theme) [class*="bg-[#090d16]"] .text-slate-900,
+  body:not(.dark-theme) [class*="bg-[#090d16]"] .text-slate-800,
+  body:not(.dark-theme) [class~="bg-slate-900"] .text-slate-900,
+  body:not(.dark-theme) [class~="bg-slate-900"] .text-slate-800,
+  body:not(.dark-theme) [class~="bg-slate-800"] .text-slate-900,
+  body:not(.dark-theme) [class~="bg-slate-800"] .text-slate-800 {
+    color: #f8fafc !important;
+  }
+}
+
+/* ========================================================
+   لوحة ألوان متوسطة ومريحة للعين — تحسين التباين فقط
+   لا يغيّر التخطيط أو المكونات أو منطق التطبيق.
+   ======================================================== */
+body.dark-theme {
+  background-color: #172033;
+  color: #f1f5f9;
+}
+
+/* رفع الخلفيات الداكنة درجة واحدة حتى لا تبدو الشاشة "مقفولة". */
+body.dark-theme [class*="bg-[#090d16]"] {
+  background-color: #172033 !important;
+}
+body.dark-theme [class*="bg-[#0f172a]"] {
+  background-color: #1e293b !important;
+}
+body.dark-theme [class*="bg-[#1e293b]"] {
+  background-color: #263449 !important;
+}
+body.dark-theme [class~="bg-slate-950"] {
+  background-color: #141d2d !important;
+}
+body.dark-theme [class~="bg-slate-900"] {
+  background-color: #1b2638 !important;
+}
+body.dark-theme [class~="bg-slate-800"] {
+  background-color: #2a3850 !important;
+}
+
+/* النصوص الثانوية تصبح أوضح على الأسطح الجديدة. */
+body.dark-theme .text-slate-100 {
+  color: #f1f5f9 !important;
+}
+body.dark-theme .text-slate-200 {
+  color: #e7edf5 !important;
+}
+body.dark-theme .text-slate-300 {
+  color: #d6e0ec !important;
+}
+body.dark-theme .text-slate-400 {
+  color: #b8c5d6 !important;
+}
+body.dark-theme .text-slate-500 {
+  color: #9eacbf !important;
+}
+body.dark-theme .text-slate-600 {
+  color: #8e9db2 !important;
+}
+
+/* تحسين حدود البطاقات والفواصل دون تغيير لون الأزرار. */
+body.dark-theme [class~="border-slate-800"] {
+  border-color: #3b4a62 !important;
+}
+body.dark-theme [class~="border-slate-700"] {
+  border-color: #46566e !important;
+}
+body.dark-theme [class~="border-slate-600"] {
+  border-color: #566780 !important;
+}
+
+/* حقول الإدخال والنصوص داخلها تبقى واضحة. */
+body.dark-theme input,
+body.dark-theme textarea,
+body.dark-theme select {
+  color: #f1f5f9;
+}
+body.dark-theme input::placeholder,
+body.dark-theme textarea::placeholder {
+  color: #9eacbf !important;
+}
+
+/* سطح النتيجة/المحرر: تباين واضح مع بقاء الطابع القضائي. */
+body.dark-theme .text-slate-100 {
+  text-shadow: none;
+}
+

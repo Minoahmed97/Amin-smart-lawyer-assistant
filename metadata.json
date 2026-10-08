@@ -1,0 +1,6 @@
+{
+  "name": "أميـن | المساعد القضائي الذكي",
+  "description": "منظومة المساعد القضائي الذكي (أمين) للمحامين والمحاكم المصرية وفقاً لأحدث أحكام محكمة النقض ومجلس الدولة.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

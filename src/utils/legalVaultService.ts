@@ -1,0 +1,296 @@
+import { LawModelItem } from '../types.ts';
+import { DEFAULT_STYLE_TEMPLATES } from '../data/styleTemplates.ts';
+
+export type { LawModelItem };
+
+const LEGACY_STORAGE_KEY = '_egyptian_legal_models_vault_v4';
+
+export function getActiveLawyerUserId(): string {
+  try {
+    const saved = localStorage.getItem('judicial_active_user_id');
+    if (saved && saved.trim()) return saved.trim();
+    const newId = 'lawyer_' + Math.random().toString(36).substring(2, 9);
+    localStorage.setItem('judicial_active_user_id', newId);
+    return newId;
+  } catch {
+    return 'lawyer_default';
+  }
+}
+
+export function getScopedStorageKey(userId?: string): string {
+  const activeId = userId || getActiveLawyerUserId();
+  return `_egyptian_legal_models_vault_v5_${activeId}`;
+}
+
+export function getAllLawModels(userId?: string): LawModelItem[] {
+  const scopedKey = getScopedStorageKey(userId);
+
+  const removeSystemModels = (models: LawModelItem[]): LawModelItem[] => {
+    const customModels = models.filter((model) => model.source !== 'system');
+    if (customModels.length !== models.length) {
+      try {
+        localStorage.setItem(scopedKey, JSON.stringify(customModels));
+      } catch {}
+    }
+    return customModels;
+  };
+
+  try {
+    const raw = localStorage.getItem(scopedKey);
+    if (raw !== null) {
+      const parsed = JSON.parse(raw);
+      // An existing empty array is a valid, intentionally empty vault.
+      if (Array.isArray(parsed)) {
+        return removeSystemModels(parsed);
+      }
+    }
+
+    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw) {
+      const legacyParsed = JSON.parse(legacyRaw);
+      if (Array.isArray(legacyParsed)) {
+        const migrated = legacyParsed.filter((model: LawModelItem) => model.source !== 'system');
+        localStorage.setItem(scopedKey, JSON.stringify(migrated));
+        // One-time migration only: never leave an unscoped legacy vault that
+        // could be copied into a later account on the same device.
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+        return migrated;
+      }
+    }
+
+    // Start with a genuinely empty user vault. The AI must learn style only
+    // from models the lawyer explicitly adds here.
+    localStorage.setItem(scopedKey, JSON.stringify([]));
+    return [];
+  } catch (e) {
+    console.warn('Error reading legal models vault:', e);
+    return [];
+  }
+}
+
+export function saveLawModel(
+  model: Omit<LawModelItem, 'id' | 'createdAt'>,
+  userId?: string
+): LawModelItem {
+  const current = getAllLawModels(userId);
+  const newModel: LawModelItem = {
+    ...model,
+    id: 'model_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36),
+    createdAt: new Date().toISOString(),
+    weight: model.weight || 5,
+  };
+  const updated = [newModel, ...current];
+  try {
+    localStorage.setItem(getScopedStorageKey(userId), JSON.stringify(updated));
+  } catch (e) {
+    console.warn('LocalStorage save error:', e);
+  }
+  return newModel;
+}
+
+export function updateLawModel(
+  id: string,
+  updates: Partial<LawModelItem>,
+  userId?: string
+): LawModelItem | null {
+  const current = getAllLawModels(userId);
+  const index = current.findIndex((m) => m.id === id);
+  if (index === -1) return null;
+
+  const updatedItem = { ...current[index], ...updates };
+  current[index] = updatedItem;
+  try {
+    localStorage.setItem(getScopedStorageKey(userId), JSON.stringify(current));
+  } catch (e) {
+    console.warn('LocalStorage update error:', e);
+  }
+  return updatedItem;
+}
+
+export function deleteLawModel(id: string, userId?: string): void {
+  const current = getAllLawModels(userId);
+  const updated = current.filter((m) => m.id !== id);
+  try {
+    localStorage.setItem(getScopedStorageKey(userId), JSON.stringify(updated));
+  } catch (e) {
+    console.warn('LocalStorage delete error:', e);
+  }
+}
+
+export function clearAllLawModels(userId?: string): void {
+  try {
+    localStorage.setItem(getScopedStorageKey(userId), JSON.stringify([]));
+  } catch (e) {
+    console.warn('LocalStorage clear error:', e);
+  }
+}
+
+export function findSimilarModels(
+  criteria: {
+    courtType?: string;
+    briefType?: string;
+    judicialWorkType?: string;
+    factsOrSubject?: string;
+  },
+  userId?: string
+): LawModelItem[] {
+  const models = getAllLawModels(userId);
+  if (!models || models.length === 0) return [];
+
+  const { courtType = '', briefType = '', judicialWorkType = '', factsOrSubject = '' } = criteria;
+
+  const normalize = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[ًٌٍَُِّْـ]/g, '')
+      .replace(/[^\u0600-\u06FFa-z0-9\s]/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const tokenize = (value: string) =>
+    normalize(value)
+      .split(/\s+/)
+      .filter((token) => token.length >= 3);
+
+  const normalizedFacts = normalize(factsOrSubject);
+  const normalizedCourt = normalize(courtType);
+  const normalizedBrief = normalize(briefType);
+  const normalizedWorkType = normalize(judicialWorkType);
+  const factTokens = new Set(tokenize(factsOrSubject));
+
+  const scored = models.map((m) => {
+    let score = (m.weight || 3) * 2;
+    const titleLower = normalize(m.title);
+    const catLower = normalize(m.category);
+    const notesLower = normalize(m.notes || '');
+    const contentLower = normalize(m.content);
+    const workTypeLower = normalize(m.judicialWorkType || '');
+
+    // 1. Prefer the same judicial work type.
+    if (normalizedWorkType) {
+      if (workTypeLower.includes(normalizedWorkType) || normalizedWorkType.includes(workTypeLower)) {
+        score += 45;
+      }
+      if (catLower.includes(normalizedWorkType) || titleLower.includes(normalizedWorkType)) score += 25;
+    }
+
+    // 2. Prefer the same court / brief type.
+    if (normalizedCourt) {
+      if (catLower.includes(normalizedCourt) || normalizedCourt.includes(catLower)) score += 20;
+      if (contentLower.includes(normalizedCourt)) score += 5;
+    }
+
+    if (normalizedBrief) {
+      if (titleLower.includes(normalizedBrief) || catLower.includes(normalizedBrief)) score += 15;
+      if (notesLower.includes(normalizedBrief)) score += 8;
+    }
+
+    // 3. Use the actual case text to rank the closest lawyer-owned models,
+    // instead of relying only on a fixed list of legal keywords.
+    if (factTokens.size > 0) {
+      const modelTokens = new Set(tokenize(`${m.title} ${m.category} ${m.judicialWorkType || ''} ${m.notes || ''} ${m.content}`));
+      let overlap = 0;
+      factTokens.forEach((token) => {
+        if (modelTokens.has(token)) overlap += 1;
+      });
+      score += Math.min(40, overlap * 2);
+    }
+
+    // Keep exact high-value legal phrases as a small additional signal.
+    const keywords = [
+      'طرد', 'غصب', 'تعويض', 'إيجار', 'فسخ', 'بطلان',
+      'صحة توقيع', 'صحة ونفاذ', 'قسمة', 'فرز وتجنيب', 'نفقة', 'طلاق', 'خلع', 'رؤية',
+      'إيصال أمانة', 'شيك', 'نصب', 'تبديد'
+    ];
+
+    for (const kw of keywords) {
+      const normalizedKw = normalize(kw);
+      if (normalizedFacts.includes(normalizedKw) || normalizedBrief.includes(normalizedKw)) {
+        if (titleLower.includes(normalizedKw) || catLower.includes(normalizedKw) || workTypeLower.includes(normalizedKw)) score += 10;
+        if (contentLower.includes(normalizedKw)) score += 4;
+      }
+    }
+
+    return { model: m, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.model);
+}
+
+export function getLawyerStyleContext(
+  searchCriteria?: {
+    courtType?: string;
+    briefType?: string;
+    judicialWorkType?: string;
+    factsOrSubject?: string;
+  } | string,
+  userId?: string
+): string {
+  let criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string } = {};
+  if (typeof searchCriteria === 'string') {
+    criteria = { courtType: searchCriteria };
+  } else if (searchCriteria) {
+    criteria = searchCriteria;
+  }
+
+  const similarModels = findSimilarModels(criteria, userId);
+
+  // Give Gemini several automatically ranked lawyer-owned candidates.
+  // Retrieval only narrows the candidate set; Gemini makes the final choice
+  // according to the actual case and requested legal work.
+  const selectedModels = similarModels.slice(0, 4);
+  const modelBlocks = selectedModels.map((model, index) => {
+    const content = model.content || '';
+    const excerpt = content.length > 5000
+      ? `${content.slice(0, 3200)}\n\n[...جزء أوسط محذوف للاختصار... ]\n\n${content.slice(-1800)}`
+      : content;
+    return (
+      `[مرشح نموذج المحامي رقم ${index + 1}: "${model.title}" — ${model.judicialWorkType || model.category}]\n` +
+      `\`\`\`\n${excerpt}\n\`\`\``
+    );
+  });
+
+  const normalizedWorkType = (criteria.judicialWorkType || criteria.briefType || '').toLowerCase().trim();
+  const normalizedCourtType = (criteria.courtType || '').toLowerCase().trim();
+  const matchingStyleTemplates = DEFAULT_STYLE_TEMPLATES
+    .filter((template) => {
+      if (!normalizedWorkType && !normalizedCourtType) return template.isDefault === true;
+      const work = `${template.judicialWorkType} ${template.briefType}`.toLowerCase();
+      const court = template.courtType.toLowerCase();
+      return (normalizedWorkType && work.includes(normalizedWorkType)) ||
+        (normalizedCourtType && court.includes(normalizedCourtType));
+    })
+    .slice(0, 2);
+
+  const templateBlocks = matchingStyleTemplates
+    .slice(0, modelBlocks.length ? 1 : 2)
+    .map((template, index) => {
+      const content = template.content || '';
+      const excerpt = content.length > 4500
+        ? `${content.slice(0, 2800)}\n\n[...جزء أوسط محذوف للاختصار... ]\n\n${content.slice(-1700)}`
+        : content;
+      return (
+        `[قالب أسلوب قضائي مرجعي رقم ${index + 1}: "${template.name}" — ${template.judicialWorkType}]\n` +
+        `\`\`\`\n${excerpt}\n\`\`\``
+      );
+    });
+
+  return `[خزانة المحامي والقوالب الأسلوبية — سياق إلزامي للمهمة الحالية]:
+هذا السياق جزء أساسي من طلب الصياغة وليس معلومة اختيارية. استخدم النماذج الشخصية في الخزانة أولاً لاستخلاص البصمة الكتابية الفعلية للمحامي: الديباجة، ترتيب الفقرات، عناوين الدفوع، الانتقال بين الوقائع والدفاع والطلبات، المصطلحات، ونمط الجمل. استخدم القوالب الأسلوبية المرجعية المرفقة فقط لاستكمال البنية عند الحاجة.
+
+${modelBlocks.length ? modelBlocks.join('\n\n') : '[لا توجد نماذج شخصية مطابقة في خزنة الحساب الحالي.]'}
+${templateBlocks.length ? `\n[القوالب الأسلوبية المرجعية من styleTemplates.ts]:\n${templateBlocks.join('\n\n')}\n` : ''}
+تعليمات إلزامية لاستخدام السياق:
+1) هذه النماذج الشخصية مرشحات أسلوبية وليست نصوصاً يجب نسخها. اختر أنت داخلياً النموذج الشخصي الأقرب إلى نوع المهمة ووقائع القضية والمحكمة وطريقة الدفوع، ولا تفترض أن أول نموذج مرفق هو الأفضل.
+2) إذا كان أكثر من نموذج مناسب، قارن بينها واستخلص البصمة المشتركة والأقرب للقضية، ثم اجعل النموذج الأشد صلة هو المرجع الأساسي للتنظيم والأسلوب.
+3) طبّق أثر النموذج المختار فعلياً في الصياغة النهائية: الديباجة، ترتيب الأقسام، عناوين الدفوع، تسلسل الحجج، المصطلحات، طول الفقرات، الانتقالات، وصياغة الطلبات، مع الحفاظ على أسلوب قانوني طبيعي غير روبوتي.
+4) لا تكتفِ بذكر أن الخزانة موجودة، ولا تنتقل إلى صياغة عامة إذا كان هناك نموذج شخصي مناسب يمكن محاكاة أسلوبه. يجب أن يشعر القارئ أن المستند كُتب بنفس المدرسة والأسلوب والترتيب المعتاد للمحامي، مع اختلاف الوقائع والمضمون بحسب القضية الجديدة.
+5) لا تنسخ وقائع أو أسماء أو أرقام قضايا أو تواريخ أو مستندات أو طلبات أو دفوع خاصة بالنماذج المرجعية إلى القضية الحالية.
+6) لا تستورد مادة قانونية أو حكماً أو رقم طعن من نموذج مرجعي لمجرد وجوده فيه؛ أي سند قانوني يجب أن يكون متحققاً من السياق الحالي أو يُذكر أنه يحتاج تحققاً.
+7) القضية الحالية ومدخلات المستخدم ومستنداته لها الأولوية المطلقة عند التعارض مع أي نموذج.
+8) إذا تعارض قالب افتراضي مع نموذج شخصي مناسب، فالأولوية للنموذج الشخصي.
+9) إذا لم يوجد نموذج شخصي مناسب، استخدم القوالب المرجعية للبنية والأسلوب العام فقط، وأنشئ المحتوى حصراً من وقائع القضية الحالية.
+10) لا تخبر المستخدم بعملية الاختيار الداخلية ولا تضف فقرة تشرح أنك استخدمت نموذجاً مرجعياً؛ أخرج المستند القانوني مباشرة بأسلوبه المستخلص.`;
+}
+
