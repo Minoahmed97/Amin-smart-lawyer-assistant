@@ -150,16 +150,27 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     opponentFacts: string,
     draftCounter: string,
     caseNature?: string,
-    responseType?: string,
+    responseWorkType?: string,
   ) => {
     const lockedCaseNature = caseNature?.trim() || '';
-    const selectedResponseType = responseType?.trim() || '';
+    const selectedResponseType = responseWorkType?.trim() || '';
+    const transferInstruction = [
+      'هذه الصياغة ناتجة مباشرة عن فحص المستند في مرحلة التفكيك.',
+      lockedCaseNature
+        ? `طبيعة الدعوى التي تم فحصها: "${lockedCaseNature}". لا تستبدلها أو تعيد تكييفها إلى نوع دعوى آخر دون طلب صريح من المحامي.`
+        : 'لم تُحدد طبيعة الدعوى نصاً؛ استخلصها من الوقائع الحالية ولا تفترض نوع دعوى مختلفاً.',
+      selectedResponseType
+        ? `نوع المستند المطلوب للرد: "${selectedResponseType}". التزم بهذا النوع ولا تحوله إلى نوع آخر.`
+        : 'نوع المستند المطلوب لم يُحدد يدوياً؛ استخدم نوع المستند الذي حددته مرحلة التفكيك، ولا تفترض تلقائياً أنها مذكرة دفاع.',
+      'افصل دائماً بين طبيعة الدعوى ونوع المستند المطلوب صياغته.',
+    ].join('\n');
+
     setDraftingData({
       facts: opponentFacts,
       defenses: draftCounter,
       briefType: selectedResponseType,
-      judicialWorkType: lockedCaseNature,
-      customInstructions: `${lockedCaseNature ? `هذه الصياغة ناتجة مباشرة عن فحص مذكرة الخصم في مرحلة التفكيك. طبيعة الدعوى/النزاع المثبتة في الفحص هي: "${lockedCaseNature}". لا تستبدلها أو تعيد تكييفها إلى دعوى أخرى.` : 'حافظ على طبيعة الدعوى والموضوع كما استُخلصا من مرحلة التفكيك ولا تخترع دعوى مختلفة.'} ${selectedResponseType ? `نوع المستند المطلوب من المحامي هو: "${selectedResponseType}". التزم به.` : 'لم يحدد المحامي نوع المستند. حدّد بذكاء نوع المستند القانوني الأنسب للرد على المستند المفحوص، مثل مذكرة رد/دفاع، عريضة/صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار أو غير ذلك بحسب الغرض والطلبات والوقائع. لا تفترض أن الناتج مذكرة دفاع تلقائياً.'}`,
+      judicialWorkType: selectedResponseType,
+      customInstructions: transferInstruction,
     });
     setActiveTab('draft');
   };
