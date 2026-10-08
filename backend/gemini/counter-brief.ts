@@ -92,16 +92,33 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   }
 
   return executeWithKeyRotation(async (ai, _key, model) => {
-    const response = await ai.models.generateContent({
-      model,
-      contents: optimizedPrompt,
-      config: {
-        systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-        temperature: 0.15,
-        maxOutputTokens: 32768,
-      },
-    });
-    return (response.text || '').trim();
+    let currentPrompt = optimizedPrompt;
+    let fullText = '';
+
+    for (let attempt = 0; attempt <= 3; attempt += 1) {
+      const response = await ai.models.generateContent({
+        model,
+        contents: currentPrompt,
+        config: {
+          systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+          temperature: 0.15,
+          maxOutputTokens: 32768,
+        },
+      });
+
+      const rawText = typeof response.text === 'string' ? response.text : '';
+      const markerIndex = rawText.indexOf(completionMarker);
+      const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
+      fullText += visibleText;
+
+      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3) {
+        break;
+      }
+
+      currentPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تكتمل] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل.`;
+    }
+
+    return fullText.trim();
   });
 }
 
@@ -181,7 +198,12 @@ export default async function handler(req: any, res: any) {
         }
       };
       try {
-        await generateDeepLegalResponse(prompt, writeChunk);
+        // For this legal-document endpoint, generate the complete result first
+        // and send it as one payload. This intentionally disables progressive
+        // display here because the previous chunked path could stop after the
+        // first part even while the requested document was still incomplete.
+        const completeResult = await generateDeepLegalResponse(prompt);
+        writeChunk(completeResult);
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
