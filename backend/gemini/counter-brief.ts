@@ -14,7 +14,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   // the final answer. That doubled model latency and was especially noticeable
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
-  const optimizedPrompt = `${prompt} [مراجعة داخلية سريعة قبل الإخراج] نفّذ مراجعة نهائية داخلية قبل إرسال النتيجة: تحقق من الوقائع والمستندات والتواريخ والتناقضات والنواقص والتكييف والدفوع والطلبات، واختبر أقوى حجة معاكسة، وتأكد من عدم اختلاق أي معلومة. لا تعرض هذه المراجعة أو سلسلة التفكير الداخلية؛ أخرج النتيجة القانونية المطلوبة مباشرة.`;
+  const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
+  const optimizedPrompt = `${prompt} [مراجعة داخلية سريعة قبل الإخراج] نفّذ مراجعة نهائية داخلية قبل إرسال النتيجة: تحقق من الوقائع والمستندات والتواريخ والتناقضات والنواقص والتكييف والدفوع والطلبات، واختبر أقوى حجة معاكسة، وتأكد من عدم اختلاق أي معلومة. لا تعرض هذه المراجعة أو سلسلة التفكير الداخلية؛ أخرج النتيجة القانونية المطلوبة مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   if (onChunk) {
     await executeWithKeyRotationStream(async (ai, _key, model) => {
@@ -26,6 +27,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         let accumulatedText = '';
         let continuationCount = 0;
         let nextPrompt = optimizedPrompt;
+        let completed = false;
+        let pendingMarkerTail = '';
 
         while (true) {
           const stream = await ai.models.generateContentStream({
@@ -40,21 +43,48 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           });
 
           let finishReason = '';
-          for await (const chunk of stream) {
+            for await (const chunk of stream) {
             const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-            if (chunkText) accumulatedText += chunkText;
+            if (chunkText) {
+              const candidateText = pendingMarkerTail + chunkText;
+              const markerIndex = candidateText.indexOf(completionMarker);
+
+              if (markerIndex >= 0) {
+                const visibleText = candidateText.slice(0, markerIndex);
+                accumulatedText += visibleText;
+                pendingMarkerTail = '';
+                completed = true;
+                yield { ...chunk, text: visibleText };
+              } else {
+                const keepLength = Math.max(0, completionMarker.length - 1);
+                const splitAt = Math.max(0, candidateText.length - keepLength);
+                const visibleText = candidateText.slice(0, splitAt);
+                pendingMarkerTail = candidateText.slice(splitAt);
+                if (visibleText) {
+                    accumulatedText += visibleText;
+                  yield { ...chunk, text: visibleText };
+                }
+              }
+            } else {
+              yield chunk;
+            }
             const candidates = chunk?.candidates;
             const candidateReason = candidates?.[0]?.finishReason;
             if (candidateReason) finishReason = String(candidateReason).toUpperCase();
-            yield chunk;
           }
 
-          if (finishReason !== 'MAX_TOKENS' || continuationCount >= 3 || !accumulatedText.trim()) {
+          if (!completed && pendingMarkerTail) {
+            accumulatedText += pendingMarkerTail;
+            yield { text: pendingMarkerTail };
+            pendingMarkerTail = '';
+          }
+
+          if (completed || continuationCount >= 3 || !accumulatedText.trim()) {
             break;
           }
 
           continuationCount += 1;
-          nextPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي انقطع إخراجها بسبب حد الرموز] هذا هو النص الذي أخرجته حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك النتيجة النهائية والطلبات الختامية إن كانت مطلوبة.`;
+          nextPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تصل إلى علامة الاكتمال] هذا هو النص الذي أخرجته حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك النتيجة النهائية والطلبات الختامية إن كانت مطلوبة. لا تعتبر النص السابق مكتملاً، ولا تضع علامة الاكتمال إلا بعد إتمام كل المطلوب. سبب الاستكمال التقني: ${finishReason || 'انتهى البث دون علامة اكتمال'}.`;
         }
       })();
     }, onChunk);
