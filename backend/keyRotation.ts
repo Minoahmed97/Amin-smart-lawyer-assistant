@@ -342,7 +342,7 @@ export async function executeWithKeyRotation<T>(
     // Supabase key storage must not take down AI when a valid server/env key
     // is already configured. The admin UI can still report the storage error.
     cloudLoadError = err;
-    console.error('Gemini: failed to load central keys from Supabase; using server/env keys.', err);
+    console.error('Gemini: failed to load central keys from Supabase; using server/env keys.');
   }
 
   const keys = [...new Set([...cloudKeys, ...localAndEnvKeys])].filter((key) => !permanentlyInvalidKeys.has(key));
@@ -424,7 +424,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     cloudKeys = await fetchServerCloudGeminiKeys();
   } catch (err: any) {
     cloudLoadError = err;
-    console.error('Gemini stream: failed to load central keys from Supabase; using server/env keys.', err);
+    console.error('Gemini stream: failed to load central keys from Supabase; using server/env keys.');
   }
 
   const keys = [...new Set([...cloudKeys, ...localAndEnvKeys])].filter((key) => !permanentlyInvalidKeys.has(key));
