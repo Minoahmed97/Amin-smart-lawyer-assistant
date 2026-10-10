@@ -52,17 +52,16 @@ export default async function handler(req: any, res: any) {
     }
 
     let lastMessage = 'لم ينجح أي مفتاح في الاتصال بخدمة Gemini.';
-    // Check keys one by one: stop as soon as a working key is found, and
-    // let the key tester stop immediately on confirmed quota exhaustion.
-    const keysToCheck = keys;
-    const results: Array<{ success: boolean; message: string }> = [];
-    for (const key of keysToCheck) {
-      let result: { success: boolean; message: string };
-      try { result = await testGeminiKey(key, 12000); }
-      catch (error: any) { result = { success: false, message: error?.message || 'تعذر اختبار المفتاح.' }; }
-      results.push(result);
-      if (result.success && !/تعذر تأكيد إمكانية الاستخدام الآن|نفاد الحصة|تحديد المعدل/.test(String(result.message || ''))) break;
-    }
+    // Test up to four keys concurrently so the health endpoint has a bounded
+    // total duration instead of spending six seconds serially on each key.
+    const keysToCheck = keys.slice(0, 4);
+    const results = await Promise.all(keysToCheck.map(async (key) => {
+      try {
+        return await testGeminiKey(key, 60000);
+      } catch (error: any) {
+        return { success: false, message: error?.message || 'تعذر اختبار المفتاح.' };
+      }
+    }));
     const successfulIndex = results.findIndex((result) => result.success &&
       !/تعذر تأكيد إمكانية الاستخدام الآن|نفاد الحصة|تحديد المعدل|تعرّف على المفتاح لكنه أبلغ/.test(String(result.message || '')));
 
@@ -74,7 +73,6 @@ export default async function handler(req: any, res: any) {
         cloudKeysReadable: cloudReadOk,
         checkedKeys: results.length,
         configuredKeys: keys.length,
-        keyResults: results.map((result, index) => ({ index, status: result.success ? 'working' : (/الحصة مستنفدة|نفاد الحصة|حد الاستخدام/.test(result.message) ? 'quota_exhausted' : 'unavailable'), message: result.message })),
         latencyMs: Date.now() - startedAt,
         message: `الاتصال سليم: تم استلام نص فعلي من Gemini باستخدام أحد المفاتيح المختبرة. تم فحص ${results.length} من أصل ${keys.length} مفاتيح متاحة للفحص السريع.`,
       });
@@ -88,7 +86,6 @@ export default async function handler(req: any, res: any) {
       cloudKeysReadable: cloudReadOk,
       checkedKeys: results.length,
       configuredKeys: keys.length,
-      keyResults: results.map((result, index) => ({ index, status: result.success ? 'working' : (/الحصة مستنفدة|نفاد الحصة|حد الاستخدام/.test(result.message) ? 'quota_exhausted' : 'unavailable'), message: result.message })),
       latencyMs: Date.now() - startedAt,
       message: `وصل الطلب إلى السيرفر، لكن لم يتم استلام نص مولّد فعلي من المفاتيح المختبرة. هذا لا يعني بالضرورة أن المفاتيح غير صالحة؛ قد يكون السبب الحصة أو الصلاحيات أو مهلة الشبكة أو عدم إتاحة النموذج. ${lastMessage}`,
     });
