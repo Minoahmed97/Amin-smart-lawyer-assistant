@@ -30,6 +30,27 @@ export const GEMINI_MODELS = [
 ];
 
 let activeKeyIndex = 0;
+const permanentlyInvalidKeys = new Set<string>();
+const KEY_ATTEMPT_TIMEOUT_MS = 12000;
+
+function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'other' {
+  const msg = String(err?.message || err?.error?.message || '').toLowerCase();
+  const status = Number(err?.status || err?.statusCode || err?.response?.status);
+  if (status === 429 || /resource_exhausted|quota exceeded|rate.?limit|too many requests/.test(msg)) return 'quota';
+  if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/.test(msg)) return 'invalid';
+  if (status === 503 || status === 504 || /timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|\b503\b/.test(msg)) return 'temporary';
+  return 'other';
+}
+
+function withGeminiAttemptTimeout<T>(promise: Promise<T>, timeoutMs = KEY_ATTEMPT_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(`Gemini attempt timed out after ${timeoutMs}ms`), { code: 'GEMINI_ATTEMPT_TIMEOUT' })), timeoutMs);
+    }),
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}
 const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
 let inMemoryDynamicKeys: string[] = [];
 
@@ -324,7 +345,7 @@ export async function executeWithKeyRotation<T>(
     console.error('Gemini: failed to load central keys from Supabase; using server/env keys.', err);
   }
 
-  const keys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
+  const keys = [...new Set([...cloudKeys, ...localAndEnvKeys])].filter((key) => !permanentlyInvalidKeys.has(key));
 
   if (keys.length === 0) {
     if (cloudLoadError) {
@@ -359,48 +380,21 @@ export async function executeWithKeyRotation<T>(
       for (let m = 0; m < preferredModels.length; m++) {
         const model = preferredModels[m];
         try {
-          const result = await action(ai, currentKey, model);
+          const result = await withGeminiAttemptTimeout(action(ai, currentKey, model));
           activeKeyIndex = currentKeyIndex;
           return result;
         } catch (err: any) {
           lastError = err;
-          const msg = String(err?.message || '').toLowerCase();
-          const status = err?.status || err?.statusCode;
-          const isQuotaOrRateLimit =
-            status === 429 ||
-            status === 'RESOURCE_EXHAUSTED' ||
-            msg.includes('quota') ||
-            msg.includes('resource_exhausted') ||
-            msg.includes('rate limit') ||
-            msg.includes('429');
-          // 503/high-demand is a model/service availability failure, not a
-          // credential failure. Try the next configured model on the SAME key
-          // before rotating the key. The old code rotated immediately on 503,
-          // so it could exhaust all keys while never trying the fallback models.
-          const isModelUnavailable =
-            status === 404 ||
-            status === 503 ||
-            status === 'NOT_FOUND' ||
-            status === 'UNAVAILABLE' ||
-            msg.includes('not found') ||
-            msg.includes('no longer available') ||
-            msg.includes('model not found') ||
-            msg.includes('unsupported model') ||
-            msg.includes('high demand') ||
-            msg.includes('unavailable') ||
-            /\"code\"\s*:\s*503\b/.test(msg);
-
-          // Quota/rate-limit errors usually apply to the key or project. Do not
-          // spend extra latency trying every model on an exhausted key; rotate
-          // immediately. Model-not-found/temporary-unavailable errors still try
-          // the remaining model fallbacks on this key first.
-          if (isQuotaOrRateLimit && keys.length > 1) {
-            activeKeyIndex = (currentKeyIndex + 1) % keys.length;
+          const kind = getGeminiErrorKind(err);
+          if (kind === 'invalid') permanentlyInvalidKeys.add(currentKey);
+          if (kind === 'quota' || kind === 'temporary' || kind === 'invalid') {
+            activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
             break;
           }
-          if (isModelUnavailable && m < preferredModels.length - 1) {
-            continue;
-          }
+          const msg = String(err?.message || '').toLowerCase();
+          const isModelUnavailable = err?.status === 404 || err?.status === 'NOT_FOUND' ||
+            /not found|no longer available|model not found|unsupported model/.test(msg);
+          if (isModelUnavailable && m < preferredModels.length - 1) continue;
           if (keys.length > 1) {
             activeKeyIndex = (currentKeyIndex + 1) % keys.length;
             break;
@@ -412,6 +406,10 @@ export async function executeWithKeyRotation<T>(
       await new Promise((r) => setTimeout(r, 300));
     }
   }
+  const finalKind = getGeminiErrorKind(lastError);
+  if (finalKind === 'quota') throw new Error('تعذّر تنفيذ الطلب: حصص مفاتيح Gemini المتاحة مستنفدة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحًا متاحًا.');
+  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتًا أو تأخر الاتصال. جرّب مرة أخرى بعد قليل.');
+  if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات التدوير.');
 }
 
@@ -429,7 +427,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     console.error('Gemini stream: failed to load central keys from Supabase; using server/env keys.', err);
   }
 
-  const keys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
+  const keys = [...new Set([...cloudKeys, ...localAndEnvKeys])].filter((key) => !permanentlyInvalidKeys.has(key));
 
   if (keys.length === 0) {
     if (cloudLoadError) {
@@ -459,7 +457,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       for (let m = 0; m < preferredModels.length; m++) {
         let emittedAnyChunk = false;
         try {
-          const stream = await action(ai, currentKey, preferredModels[m]);
+          const stream = await withGeminiAttemptTimeout(action(ai, currentKey, preferredModels[m]));
           for await (const chunk of stream) {
             const text = typeof chunk?.text === 'string' ? chunk.text : '';
             if (text) {
@@ -478,42 +476,16 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
             throw err;
           }
 
-          const msg = String(err?.message || '').toLowerCase();
-          const status = err?.status || err?.statusCode;
-          const isQuotaOrRateLimit =
-            status === 429 ||
-            status === 'RESOURCE_EXHAUSTED' ||
-            msg.includes('quota') ||
-            msg.includes('resource_exhausted') ||
-            msg.includes('rate limit') ||
-            msg.includes('429');
-          // 503/high-demand is a model/service availability failure, not a
-          // credential failure. Try the next configured model on the SAME key
-          // before rotating the key. The old code rotated immediately on 503,
-          // so it could exhaust all keys while never trying the fallback models.
-          const isModelUnavailable =
-            status === 404 ||
-            status === 503 ||
-            status === 'NOT_FOUND' ||
-            status === 'UNAVAILABLE' ||
-            msg.includes('not found') ||
-            msg.includes('no longer available') ||
-            msg.includes('model not found') ||
-            msg.includes('unsupported model') ||
-            msg.includes('high demand') ||
-            msg.includes('unavailable') ||
-            /\"code\"\s*:\s*503\b/.test(msg);
-
-          // Quota/rate limits should rotate to another key before spending
-          // time trying model fallbacks on a key whose project quota is spent.
-          if (isQuotaOrRateLimit && keys.length > 1) {
-            activeKeyIndex = (currentKeyIndex + 1) % keys.length;
+          const kind = getGeminiErrorKind(err);
+          if (kind === 'invalid') permanentlyInvalidKeys.add(currentKey);
+          if (kind === 'quota' || kind === 'temporary' || kind === 'invalid') {
+            activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
             break;
           }
-          if (isModelUnavailable && m < preferredModels.length - 1) {
-            continue;
-          }
-
+          const msg = String(err?.message || '').toLowerCase();
+          const isModelUnavailable = err?.status === 404 || err?.status === 'NOT_FOUND' ||
+            /not found|no longer available|model not found|unsupported model/.test(msg);
+          if (isModelUnavailable && m < preferredModels.length - 1) continue;
           if (keys.length > 1) {
             activeKeyIndex = (currentKeyIndex + 1) % keys.length;
             break;
@@ -527,6 +499,10 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     }
   }
 
+  const finalKind = getGeminiErrorKind(lastError);
+  if (finalKind === 'quota') throw new Error('تعذّر تنفيذ الطلب: حصص مفاتيح Gemini المتاحة مستنفدة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحًا متاحًا.');
+  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتًا أو تأخر الاتصال. جرّب مرة أخرى بعد قليل.');
+  if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات التدوير.');
 }
 
