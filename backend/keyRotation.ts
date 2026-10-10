@@ -303,7 +303,10 @@ export async function executeWithKeyRotation<T>(
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
-  const MAX_ROTATION_CYCLES = Math.max(3, Math.min(6, Math.ceil(8 / Math.max(1, keys.length))));
+  // Sweep all configured keys/models once per server request. The caller may retry
+  // a transient request failure, but repeating a full sweep here multiplies latency.
+  // This does NOT reduce the number of distinct keys or fallback models tried.
+  const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
 
   for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
@@ -365,7 +368,7 @@ export async function executeWithKeyRotation<T>(
       }
     }
     if (cycle < MAX_ROTATION_CYCLES - 1) {
-      await new Promise((r) => setTimeout(r, 1000 * (cycle + 1)));
+      await new Promise((r) => setTimeout(r, 300));
     }
   }
   throw lastError || new Error('فشلت جميع محاولات التدوير.');
@@ -395,7 +398,10 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
-  const MAX_ROTATION_CYCLES = Math.max(3, Math.min(6, Math.ceil(8 / Math.max(1, keys.length))));
+  // Sweep all configured keys/models once per server request. The caller may retry
+  // a transient request failure, but repeating a full sweep here multiplies latency.
+  // This does NOT reduce the number of distinct keys or fallback models tried.
+  const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
 
   for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
@@ -470,7 +476,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     }
 
     if (cycle < MAX_ROTATION_CYCLES - 1) {
-      await new Promise((r) => setTimeout(r, 1000 * (cycle + 1)));
+      await new Promise((r) => setTimeout(r, 300));
     }
   }
 
