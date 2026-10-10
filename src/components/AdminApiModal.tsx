@@ -262,6 +262,39 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
     }
   };
 
+  // Refresh AI/key health while the admin modal is open; no background checks after close.
+  useEffect(() => {
+    if (!isOpen || !isAuthenticated) return;
+    let cancelled = false;
+    const runHealthCheck = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch('/api/admin/ai-health', {
+          method: 'GET',
+          headers: { 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' },
+          cache: 'no-store',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        setAiHealthResult({
+          ok: res.ok && data?.aiReachable === true,
+          message: data?.message || data?.error || 'تعذر إكمال فحص الاتصال.',
+          latencyMs: data?.latencyMs,
+          checkedKeys: data?.checkedKeys,
+          cloudKeysReadable: data?.cloudKeysReadable,
+        });
+        if (Array.isArray(data?.keyResults)) {
+          setKeyActionMsg({ type: 'success', text: `آخر فحص تلقائي: ${data.keyResults.filter((x: any) => x.status === 'working').length} مفتاح يعمل، ${data.keyResults.filter((x: any) => x.status === 'quota_exhausted').length} حصة مستنفدة.` });
+        }
+      } catch {
+        if (!cancelled) setAiHealthResult({ ok: false, message: 'تعذر الوصول إلى واجهة API (Failed to fetch). تحقق من نشر مسار الفحص والاتصال.' });
+      }
+    };
+    void runHealthCheck();
+    const timer = window.setInterval(() => { void runHealthCheck(); }, 60_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [isOpen, isAuthenticated]);
+
   const handleAddKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newApiKeyInput.trim()) {
