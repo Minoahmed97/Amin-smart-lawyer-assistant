@@ -30,15 +30,6 @@ export const GEMINI_MODELS = [
 ];
 
 let activeKeyIndex = 0;
-// Cache confirmed quota exhaustion in this server process for 10 minutes.
-const quotaBlockedKeys = new Map<string, number>();
-const QUOTA_COOLDOWN_MS = 10 * 60 * 1000;
-function isQuotaBlocked(key: string): boolean {
-  const until = quotaBlockedKeys.get(key) || 0;
-  if (until <= Date.now()) { quotaBlockedKeys.delete(key); return false; }
-  return true;
-}
-function markQuotaBlocked(key: string): void { quotaBlockedKeys.set(key, Date.now() + QUOTA_COOLDOWN_MS); }
 const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
 let inMemoryDynamicKeys: string[] = [];
 
@@ -96,7 +87,7 @@ export function removeStoredKey(indexOrKey: number | string): boolean {
   return false;
 }
 
-export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<{ success: boolean; message: string }> {
+export async function testGeminiKey(apiKey: string, timeoutMs = 60000): Promise<{ success: boolean; message: string }> {
   const cleanKey = sanitizeGeminiKey(apiKey);
   if (!isValidGeminiApiKey(cleanKey)) {
     return {
@@ -119,7 +110,8 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
       break;
     }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), remainingMs);
+    const attemptTimeoutMs = Math.min(15000, remainingMs);
+    const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs);
     try {
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -161,30 +153,36 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
       const apiMessage = String(data?.error?.message || '').trim();
       lastFailure = `فشل ${model} (${status})${apiMessage ? `: ${apiMessage.slice(0, 240)}` : '.'}`;
 
-      if (status === 401) {
+      const credentialErrorText = `${reason} ${apiMessage}`;
+      // Stop immediately when Google explicitly confirms quota/rate limiting.
+      // This is not evidence that the credential itself is invalid.
+      if (status === 429 || /quota|resource_exhausted|rate limit|billing.*limit/i.test(credentialErrorText)) {
         return {
-          success: false,
-          message: 'Google رفض مفتاح Gemini (401). المفتاح غير صالح أو تم إلغاؤه. استبدله بمفتاح Gemini صالح.',
+          success: true,
+          message: `تم قبول المفتاح من Google، لكن الحصة مستنفدة أو تم بلوغ حد الاستخدام (${status}). أُوقف فحص بقية النماذج لهذا المفتاح؛ سيُحفظ مع حالة الحصة المستنفدة.`,
         };
       }
 
+      // Reject only explicit invalid/revoked credentials, not generic permission
+      // errors that may result from API restrictions or project configuration.
+      if (/api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/i.test(credentialErrorText)) {
+        return {
+          success: false,
+          message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغى (${status}). أنشئ مفتاحًا جديدًا.`,
+        };
+      }
+      if (status === 401 && /invalid|unauthorized|api key/i.test(credentialErrorText)) {
+        return { success: false, message: `رفضت Google بيانات المفتاح (${status})، ولم يمكن تأكيد صلاحيته.` };
+      }
+      // All other permission/provider errors are inconclusive; keep checking
+      // fallback models, then allow the admin add route to save the key as unverified.
       if (status === 403) {
-        const permissionText = `${reason} ${apiMessage}`.toLowerCase();
-        if (/quota|resource_exhausted|rate limit/i.test(permissionText)) {
-          sawCredentialAcceptance = true;
-          markQuotaBlocked(cleanKey);
-          return { success: false, message: `الحصة مستنفدة لهذا المفتاح (${status}). تم إيقاف اختبار بقية النماذج لهذا المفتاح.` };
-        }
-        return {
-          success: false,
-          message: `المفتاح وصل إلى Google لكن لا يملك صلاحية استخدام Gemini API (403)${reason ? ` — ${reason}` : ''}. راجع قيود المفتاح وربطه بخدمة Gemini API.`,
-        };
-      }
-
-      if (status === 429 || /quota|resource_exhausted|rate limit/i.test(`${reason} ${apiMessage}`)) {
         sawCredentialAcceptance = true;
-        markQuotaBlocked(cleanKey);
-        return { success: false, message: `الحصة مستنفدة أو تم بلوغ حد الاستخدام (${status}). تم إيقاف اختبار بقية النماذج لهذا المفتاح.` };
+        continue;
+      }
+      if (status === 429) {
+        sawCredentialAcceptance = true;
+        continue;
       }
 
       const isModelUnavailable =
@@ -200,7 +198,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
       }
     } catch (err: any) {
       lastFailure = controller.signal.aborted
-        ? `انتهت مهلة فحص Gemini بعد ${Math.max(1, Math.round(timeoutMs / 1000))} ثوانٍ.`
+        ? `انتهت مهلة محاولة فحص Gemini بعد ${Math.max(1, Math.round(attemptTimeoutMs / 1000))} ثانية؛ ستُسجّل النتيجة كغير محسومة.`
         : `تعذر الاتصال بـGemini عبر ${model}: ${err?.message || 'خطأ في الشبكة.'}`;
       if (controller.signal.aborted) break;
     } finally {
@@ -326,9 +324,7 @@ export async function executeWithKeyRotation<T>(
     console.error('Gemini: failed to load central keys from Supabase; using server/env keys.', err);
   }
 
-  const allKeys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
-  const availableKeys = allKeys.filter((key) => !isQuotaBlocked(key));
-  const keys = availableKeys.length ? availableKeys : allKeys;
+  const keys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
 
   if (keys.length === 0) {
     if (cloudLoadError) {
@@ -433,9 +429,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     console.error('Gemini stream: failed to load central keys from Supabase; using server/env keys.', err);
   }
 
-  const allKeys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
-  const availableKeys = allKeys.filter((key) => !isQuotaBlocked(key));
-  const keys = availableKeys.length ? availableKeys : allKeys;
+  const keys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
 
   if (keys.length === 0) {
     if (cloudLoadError) {
