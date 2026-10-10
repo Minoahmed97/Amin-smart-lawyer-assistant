@@ -21,7 +21,11 @@ export default async function handler(req: any, res: any) {
     }
     const cleanKey = apiKey.trim();
     const testRes = await testGeminiKey(cleanKey);
-    if (!testRes.success) {
+    // Only reject when Google explicitly confirms the credential itself is
+    // invalid/revoked. Quota, model availability, provider errors and timeouts
+    // are inconclusive: keep the key and report its current status to the admin.
+    const definitelyInvalid = !testRes.success && /أكدت Google أن مفتاح Gemini غير صالح|Google رفض مفتاح Gemini|مفتاح Gemini غير صالح شكلياً/i.test(testRes.message || '');
+    if (definitelyInvalid) {
       return res.status(400).json({ error: testRes.message });
     }
     // Do not report success or rely on an ephemeral local file: the key must
@@ -30,7 +34,7 @@ export default async function handler(req: any, res: any) {
 
     return res.json({
       ok: true,
-      message: 'تم حفظ المفتاح واختباره بنجاح!',
+      message: testRes.success ? 'تم حفظ المفتاح. ' + testRes.message : 'تم حفظ المفتاح، لكن تعذّر تأكيد عمله الآن. الحالة: ' + testRes.message,
       status: getKeysStatus(),
     });
   } catch (err: any) {
