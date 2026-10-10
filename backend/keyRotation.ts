@@ -30,6 +30,15 @@ export const GEMINI_MODELS = [
 ];
 
 let activeKeyIndex = 0;
+// Cache confirmed quota exhaustion in this server process for 10 minutes.
+const quotaBlockedKeys = new Map<string, number>();
+const QUOTA_COOLDOWN_MS = 10 * 60 * 1000;
+function isQuotaBlocked(key: string): boolean {
+  const until = quotaBlockedKeys.get(key) || 0;
+  if (until <= Date.now()) { quotaBlockedKeys.delete(key); return false; }
+  return true;
+}
+function markQuotaBlocked(key: string): void { quotaBlockedKeys.set(key, Date.now() + QUOTA_COOLDOWN_MS); }
 const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
 let inMemoryDynamicKeys: string[] = [];
 
@@ -97,6 +106,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
   }
 
   let lastFailure = '';
+  let sawCredentialAcceptance = false;
   const deadline = Date.now() + Math.max(1000, timeoutMs);
 
   // Check the configured fallback models within one shared deadline. A 503 or
@@ -122,7 +132,6 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
           signal: controller.signal,
           body: JSON.stringify({
             contents: [{ parts: [{ text: 'اختبار اتصال قصير.' }] }],
-            // Leave enough output budget for Gemini 3 models to return visible text.
             generationConfig: { maxOutputTokens: 64 },
           }),
         },
@@ -161,13 +170,10 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
 
       if (status === 403) {
         const permissionText = `${reason} ${apiMessage}`.toLowerCase();
-        if (/quota|resource_exhausted|rate limit|too many requests/i.test(permissionText)) {
-          // A quota/rate-limit response applies to this key/project; don't waste
-          // the shared deadline probing other models with the same exhausted key.
-          return {
-            success: false,
-            message: `الحصة أو حدّ الطلبات للمفتاح مستنفد/مقيّد (403)${reason ? ` — ${reason}` : ''}. تم تخطي بقية النماذج لهذا المفتاح؛ افحص المفتاح التالي.`,
-          };
+        if (/quota|resource_exhausted|rate limit/i.test(permissionText)) {
+          sawCredentialAcceptance = true;
+          markQuotaBlocked(cleanKey);
+          return { success: false, message: `الحصة مستنفدة لهذا المفتاح (${status}). تم إيقاف اختبار بقية النماذج لهذا المفتاح.` };
         }
         return {
           success: false,
@@ -175,11 +181,10 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
         };
       }
 
-      if (status === 429 || /quota|resource_exhausted|rate limit|too many requests/i.test(`${reason} ${apiMessage}`)) {
-        return {
-          success: false,
-          message: `تجاوز هذا المفتاح الحصة أو حدّ الطلبات (${status}). تم إيقاف اختبار بقية النماذج لهذا المفتاح لتوفير الوقت؛ انتقل للمفتاح التالي.`,
-        };
+      if (status === 429 || /quota|resource_exhausted|rate limit/i.test(`${reason} ${apiMessage}`)) {
+        sawCredentialAcceptance = true;
+        markQuotaBlocked(cleanKey);
+        return { success: false, message: `الحصة مستنفدة أو تم بلوغ حد الاستخدام (${status}). تم إيقاف اختبار بقية النماذج لهذا المفتاح.` };
       }
 
       const isModelUnavailable =
@@ -201,6 +206,13 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  if (sawCredentialAcceptance) {
+    return {
+      success: true,
+      message: 'قبل Google الطلب لكنه أبلغ عن نفاد الحصة أو تحديد المعدل؛ تعذّر تأكيد إمكانية الاستخدام الآن. افحص الحصة ثم أعد الاختبار.',
+    };
   }
 
   return {
@@ -314,7 +326,9 @@ export async function executeWithKeyRotation<T>(
     console.error('Gemini: failed to load central keys from Supabase; using server/env keys.', err);
   }
 
-  const keys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
+  const allKeys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
+  const availableKeys = allKeys.filter((key) => !isQuotaBlocked(key));
+  const keys = availableKeys.length ? availableKeys : allKeys;
 
   if (keys.length === 0) {
     if (cloudLoadError) {
@@ -419,7 +433,9 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     console.error('Gemini stream: failed to load central keys from Supabase; using server/env keys.', err);
   }
 
-  const keys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
+  const allKeys = [...cloudKeys, ...localAndEnvKeys.filter((k) => !cloudKeys.includes(k))];
+  const availableKeys = allKeys.filter((key) => !isQuotaBlocked(key));
+  const keys = availableKeys.length ? availableKeys : allKeys;
 
   if (keys.length === 0) {
     if (cloudLoadError) {
