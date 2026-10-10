@@ -290,9 +290,9 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
         if (!cancelled) setAiHealthResult({ ok: false, message: 'تعذر الوصول إلى واجهة API (Failed to fetch). تحقق من نشر مسار الفحص والاتصال.' });
       }
     };
+    // Check once when the admin panel opens; never poll in the background.
     void runHealthCheck();
-    const timer = window.setInterval(() => { void runHealthCheck(); }, 60_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    return () => { cancelled = true; };
   }, [isOpen, isAuthenticated]);
 
   const handleAddKey = async (e: React.FormEvent) => {
