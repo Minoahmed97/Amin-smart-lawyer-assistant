@@ -28,7 +28,8 @@ function sessionSecret() {
   return secret;
 }
 
-export function createSession(userId: string, username: string, ttlMs = 1000 * 60 * 2) {
+// User sessions last 30 minutes by default; the heartbeat refreshes them while active.
+export function createSession(userId: string, username: string, ttlMs = 1000 * 60 * 30) {
   const payload = Buffer.from(JSON.stringify({
     userId,
     username,
