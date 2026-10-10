@@ -4,6 +4,22 @@ import { getSessionToken } from './authService.ts';
 // Throttling control to prevent burst requests
 let lastRequestTimestamp = 0;
 const MIN_REQUEST_INTERVAL_MS = 150;
+const AI_REQUEST_TIMEOUT_MS = 120_000;
+const AI_STREAM_IDLE_TIMEOUT_MS = 45_000;
+
+async function readWithIdleTimeout<T>(reader: ReadableStreamDefaultReader<T>): Promise<ReadableStreamReadResult<T>> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('توقف تدفق رد الذكاء الاصطناعي لمدة 45 ثانية. يرجى إعادة المحاولة.')), AI_STREAM_IDLE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 async function throttleRequests(): Promise<void> {
   const now = Date.now();
@@ -48,12 +64,17 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let streamStarted = false;
+    let requestTimeout: ReturnType<typeof setTimeout> | undefined;
+    let requestController: AbortController | undefined;
     try {
+      requestController = new AbortController();
+      requestTimeout = setTimeout(() => requestController?.abort(), AI_REQUEST_TIMEOUT_MS);
       const requestPayload = onChunk ? { ...payload, stream: true } : payload;
       const response = await fetch(url, {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify(requestPayload),
+        signal: requestController.signal,
       });
 
       if (response.ok && onChunk && response.body) {
@@ -87,7 +108,7 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
         };
 
         while (true) {
-          const { value, done } = await reader.read();
+          const { value, done } = await readWithIdleTimeout(reader);
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           const separator = isSse ? /\r?\n\r?\n/ : /\r?\n/;
@@ -118,7 +139,12 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
       responseError.retryable = response.status === 429 || response.status >= 500;
       throw responseError;
     } catch (err: any) {
-      lastError = err;
+      lastError = requestController?.signal.aborted
+        ? new Error('انتهت مهلة طلب الذكاء الاصطناعي بعد دقيقتين. يرجى المحاولة مرة أخرى.')
+        : err;
+      if (requestController?.signal.aborted) {
+        throw lastError;
+      }
 
       // Do not waste time retrying session/authentication or input errors.
       // Network failures remain retryable; HTTP failures are retried only for 429/5xx.
@@ -133,6 +159,8 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
         continue;
       }
       throw err;
+    } finally {
+      if (requestTimeout) clearTimeout(requestTimeout);
     }
   }
 
