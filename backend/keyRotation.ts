@@ -165,7 +165,7 @@ export async function testGeminiKey(apiKey: string): Promise<{ success: boolean;
       if (isModelUnavailable) continue;
 
       if (status === 503 || /unavailable|high demand/i.test(apiMessage)) {
-        sawCredentialAcceptance = true;
+        // Service availability does not prove that this credential is valid.
         continue;
       }
     } catch (err: any) {
@@ -176,7 +176,7 @@ export async function testGeminiKey(apiKey: string): Promise<{ success: boolean;
   if (sawCredentialAcceptance) {
     return {
       success: true,
-      message: 'تم قبول مفتاح Gemini من Google، لكن الخدمة/الحصة أو النموذج مشغول مؤقتاً. المفتاح صالح للتدوير.',
+      message: 'قبل Google الطلب لكنه أبلغ عن نفاد الحصة أو تحديد المعدل؛ تعذّر تأكيد إمكانية الاستخدام الآن. افحص الحصة ثم أعد الاختبار.',
     };
   }
 
@@ -357,7 +357,15 @@ export async function executeWithKeyRotation<T>(
             msg.includes('unavailable') ||
             /\"code\"\s*:\s*503\b/.test(msg);
 
-          if ((isQuotaOrRateLimit || isModelUnavailable) && m < preferredModels.length - 1) {
+          // Quota/rate-limit errors usually apply to the key or project. Do not
+          // spend extra latency trying every model on an exhausted key; rotate
+          // immediately. Model-not-found/temporary-unavailable errors still try
+          // the remaining model fallbacks on this key first.
+          if (isQuotaOrRateLimit && keys.length > 1) {
+            activeKeyIndex = (currentKeyIndex + 1) % keys.length;
+            break;
+          }
+          if (isModelUnavailable && m < preferredModels.length - 1) {
             continue;
           }
           if (keys.length > 1) {
@@ -463,7 +471,13 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
             msg.includes('unavailable') ||
             /\"code\"\s*:\s*503\b/.test(msg);
 
-          if ((isQuotaOrRateLimit || isModelUnavailable) && m < preferredModels.length - 1) {
+          // Quota/rate limits should rotate to another key before spending
+          // time trying model fallbacks on a key whose project quota is spent.
+          if (isQuotaOrRateLimit && keys.length > 1) {
+            activeKeyIndex = (currentKeyIndex + 1) % keys.length;
+            break;
+          }
+          if (isModelUnavailable && m < preferredModels.length - 1) {
             continue;
           }
 
