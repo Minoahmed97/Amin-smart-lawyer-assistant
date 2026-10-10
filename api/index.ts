@@ -112,7 +112,9 @@ export default async function handler(req: any, res: any) {
   try {
     return await target(req, res);
   } catch (error: any) {
-    console.error(`Central API error [${req.method} ${route}]`, error);
+    // Never serialize provider/database error objects to logs: they may contain
+    // request details or credentials. Keep only bounded operational metadata.
+    console.error(`Central API error [${String(req.method || '').slice(0, 10)} ${route}] status=${Number(error?.statusCode) || 500}`);
     if (!res.headersSent) {
       if (error?.retryAfter) res.setHeader('Retry-After', String(error.retryAfter));
       return res.status(error?.statusCode || 500).json({
