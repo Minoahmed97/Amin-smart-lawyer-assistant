@@ -15,7 +15,22 @@ export default async function handler(req: any, res: any) {
     let cloudKeys: string[] = [];
     let cloudReadOk = true;
     try {
-      cloudKeys = await fetchServerCloudGeminiKeys();
+      // Bound the Supabase lookup too; a stalled cloud request must not keep
+      // the admin health-check response waiting indefinitely.
+      let cloudTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        cloudKeys = await Promise.race([
+          fetchServerCloudGeminiKeys(),
+          new Promise<string[]>((_, reject) => {
+            cloudTimeout = setTimeout(
+              () => reject(new Error('انتهت مهلة قراءة مفاتيح Gemini من Supabase بعد 5 ثوانٍ.')),
+              5000,
+            );
+          }),
+        ]);
+      } finally {
+        if (cloudTimeout) clearTimeout(cloudTimeout);
+      }
     } catch (error: any) {
       cloudReadOk = false;
       console.error('AI health check: could not read cloud keys:', error?.message || error);
@@ -45,7 +60,9 @@ export default async function handler(req: any, res: any) {
       checkedKeys += 1;
       try {
         const result = await testGeminiKey(key, 6000);
-        if (result.success && !String(result.message || '').includes('تعذر تأكيد إمكانية الاستخدام الآن')) {
+        // A quota/rate-limit response proves Google was reached, but does not
+      // prove that the key can currently generate a response.
+      if (result.success && !/تعذر تأكيد إمكانية الاستخدام الآن|نفاد الحصة|تحديد المعدل/.test(String(result.message || ''))) {
           return res.status(200).json({
             ok: true,
             apiReachable: true,
