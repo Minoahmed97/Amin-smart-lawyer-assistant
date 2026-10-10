@@ -1,12 +1,7 @@
-/**
- * Central Keys Configuration
- */
-export const EMBEDDED_GEMINI_KEYS: string[] = [
-  // Embedded fallback keys if any
-];
+/** * Browser-safe Gemini key input validation only. * * This module must never contain API credentials or call Google/Gemini. * Actual Gemini requests and secret-key management are handled by /api on * the server. The browser may send an administrator-entered key only to the * authenticated platform API for storage/testing. */
+export function sanitizeGeminiKey(rawKey: unknown): string {
+  if (typeof rawKey !== 'string') return '';
 
-export function sanitizeGeminiKey(rawKey: any): string {
-  if (!rawKey || typeof rawKey !== 'string') return '';
   let clean = rawKey
     .replace(/^\uFEFF/, '')
     .replace(/[\u200B-\u200D\u2060]/g, '')
@@ -23,21 +18,15 @@ export function sanitizeGeminiKey(rawKey: any): string {
   return clean;
 }
 
-export function isValidKeyFormat(rawKey: any): boolean {
+export function isValidKeyFormat(rawKey: unknown): boolean {
   const clean = sanitizeGeminiKey(rawKey);
   if (!clean || clean.length < 10) return false;
-  if (
+  if (!clean.startsWith('AQ.') && !clean.startsWith('AIza')) return false;
+  return !(
     clean === 'MY_GEMINI_API_KEY' ||
     clean.includes('MY_GEMINI') ||
     clean.includes('...') ||
     clean === 'undefined' ||
     clean === 'null'
-  ) {
-    return false;
-  }
-  return true;
-}
-
-export function getEmbeddedGeminiKeys(): string[] {
-  return EMBEDDED_GEMINI_KEYS.map((k) => sanitizeGeminiKey(k)).filter((k) => isValidKeyFormat(k));
+  );
 }
