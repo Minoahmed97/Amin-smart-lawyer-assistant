@@ -22,11 +22,10 @@ export function isValidGeminiApiKey(key: any): boolean {
 }
 
 export const GEMINI_MODELS = [
-  // Current Gemini model recommended by the API for new users. Keep the latest
-  // alias and lite model as fallbacks without using retired model IDs.
-  'gemini-3.8-flash',
-  'gemini-3.7-flash',
-  'gemini-3.5-flash',
+  // Use documented, broadly available model IDs rather than guessed aliases.
+  // Keep a fallback in case one model is unavailable to this project.
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
 ];
 
 let activeKeyIndex = 0;
@@ -87,7 +86,7 @@ export function removeStoredKey(indexOrKey: number | string): boolean {
   return false;
 }
 
-export async function testGeminiKey(apiKey: string, timeoutMs = 10000): Promise<{ success: boolean; message: string }> {
+export async function testGeminiKey(apiKey: string, timeoutMs = 12000): Promise<{ success: boolean; message: string }> {
   const cleanKey = sanitizeGeminiKey(apiKey);
   if (!isValidGeminiApiKey(cleanKey)) {
     return {
@@ -98,6 +97,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 10000): Promise<
 
   let lastFailure = '';
   let sawCredentialAcceptance = false;
+  let sawModelAccess = false;
   const deadline = Date.now() + Math.max(1000, timeoutMs);
 
   for (const model of GEMINI_MODELS) {
@@ -160,6 +160,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 10000): Promise<
         const permissionText = `${reason} ${apiMessage}`.toLowerCase();
         if (/quota|resource_exhausted|rate limit/i.test(permissionText)) {
           sawCredentialAcceptance = true;
+          sawModelAccess = true;
           continue;
         }
         return {
@@ -170,6 +171,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 10000): Promise<
 
       if (status === 429 || /quota|resource_exhausted|rate limit/i.test(`${reason} ${apiMessage}`)) {
         sawCredentialAcceptance = true;
+        sawModelAccess = true;
         continue;
       }
 
@@ -194,10 +196,10 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 10000): Promise<
     }
   }
 
-  if (sawCredentialAcceptance) {
+  if (sawCredentialAcceptance && sawModelAccess) {
     return {
-      success: true,
-      message: 'قبل Google الطلب لكنه أبلغ عن نفاد الحصة أو تحديد المعدل؛ تعذّر تأكيد إمكانية الاستخدام الآن. افحص الحصة ثم أعد الاختبار.',
+      success: false,
+      message: 'Google تعرّف على المفتاح لكنه أبلغ عن نفاد الحصة أو تحديد المعدل؛ المفتاح ليس مثبتًا كقادر على توليد رد الآن. افحص الحصة ثم أعد الاختبار.',
     };
   }
 
