@@ -43,12 +43,7 @@ export function formatFriendlyLegalAiError(rawMsg: string): string {
   return 'تعذر إتمام العملية حالياً، يرجى المحاولة لاحقاً...';
 }
 
-async function postWithSilentRetry(
-  url: string,
-  payload: any,
-  maxRetries = 5,
-  onChunk?: (text: string) => void
-): Promise<any> {
+async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, onChunk?: (text: string) => void ): Promise<any> {
   let lastError: any = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -113,22 +108,28 @@ async function postWithSilentRetry(
 
       if (response.status === 429 || response.status >= 500) {
         if (attempt < maxRetries - 1) {
-          await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
           continue;
         }
       }
 
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || `خطأ استجابة (${response.status})`);
+      const responseError: any = new Error(errorData.error || `خطأ استجابة (${response.status})`);
+      responseError.retryable = response.status === 429 || response.status >= 500;
+      throw responseError;
     } catch (err: any) {
       lastError = err;
+
+      // Do not waste time retrying session/authentication or input errors.
+      // Network failures remain retryable; HTTP failures are retried only for 429/5xx.
+      if (err?.retryable === false) throw err;
 
       // Never restart an already visible stream, otherwise the user could see
       // duplicated legal text.
       if (streamStarted) throw err;
 
       if (attempt < maxRetries - 1) {
-        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
         continue;
       }
       throw err;
@@ -138,25 +139,13 @@ async function postWithSilentRetry(
   throw lastError || new Error('فشلت محاولة الاتصال.');
 }
 
-const EGYPTIAN_LEGAL_SYSTEM_PROMPT = `أنت «أمين»؛ مساعد قانوني مصري شديد الدقة.
-اقرأ كامل المعلومات المقدمة قبل الإجابة، وحلل الوقائع والمستندات والتواريخ والطلبات والدفوع والتناقضات ونقاط القوة والضعف والثغرات الظاهرة والخفية. لا تخترع واقعة أو مستنداً أو مادة أو حكماً أو رقم طعن. ميّز بين الثابت والاستنتاج والرأي وما يحتاج تحققاً، واعرض البدائل القانونية عند وجودها. نفّذ مراجعة داخلية نهائية قبل الإخراج، وابدأ مباشرة دون تحية أو مقدمة عامة.`;
+const EGYPTIAN_LEGAL_SYSTEM_PROMPT = `أنت «أمين»؛ مساعد قانوني مصري شديد الدقة. اقرأ كامل المعلومات المقدمة قبل الإجابة، وحلل الوقائع والمستندات والتواريخ والطلبات والدفوع والتناقضات ونقاط القوة والضعف والثغرات الظاهرة والخفية. لا تخترع واقعة أو مستنداً أو مادة أو حكماً أو رقم طعن. ميّز بين الثابت والاستنتاج والرأي وما يحتاج تحققاً، واعرض البدائل القانونية عند وجودها. نفّذ مراجعة داخلية نهائية قبل الإخراج، وابدأ مباشرة دون تحية أو مقدمة عامة.`;
 
 async function callDirectGeminiApi(_prompt: string, _systemInstruction = EGYPTIAN_LEGAL_SYSTEM_PROMPT): Promise<string> {
   throw new Error('تعذر الاتصال بالخادم المركزي للذكاء الاصطناعي.');
 }
 
-export async function deconstructBrief(
-  params: {
-  opponentBriefText: string;
-  courtType?: string;
-  caseNature?: string;
-  judicialWorkType?: string;
-  ourPosition?: string;
-  additionalFacts?: string;
-  userId?: string;
-  },
-  onChunk?: (text: string) => void
-): Promise<string> {
+export async function deconstructBrief( params: { opponentBriefText: string; courtType?: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: params.courtType,
@@ -175,32 +164,14 @@ export async function deconstructBrief(
   };
 
   try {
-    const data = await postWithSilentRetry('/api/gemini/deconstruct', payload, 5, onChunk);
+    const data = await postWithSilentRetry('/api/gemini/deconstruct', payload, 2, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
 }
 
-export async function draftCounterBrief(params: {
-  courtType?: string;
-  circuit?: string;
-  briefType?: string;
-  judicialWorkType?: string;
-  customJudicialWorkType?: string;
-  clientRole?: string;
-  clientName?: string;
-  opponentName?: string;
-  caseNumber?: string;
-  sessionDate?: string;
-  facts: string;
-  defenses?: string;
-  requests?: string;
-  customInstructions?: string;
-  userId?: string;
-  },
-  onChunk?: (text: string) => void
-): Promise<string> {
+export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const effectiveWorkType =
     params.customJudicialWorkType?.trim()
@@ -220,19 +191,14 @@ export async function draftCounterBrief(params: {
       ...requestParams,
       effectiveWorkType,
       vaultContext: lawyerVaultContext,
-    }, 5, onChunk);
+    }, 2, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
 }
 
-export async function qualifyLegalCase(
-  disputeDetails: string,
-  clientGoals?: string,
-  onChunk?: (text: string) => void,
-  userId?: string
-): Promise<string> {
+export async function qualifyLegalCase( disputeDetails: string, clientGoals?: string, onChunk?: (text: string) => void, userId?: string ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     factsOrSubject: disputeDetails,
@@ -243,19 +209,14 @@ export async function qualifyLegalCase(
       disputeDetails,
       clientGoals: clientGoals || '',
       vaultContext: lawyerVaultContext,
-    }, 5, onChunk);
+    }, 2, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
 }
 
-export async function refineDraftText(
-  draftText: string,
-  enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck',
-  onChunk?: (text: string) => void,
-  userId?: string
-): Promise<string> {
+export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     factsOrSubject: draftText,
@@ -266,7 +227,7 @@ export async function refineDraftText(
       draftText,
       enhancementType,
       vaultContext: lawyerVaultContext,
-    }, 5, onChunk);
+    }, 2, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
