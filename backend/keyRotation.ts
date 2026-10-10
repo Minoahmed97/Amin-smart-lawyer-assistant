@@ -100,10 +100,10 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 6000): Promise<{
   let sawCredentialAcceptance = false;
   const deadline = Date.now() + Math.max(1000, timeoutMs);
 
-  // Health checks use one canonical model only. Trying every fallback model here
-  // multiplies latency and confuses quota/network errors with model availability.
-  // Customer generation still retains the full GEMINI_MODELS fallback list.
-  for (const model of [GEMINI_MODELS[0]]) {
+  // Check the configured fallback models within one shared deadline. A 503 or
+  // unavailable model must not mark a key unusable when another supported model
+  // can answer with the same credential. Quota errors are also tracked separately.
+  for (const model of GEMINI_MODELS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       lastFailure = 'انتهت المهلة المحددة لفحص Gemini قبل تأكيد استجابة صالحة.';
