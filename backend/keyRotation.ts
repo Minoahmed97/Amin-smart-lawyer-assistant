@@ -186,7 +186,7 @@ export async function testGeminiKey(apiKey: string): Promise<{ success: boolean;
   };
 }
 
-export function getVercelGeminiKeys(): string[] {
+export function getVercelGeminiKeys(_ignoredClientFallbackKey?: string): string[] {
   const keys: string[] = [];
   const addKey = (k: any) => {
     if (!k || typeof k !== 'string') return;
@@ -274,9 +274,10 @@ export function getKeysStatus() {
 
 export async function executeWithKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
-  preferredModels: string[] = GEMINI_MODELS
+  preferredModels: string[] = GEMINI_MODELS,
+  _ignoredClientFallbackKey?: string
 ): Promise<T> {
-  // Keys are sourced exclusively from server environment and server-side storage.
+  // Preserve the legacy function signature for compatibility, but never use a client-provided key.
   const localAndEnvKeys = getVercelGeminiKeys();
   let cloudKeys: string[] = [];
   let cloudLoadError: any = null;
@@ -371,8 +372,8 @@ export async function executeWithKeyRotation<T>(
 }
 
 
-export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS ): Promise<void> {
-  // Keys are sourced exclusively from server environment and server-side storage.
+export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string ): Promise<void> {
+  // Preserve the legacy function signature for compatibility, but never use a client-provided key.
   const localAndEnvKeys = getVercelGeminiKeys();
   let cloudKeys: string[] = [];
   let cloudLoadError: any = null;
