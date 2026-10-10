@@ -87,7 +87,7 @@ export function removeStoredKey(indexOrKey: number | string): boolean {
   return false;
 }
 
-export async function testGeminiKey(apiKey: string): Promise<{ success: boolean; message: string }> {
+export async function testGeminiKey(apiKey: string, timeoutMs = 10000): Promise<{ success: boolean; message: string }> {
   const cleanKey = sanitizeGeminiKey(apiKey);
   if (!isValidGeminiApiKey(cleanKey)) {
     return {
@@ -98,8 +98,16 @@ export async function testGeminiKey(apiKey: string): Promise<{ success: boolean;
 
   let lastFailure = '';
   let sawCredentialAcceptance = false;
+  const deadline = Date.now() + Math.max(1000, timeoutMs);
 
   for (const model of GEMINI_MODELS) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      lastFailure = 'انتهت المهلة المحددة لفحص Gemini قبل تأكيد استجابة صالحة.';
+      break;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), remainingMs);
     try {
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -109,6 +117,7 @@ export async function testGeminiKey(apiKey: string): Promise<{ success: boolean;
             'Content-Type': 'application/json',
             'x-goog-api-key': cleanKey,
           },
+          signal: controller.signal,
           body: JSON.stringify({
             contents: [{ parts: [{ text: 'اختبار اتصال قصير.' }] }],
             generationConfig: { maxOutputTokens: 8 },
@@ -121,7 +130,14 @@ export async function testGeminiKey(apiKey: string): Promise<{ success: boolean;
       try { data = raw ? JSON.parse(raw) : {}; } catch {}
 
       if (response.ok) {
-        return { success: true, message: `تم التحقق من مفتاح Gemini بنجاح عبر ${model}، والمفتاح صالح للاستخدام.` };
+        const generatedText = Array.isArray(data?.candidates?.[0]?.content?.parts)
+          ? data.candidates[0].content.parts.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('').trim()
+          : '';
+        if (generatedText) {
+          return { success: true, message: `تم التحقق من مفتاح Gemini بنجاح عبر ${model}، واستُلم نص فعلي من النموذج.` };
+        }
+        lastFailure = `أعاد ${model} استجابة HTTP ناجحة لكن دون نص مولّد يمكن التحقق منه.`;
+        continue;
       }
 
       const status = Number(data?.error?.code || response.status);
@@ -169,7 +185,12 @@ export async function testGeminiKey(apiKey: string): Promise<{ success: boolean;
         continue;
       }
     } catch (err: any) {
-      lastFailure = `تعذر الاتصال بـGemini عبر ${model}: ${err?.message || 'خطأ في الشبكة.'}`;
+      lastFailure = controller.signal.aborted
+        ? `انتهت مهلة فحص Gemini بعد ${Math.max(1, Math.round(timeoutMs / 1000))} ثوانٍ.`
+        : `تعذر الاتصال بـGemini عبر ${model}: ${err?.message || 'خطأ في الشبكة.'}`;
+      if (controller.signal.aborted) break;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
