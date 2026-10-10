@@ -84,7 +84,8 @@ export async function requireActiveSession(req: any) {
 export function createAdminSession() {
   const configured = (process.env.PLATFORM_ADMIN_PIN || '').trim();
   if (!configured) throw new Error('PLATFORM_ADMIN_PIN غير مضبوط على الخادم.');
-  return createSession('admin', 'admin', 1000 * 60 * 60 * 24 * 30);
+  // Admin sessions are intentionally shorter-lived than user sessions.
+  return createSession('admin', 'admin', 1000 * 60 * 30);
 }
 
 export function requireAdmin(req: any) {
@@ -96,12 +97,24 @@ export function requireAdmin(req: any) {
 }
 
 
+function constantTimeStringEqual(candidate: string, expected: string): boolean {
+  const candidateBytes = Buffer.from(candidate, 'utf8');
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  // timingSafeEqual throws for different lengths; compare fixed-size hashes instead.
+  const candidateHash = crypto.createHash('sha256').update(candidateBytes).digest();
+  const expectedHash = crypto.createHash('sha256').update(expectedBytes).digest();
+  const sameHash = crypto.timingSafeEqual(candidateHash, expectedHash);
+  return sameHash && candidateBytes.length === expectedBytes.length;
+}
+
 export function loginAdmin(pin: string, req?: any) {
   const configured = (process.env.PLATFORM_ADMIN_PIN || '').trim();
+  const candidate = typeof pin === 'string' ? pin.trim() : '';
+  const valid = Boolean(configured) && constantTimeStringEqual(candidate, configured);
   if (req) {
-    rateLimit(req, 'admin-login', 8, 15 * 60 * 1000, { failure: !configured || pin.trim() !== configured });
+    rateLimit(req, 'admin-login', 8, 15 * 60 * 1000, { failure: !valid });
   }
-  if (!configured || pin.trim() !== configured) { const err: any = new Error('رمز المرور الإداري غير صحيح.'); err.statusCode = 401; throw err; }
+  if (!valid) { const err: any = new Error('رمز المرور الإداري غير صحيح.'); err.statusCode = 401; throw err; }
   return { token: createAdminSession() };
 }
 
