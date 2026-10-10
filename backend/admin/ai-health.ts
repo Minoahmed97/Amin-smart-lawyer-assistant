@@ -38,10 +38,13 @@ export default async function handler(req: any, res: any) {
 
     let lastMessage = 'لم ينجح أي مفتاح في الاتصال بخدمة Gemini.';
     let checkedKeys = 0;
-    for (const key of keys) {
+    // Keep the admin health check bounded: test at most four configured keys,
+    // with a strict per-key timeout. This endpoint must never hang on a slow provider.
+    const keysToCheck = keys.slice(0, 4);
+    for (const key of keysToCheck) {
       checkedKeys += 1;
       try {
-        const result = await testGeminiKey(key);
+        const result = await testGeminiKey(key, 6000);
         if (result.success && !String(result.message || '').includes('تعذر تأكيد إمكانية الاستخدام الآن')) {
           return res.status(200).json({
             ok: true,
@@ -51,7 +54,7 @@ export default async function handler(req: any, res: any) {
             checkedKeys,
             configuredKeys: keys.length,
             latencyMs: Date.now() - startedAt,
-            message: 'الاتصال سليم: طلب الفحص وصل إلى السيرفر وتم التحقق من استجابة Gemini.',
+            message: 'الاتصال سليم: وصل الطلب إلى السيرفر وتم استلام استجابة فعلية من Gemini.',
           });
         }
         lastMessage = result.message || lastMessage;
@@ -68,7 +71,7 @@ export default async function handler(req: any, res: any) {
       checkedKeys,
       configuredKeys: keys.length,
       latencyMs: Date.now() - startedAt,
-      message: `وصل الطلب إلى السيرفر، لكن تعذر تأكيد اتصال Gemini. ${lastMessage}`,
+      message: `وصل الطلب إلى السيرفر، لكن تعذر تأكيد اتصال Gemini. تم فحص ${checkedKeys} من أصل ${keys.length} مفاتيح كحد أقصى للفحص السريع. ${lastMessage}`, 
     });
   } catch (error: any) {
     const status = Number(error?.statusCode) || 401;
