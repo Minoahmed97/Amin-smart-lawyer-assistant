@@ -57,7 +57,7 @@ export default async function handler(req: any, res: any) {
     const keysToCheck = keys.slice(0, 4);
     const results = await Promise.all(keysToCheck.map(async (key) => {
       try {
-        return await testGeminiKey(key, 12000);
+        return await testGeminiKey(key, 6000);
       } catch (error: any) {
         return { success: false, message: error?.message || 'تعذر اختبار المفتاح.' };
       }
