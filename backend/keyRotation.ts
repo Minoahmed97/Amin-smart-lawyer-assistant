@@ -123,7 +123,9 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
           signal: controller.signal,
           body: JSON.stringify({
             contents: [{ parts: [{ text: 'اختبار اتصال قصير.' }] }],
-            generationConfig: { maxOutputTokens: 8 },
+            // Gemini 3 models may spend output tokens on internal thinking.
+            // Eight tokens can leave no user-visible text even when HTTP is 200.
+            generationConfig: { maxOutputTokens: 64 },
           }),
         },
       );
@@ -139,7 +141,19 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
         if (generatedText) {
           return { success: true, message: `تم التحقق من مفتاح Gemini بنجاح عبر ${model}، واستُلم نص فعلي من النموذج.` };
         }
-        lastFailure = `أعاد ${model} استجابة HTTP ناجحة لكن دون نص مولّد يمكن التحقق منه.`;
+        const finishReason = String(data?.candidates?.[0]?.finishReason || '');
+        const blockReason = String(data?.promptFeedback?.blockReason || '');
+        const safetyRatings = Array.isArray(data?.candidates?.[0]?.safetyRatings)
+          ? data.candidates[0].safetyRatings
+              .filter((rating: any) => rating?.blocked)
+              .map((rating: any) => String(rating?.category || ''))
+              .filter(Boolean)
+              .join(', ')
+          : '';
+        lastFailure = `أعاد ${model} استجابة HTTP ناجحة دون نص ظاهر` +
+          `${finishReason ? ` (finishReason: ${finishReason})` : ''}` +
+          `${blockReason ? ` (blockReason: ${blockReason})` : ''}` +
+          `${safetyRatings ? ` (حجب أمان: ${safetyRatings})` : ''}.`;
         continue;
       }
 
