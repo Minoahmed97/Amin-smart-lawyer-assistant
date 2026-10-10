@@ -22,10 +22,10 @@ export function isValidGeminiApiKey(key: any): boolean {
 }
 
 export const GEMINI_MODELS = [
-  // Current Gemini model recommended by the API for new users. Keep the latest
-  // alias and lite model as fallbacks without using retired model IDs.
+  // Prefer the current stable Flash model, then stable fallbacks.
+  // Gemini 3.7 Flash is deprecated and automatically routed to 3.8 Flash.
   'gemini-3.8-flash',
-  'gemini-3.7-flash',
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
 ];
 
@@ -87,7 +87,7 @@ export function removeStoredKey(indexOrKey: number | string): boolean {
   return false;
 }
 
-export async function testGeminiKey(apiKey: string, timeoutMs = 6000): Promise<{ success: boolean; message: string }> {
+export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<{ success: boolean; message: string }> {
   const cleanKey = sanitizeGeminiKey(apiKey);
   if (!isValidGeminiApiKey(cleanKey)) {
     return {
