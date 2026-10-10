@@ -56,12 +56,9 @@ export default async function handler(req: any, res: any) {
         }
       };
       try {
-        // Generate the complete legal result before emitting it to the client.
-        // The shared generator has its own continuation logic for MAX_TOKENS,
-        // so this prevents the streaming path from exposing only the first
-        // generation segment when a long legal answer is continued internally.
-        const completeResult = await generateDeepLegalResponse(prompt);
-        writeChunk(completeResult);
+        // Forward actual model chunks as they arrive. The generator keeps
+        // handling continuation internally while the client sees live output.
+        await generateDeepLegalResponse(prompt, writeChunk);
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
@@ -83,6 +80,12 @@ export default async function handler(req: any, res: any) {
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
     console.error('Error in /api/gemini/qualify:', err);
-    return res.status(500).json({ error: err.message || 'فشل التكييف القانوني.' });
+    const statusCode = Number(err?.statusCode || err?.status);
+    const status = Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600 ? statusCode : 500;
+    if (!res.headersSent) return res.status(status).json({ error: err.message || 'فشل التكييف القانوني.' });
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ type: 'error', error: err.message || 'فشل التكييف القانوني.' })}\n\n`);
+      return res.end();
+    }
   }
 }
