@@ -200,12 +200,9 @@ export default async function handler(req: any, res: any) {
         }
       };
       try {
-        // For this legal-document endpoint, generate the complete result first
-        // and send it as one payload. This intentionally disables progressive
-        // display here because the previous chunked path could stop after the
-        // first part even while the requested document was still incomplete.
-        const completeResult = await generateDeepLegalResponse(prompt);
-        writeChunk(completeResult);
+        // Forward actual model chunks as they arrive. The generator keeps
+        // handling continuation internally while the client sees live output.
+        await generateDeepLegalResponse(prompt, writeChunk);
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
