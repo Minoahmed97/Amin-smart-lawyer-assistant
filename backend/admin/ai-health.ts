@@ -15,8 +15,6 @@ export default async function handler(req: any, res: any) {
     let cloudKeys: string[] = [];
     let cloudReadOk = true;
     try {
-      // Bound the Supabase lookup too; a stalled cloud request must not keep
-      // the admin health-check response waiting indefinitely.
       let cloudTimeout: ReturnType<typeof setTimeout> | undefined;
       try {
         cloudKeys = await Promise.race([
@@ -44,6 +42,7 @@ export default async function handler(req: any, res: any) {
         aiReachable: false,
         cloudKeysReadable: cloudReadOk,
         checkedKeys: 0,
+        configuredKeys: 0,
         latencyMs: Date.now() - startedAt,
         message: cloudReadOk
           ? 'وصل الفحص إلى السيرفر، لكن لم يتم العثور على أي مفتاح Gemini مضبوط.'
@@ -51,43 +50,57 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    let lastMessage = 'لم ينجح أي مفتاح في الاتصال بخدمة Gemini.';
-    // Test up to four keys concurrently so the health endpoint has a bounded
-    // total duration instead of spending six seconds serially on each key.
-    const keysToCheck = keys.slice(0, 4);
-    const results = await Promise.all(keysToCheck.map(async (key) => {
-      try {
-        return await testGeminiKey(key, 20000);
-      } catch (error: any) {
-        return { success: false, message: error?.message || 'تعذر اختبار المفتاح.' };
-      }
-    }));
-    const successfulIndex = results.findIndex((result) => result.success &&
-      !/تعذر تأكيد إمكانية الاستخدام الآن|نفاد الحصة|تحديد المعدل|تعرّف على المفتاح لكنه أبلغ/.test(String(result.message || '')));
+    // Check keys in order. Quota/rate-limit errors fail fast for that key, so
+    // the next key is tested without probing every model on the exhausted key.
+    // A global deadline prevents a long key list from hanging the admin panel.
+    const healthDeadline = Date.now() + 25000;
+    const keyStatuses: Array<{ key: number; success: boolean; message: string }> = [];
+    let successfulKeyIndex = -1;
 
-    if (successfulIndex >= 0) {
+    for (let i = 0; i < keys.length; i++) {
+      const remainingMs = healthDeadline - Date.now();
+      if (remainingMs <= 0) {
+        keyStatuses.push({ key: i + 1, success: false, message: 'لم يُفحص هذا المفتاح بسبب انتهاء المهلة الإجمالية للفحص.' });
+        break;
+      }
+      try {
+        const result = await testGeminiKey(keys[i], Math.min(8000, remainingMs));
+        keyStatuses.push({ key: i + 1, success: result.success, message: result.message });
+        if (result.success) {
+          successfulKeyIndex = i;
+          break;
+        }
+      } catch (error: any) {
+        keyStatuses.push({ key: i + 1, success: false, message: error?.message || 'تعذر اختبار المفتاح.' });
+      }
+    }
+
+    if (successfulKeyIndex >= 0) {
       return res.status(200).json({
         ok: true,
         apiReachable: true,
         aiReachable: true,
         cloudKeysReadable: cloudReadOk,
-        checkedKeys: results.length,
+        checkedKeys: keyStatuses.length,
         configuredKeys: keys.length,
+        workingKey: successfulKeyIndex + 1,
+        keyStatuses,
         latencyMs: Date.now() - startedAt,
-        message: `الاتصال سليم: تم استلام نص فعلي من Gemini باستخدام أحد المفاتيح المختبرة. تم فحص ${results.length} من أصل ${keys.length} مفاتيح متاحة للفحص السريع.`,
+        message: `الاتصال سليم: المفتاح ${successfulKeyIndex + 1} استلم نصًا فعليًا من Gemini. تم تجاوز المفاتيح السابقة غير العاملة، وفُحص ${keyStatuses.length} من أصل ${keys.length} مفتاحًا.`,
       });
     }
 
-    lastMessage = results.map((result, index) => `المفتاح ${index + 1}: ${result.message}`).join(' | ') || lastMessage;
+    const details = keyStatuses.map((result) => `المفتاح ${result.key}: ${result.message}`).join(' | ');
     return res.status(502).json({
       ok: false,
       apiReachable: true,
       aiReachable: false,
       cloudKeysReadable: cloudReadOk,
-      checkedKeys: results.length,
+      checkedKeys: keyStatuses.length,
       configuredKeys: keys.length,
+      keyStatuses,
       latencyMs: Date.now() - startedAt,
-      message: `وصل الطلب إلى السيرفر، لكن لم يتم استلام نص مولّد فعلي من المفاتيح المختبرة. هذا لا يعني بالضرورة أن المفاتيح غير صالحة؛ قد يكون السبب الحصة أو الصلاحيات أو مهلة الشبكة أو عدم إتاحة النموذج. ${lastMessage}`,
+      message: `لم يتم استلام نص مولّد من المفاتيح التي أمكن فحصها. حالات المفاتيح موضحة بالتفصيل؛ نفاد الحصة لا يعني أن بقية المفاتيح غير صالحة. ${details}`,
     });
   } catch (error: any) {
     const status = Number(error?.statusCode) || 401;
