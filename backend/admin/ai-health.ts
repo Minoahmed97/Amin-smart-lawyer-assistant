@@ -52,43 +52,42 @@ export default async function handler(req: any, res: any) {
     }
 
     let lastMessage = 'لم ينجح أي مفتاح في الاتصال بخدمة Gemini.';
-    let checkedKeys = 0;
-    // Keep the admin health check bounded: test at most four configured keys,
-    // with a strict per-key timeout. This endpoint must never hang on a slow provider.
+    // Test up to four keys concurrently so the health endpoint has a bounded
+    // total duration instead of spending six seconds serially on each key.
     const keysToCheck = keys.slice(0, 4);
-    for (const key of keysToCheck) {
-      checkedKeys += 1;
+    const results = await Promise.all(keysToCheck.map(async (key) => {
       try {
-        const result = await testGeminiKey(key, 6000);
-        // A quota/rate-limit response proves Google was reached, but does not
-      // prove that the key can currently generate a response.
-      if (result.success && !/تعذر تأكيد إمكانية الاستخدام الآن|نفاد الحصة|تحديد المعدل/.test(String(result.message || ''))) {
-          return res.status(200).json({
-            ok: true,
-            apiReachable: true,
-            aiReachable: true,
-            cloudKeysReadable: cloudReadOk,
-            checkedKeys,
-            configuredKeys: keys.length,
-            latencyMs: Date.now() - startedAt,
-            message: 'الاتصال سليم: وصل الطلب إلى السيرفر وتم استلام استجابة فعلية من Gemini.',
-          });
-        }
-        lastMessage = result.message || lastMessage;
+        return await testGeminiKey(key, 12000);
       } catch (error: any) {
-        lastMessage = error?.message || lastMessage;
+        return { success: false, message: error?.message || 'تعذر اختبار المفتاح.' };
       }
+    }));
+    const successfulIndex = results.findIndex((result) => result.success &&
+      !/تعذر تأكيد إمكانية الاستخدام الآن|نفاد الحصة|تحديد المعدل|تعرّف على المفتاح لكنه أبلغ/.test(String(result.message || '')));
+
+    if (successfulIndex >= 0) {
+      return res.status(200).json({
+        ok: true,
+        apiReachable: true,
+        aiReachable: true,
+        cloudKeysReadable: cloudReadOk,
+        checkedKeys: results.length,
+        configuredKeys: keys.length,
+        latencyMs: Date.now() - startedAt,
+        message: `الاتصال سليم: تم استلام نص فعلي من Gemini باستخدام أحد المفاتيح المختبرة. تم فحص ${results.length} من أصل ${keys.length} مفاتيح متاحة للفحص السريع.`,
+      });
     }
 
+    lastMessage = results.map((result, index) => `المفتاح ${index + 1}: ${result.message}`).join(' | ') || lastMessage;
     return res.status(502).json({
       ok: false,
       apiReachable: true,
       aiReachable: false,
       cloudKeysReadable: cloudReadOk,
-      checkedKeys,
+      checkedKeys: results.length,
       configuredKeys: keys.length,
       latencyMs: Date.now() - startedAt,
-      message: `وصل الطلب إلى السيرفر، لكن تعذر تأكيد اتصال Gemini. تم فحص ${checkedKeys} من أصل ${keys.length} مفاتيح كحد أقصى للفحص السريع. ${lastMessage}`, 
+      message: `وصل الطلب إلى السيرفر، لكن لم يتم استلام نص مولّد فعلي من المفاتيح المختبرة. هذا لا يعني بالضرورة أن المفاتيح غير صالحة؛ قد يكون السبب الحصة أو الصلاحيات أو مهلة الشبكة أو عدم إتاحة النموذج. ${lastMessage}`,
     });
   } catch (error: any) {
     const status = Number(error?.statusCode) || 401;
