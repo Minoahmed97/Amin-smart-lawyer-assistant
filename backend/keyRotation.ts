@@ -87,7 +87,7 @@ export function removeStoredKey(indexOrKey: number | string): boolean {
   return false;
 }
 
-export async function testGeminiKey(apiKey: string, timeoutMs = 10000): Promise<{ success: boolean; message: string }> {
+export async function testGeminiKey(apiKey: string, timeoutMs = 6000): Promise<{ success: boolean; message: string }> {
   const cleanKey = sanitizeGeminiKey(apiKey);
   if (!isValidGeminiApiKey(cleanKey)) {
     return {
@@ -100,7 +100,10 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 10000): Promise<
   let sawCredentialAcceptance = false;
   const deadline = Date.now() + Math.max(1000, timeoutMs);
 
-  for (const model of GEMINI_MODELS) {
+  // Health checks use one canonical model only. Trying every fallback model here
+  // multiplies latency and confuses quota/network errors with model availability.
+  // Customer generation still retains the full GEMINI_MODELS fallback list.
+  for (const model of [GEMINI_MODELS[0]]) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       lastFailure = 'انتهت المهلة المحددة لفحص Gemini قبل تأكيد استجابة صالحة.';
