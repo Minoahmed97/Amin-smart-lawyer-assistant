@@ -1,9 +1,4 @@
-/**
- * Central Vercel API Function
- *
- * All application API routes are dispatched through this single function.
- * The individual handlers live under /backend and are NOT Vercel Functions.
- */
+/** * Central Vercel API Function * * All application API routes are dispatched through this single function. * The individual handlers live under /backend and are NOT Vercel Functions. */
 import reviewsHandler from '../backend/reviews.ts';
 import broadcastHandler from '../backend/broadcast.ts';
 import adminAnalyticsHandler from '../backend/admin/analytics.ts';
@@ -11,6 +6,7 @@ import addKeyHandler from '../backend/admin/keys/add.ts';
 import deleteKeyHandler from '../backend/admin/keys/delete.ts';
 import testKeyHandler from '../backend/admin/keys/test.ts';
 import keysStatusHandler from '../backend/admin/keys-status.ts';
+import aiHealthHandler from '../backend/admin/ai-health.ts';
 import packagesHandler from '../backend/admin/packages.ts';
 import heartbeatHandler from '../backend/analytics/heartbeat.ts';
 import eventHandler from '../backend/analytics/event.ts';
@@ -48,6 +44,7 @@ const ROUTES: Record<string, Handler> = {
 
   '/admin/analytics': adminAnalyticsHandler,
   '/admin/keys-status': keysStatusHandler,
+  '/admin/ai-health': aiHealthHandler,
   '/admin/keys/add': addKeyHandler,
   '/admin/keys/delete': deleteKeyHandler,
   '/admin/keys/test': testKeyHandler,
