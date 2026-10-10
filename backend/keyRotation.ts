@@ -186,7 +186,7 @@ export async function testGeminiKey(apiKey: string): Promise<{ success: boolean;
   };
 }
 
-export function getVercelGeminiKeys(extraFallbackKey?: string): string[] {
+export function getVercelGeminiKeys(): string[] {
   const keys: string[] = [];
   const addKey = (k: any) => {
     if (!k || typeof k !== 'string') return;
@@ -211,9 +211,6 @@ export function getVercelGeminiKeys(extraFallbackKey?: string): string[] {
   // development and must participate in the same AI key rotation path.
   for (const storedKey of getFileStoredKeys()) addKey(storedKey);
 
-  // The extra key is retained only for backward compatibility with existing
-  // server handlers; the browser no longer sends credentials.
-  if (extraFallbackKey) addKey(extraFallbackKey);
   return keys;
 }
 
@@ -277,12 +274,10 @@ export function getKeysStatus() {
 
 export async function executeWithKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
-  preferredModels: string[] = GEMINI_MODELS,
-  clientFallbackKey?: string
+  preferredModels: string[] = GEMINI_MODELS
 ): Promise<T> {
-  // Always merge centrally stored server keys. A stale/invalid client key
-  // must never prevent the backend from loading the valid keys from Supabase.
-  const localAndEnvKeys = getVercelGeminiKeys(clientFallbackKey);
+  // Keys are sourced exclusively from server environment and server-side storage.
+  const localAndEnvKeys = getVercelGeminiKeys();
   let cloudKeys: string[] = [];
   let cloudLoadError: any = null;
 
@@ -376,10 +371,9 @@ export async function executeWithKeyRotation<T>(
 }
 
 
-export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, clientFallbackKey?: string ): Promise<void> {
-  // Always merge centrally stored server keys. A stale/invalid client key
-  // must never prevent the backend from loading the valid keys from Supabase.
-  const localAndEnvKeys = getVercelGeminiKeys(clientFallbackKey);
+export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS ): Promise<void> {
+  // Keys are sourced exclusively from server environment and server-side storage.
+  const localAndEnvKeys = getVercelGeminiKeys();
   let cloudKeys: string[] = [];
   let cloudLoadError: any = null;
 
