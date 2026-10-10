@@ -97,7 +97,6 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
   }
 
   let lastFailure = '';
-  let sawCredentialAcceptance = false;
   const deadline = Date.now() + Math.max(1000, timeoutMs);
 
   // Check the configured fallback models within one shared deadline. A 503 or
@@ -123,8 +122,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
           signal: controller.signal,
           body: JSON.stringify({
             contents: [{ parts: [{ text: 'اختبار اتصال قصير.' }] }],
-            // Gemini 3 models may spend output tokens on internal thinking.
-            // Eight tokens can leave no user-visible text even when HTTP is 200.
+            // Leave enough output budget for Gemini 3 models to return visible text.
             generationConfig: { maxOutputTokens: 64 },
           }),
         },
@@ -141,19 +139,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
         if (generatedText) {
           return { success: true, message: `تم التحقق من مفتاح Gemini بنجاح عبر ${model}، واستُلم نص فعلي من النموذج.` };
         }
-        const finishReason = String(data?.candidates?.[0]?.finishReason || '');
-        const blockReason = String(data?.promptFeedback?.blockReason || '');
-        const safetyRatings = Array.isArray(data?.candidates?.[0]?.safetyRatings)
-          ? data.candidates[0].safetyRatings
-              .filter((rating: any) => rating?.blocked)
-              .map((rating: any) => String(rating?.category || ''))
-              .filter(Boolean)
-              .join(', ')
-          : '';
-        lastFailure = `أعاد ${model} استجابة HTTP ناجحة دون نص ظاهر` +
-          `${finishReason ? ` (finishReason: ${finishReason})` : ''}` +
-          `${blockReason ? ` (blockReason: ${blockReason})` : ''}` +
-          `${safetyRatings ? ` (حجب أمان: ${safetyRatings})` : ''}.`;
+        lastFailure = `أعاد ${model} استجابة HTTP ناجحة لكن دون نص مولّد يمكن التحقق منه.`;
         continue;
       }
 
@@ -175,9 +161,13 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
 
       if (status === 403) {
         const permissionText = `${reason} ${apiMessage}`.toLowerCase();
-        if (/quota|resource_exhausted|rate limit/i.test(permissionText)) {
-          sawCredentialAcceptance = true;
-          continue;
+        if (/quota|resource_exhausted|rate limit|too many requests/i.test(permissionText)) {
+          // A quota/rate-limit response applies to this key/project; don't waste
+          // the shared deadline probing other models with the same exhausted key.
+          return {
+            success: false,
+            message: `الحصة أو حدّ الطلبات للمفتاح مستنفد/مقيّد (403)${reason ? ` — ${reason}` : ''}. تم تخطي بقية النماذج لهذا المفتاح؛ افحص المفتاح التالي.`,
+          };
         }
         return {
           success: false,
@@ -185,9 +175,11 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
         };
       }
 
-      if (status === 429 || /quota|resource_exhausted|rate limit/i.test(`${reason} ${apiMessage}`)) {
-        sawCredentialAcceptance = true;
-        continue;
+      if (status === 429 || /quota|resource_exhausted|rate limit|too many requests/i.test(`${reason} ${apiMessage}`)) {
+        return {
+          success: false,
+          message: `تجاوز هذا المفتاح الحصة أو حدّ الطلبات (${status}). تم إيقاف اختبار بقية النماذج لهذا المفتاح لتوفير الوقت؛ انتقل للمفتاح التالي.`,
+        };
       }
 
       const isModelUnavailable =
@@ -209,13 +201,6 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 20000): Promise<
     } finally {
       clearTimeout(timeout);
     }
-  }
-
-  if (sawCredentialAcceptance) {
-    return {
-      success: true,
-      message: 'قبل Google الطلب لكنه أبلغ عن نفاد الحصة أو تحديد المعدل؛ تعذّر تأكيد إمكانية الاستخدام الآن. افحص الحصة ثم أعد الاختبار.',
-    };
   }
 
   return {
