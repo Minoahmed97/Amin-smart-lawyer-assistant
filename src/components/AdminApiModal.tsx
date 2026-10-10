@@ -117,6 +117,8 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   const [showNewKey, setShowNewKey] = useState<boolean>(false);
   const [keyAddingLoading, setKeyAddingLoading] = useState<boolean>(false);
   const [keyActionMsg, setKeyActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [aiHealthLoading, setAiHealthLoading] = useState(false);
+  const [aiHealthResult, setAiHealthResult] = useState<{ ok: boolean; message: string; latencyMs?: number; checkedKeys?: number; cloudKeysReadable?: boolean } | null>(null);
 
   const [managedPackages, setManagedPackages] = useState<PlatformPackage[]>([]);
   const [packageSaveSuccess, setPackageSaveSuccess] = useState<string>('');
@@ -234,6 +236,30 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
         setKeyStatusData((prev) => ({ ...prev, isConfigured: false, totalCount: 0, keys: [] }));
       })
       .finally(() => setIsRefreshingStatus(false));
+  };
+
+  const handleCheckClientAiConnection = async () => {
+    setAiHealthLoading(true);
+    setAiHealthResult(null);
+    try {
+      const res = await fetch('/api/admin/ai-health', {
+        method: 'GET',
+        headers: { 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' },
+        cache: 'no-store',
+      });
+      const data = await res.json().catch(() => ({}));
+      setAiHealthResult({
+        ok: res.ok && data?.aiReachable === true,
+        message: data?.message || data?.error || 'تعذر إكمال فحص الاتصال.',
+        latencyMs: data?.latencyMs,
+        checkedKeys: data?.checkedKeys,
+        cloudKeysReadable: data?.cloudKeysReadable,
+      });
+    } catch (err: any) {
+      setAiHealthResult({ ok: false, message: err?.message || 'تعذر الوصول إلى واجهة API من هذا المتصفح.' });
+    } finally {
+      setAiHealthLoading(false);
+    }
   };
 
   const handleAddKey = async (e: React.FormEvent) => {
@@ -816,6 +842,43 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                       <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingStatus ? 'animate-spin' : ''}`} />
                       <span>تحديث الحالة</span>
                     </button>
+                  </div>
+
+                  <div className="rounded-xl border border-sky-700/70 bg-slate-950 p-4 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                      <div>
+                        <h5 className="text-sm font-bold text-sky-300 flex items-center gap-2">
+                          <Zap className="w-4 h-4" />
+                          فحص وصول الذكاء الاصطناعي للعميل
+                        </h5>
+                        <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                          يختبر وصول الطلب من واجهة الموقع إلى السيرفر ثم يتأكد من استجابة Gemini، دون عرض أي مفتاح سري.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCheckClientAiConnection}
+                        disabled={aiHealthLoading}
+                        className="shrink-0 px-4 py-2 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-2"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${aiHealthLoading ? 'animate-spin' : ''}`} />
+                        {aiHealthLoading ? 'جارٍ فحص الاتصال...' : 'افحص اتصال العميل'}
+                      </button>
+                    </div>
+                    {aiHealthResult && (
+                      <div className={`rounded-lg border p-3 text-xs ${aiHealthResult.ok ? 'border-emerald-600 bg-emerald-950/60 text-emerald-200' : 'border-rose-600 bg-rose-950/60 text-rose-200'}`} role="status">
+                        <div className="font-bold flex items-center gap-2">
+                          {aiHealthResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                          {aiHealthResult.ok ? 'الاتصال يعمل' : 'فشل الفحص'}
+                        </div>
+                        <p className="mt-1 leading-relaxed">{aiHealthResult.message}</p>
+                        <p className="mt-2 opacity-90">
+                          {typeof aiHealthResult.latencyMs === 'number' ? `زمن الفحص: ${aiHealthResult.latencyMs} مللي ثانية` : ''}
+                          {typeof aiHealthResult.checkedKeys === 'number' ? ` • المفاتيح التي تم فحصها: ${aiHealthResult.checkedKeys}` : ''}
+                          {typeof aiHealthResult.cloudKeysReadable === 'boolean' ? ` • قراءة المفاتيح السحابية: ${aiHealthResult.cloudKeysReadable ? 'نجحت' : 'تعذرت'}` : ''}
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-4 pt-2">
