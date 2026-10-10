@@ -1,6 +1,6 @@
 import { generateDeepLegalResponse } from './counter-brief.ts';
 
-import { requireActiveSession, consumeOperation } from '../auth.ts';
+import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -22,7 +22,7 @@ export default async function handler(req: any, res: any) {
     }
 
     rateLimit(req, 'gemini-refine', 8, 10 * 60 * 1000);
-    await requireActiveSession(req);
+    await enforceAiCooldown(req);
 
     limitBodyString(draftText, 200000, 'المسودة');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
