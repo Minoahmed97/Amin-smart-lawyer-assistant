@@ -108,7 +108,7 @@ export function removeStoredKey(indexOrKey: number | string): boolean {
   return false;
 }
 
-export async function testGeminiKey(apiKey: string, timeoutMs = 60000): Promise<{ success: boolean; message: string }> {
+export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<{ success: boolean; message: string }> {
   const cleanKey = sanitizeGeminiKey(apiKey);
   if (!isValidGeminiApiKey(cleanKey)) {
     return {
@@ -117,109 +117,61 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 60000): Promise<
     };
   }
 
-  let lastFailure = '';
-  let sawCredentialAcceptance = false;
+  // Validate the credential and model access without calling generateContent.
+  // This prevents adding a key or opening the admin panel from consuming text-generation quota.
   const deadline = Date.now() + Math.max(1000, timeoutMs);
+  let lastFailure = '';
 
-  // Check the configured fallback models within one shared deadline. A 503 or
-  // unavailable model must not mark a key unusable when another supported model
-  // can answer with the same credential. Quota errors are also tracked separately.
   for (const model of GEMINI_MODELS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      lastFailure = 'انتهت المهلة المحددة لفحص Gemini قبل تأكيد استجابة صالحة.';
+      lastFailure = 'انتهت المهلة المحددة لفحص مفتاح Gemini.';
       break;
     }
+
     const controller = new AbortController();
-    const attemptTimeoutMs = Math.min(15000, remainingMs);
+    const attemptTimeoutMs = Math.min(5000, remainingMs);
     const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs);
     try {
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}`,
         {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': cleanKey,
-          },
+          method: 'GET',
+          headers: { 'x-goog-api-key': cleanKey },
           signal: controller.signal,
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: 'اختبار اتصال قصير.' }] }],
-            generationConfig: { maxOutputTokens: 64 },
-          }),
         },
       );
-
       const raw = await response.text();
       let data: any = {};
       try { data = raw ? JSON.parse(raw) : {}; } catch {}
 
-      if (response.ok) {
-        const generatedText = Array.isArray(data?.candidates?.[0]?.content?.parts)
-          ? data.candidates[0].content.parts.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('').trim()
-          : '';
-        if (generatedText) {
-          return { success: true, message: `تم التحقق من مفتاح Gemini بنجاح عبر ${model}، واستُلم نص فعلي من النموذج.` };
-        }
-        lastFailure = `أعاد ${model} استجابة HTTP ناجحة لكن دون نص مولّد يمكن التحقق منه.`;
-        continue;
+      if (response.ok && data?.name) {
+        return {
+          success: true,
+          message: `تم التحقق من المفتاح والوصول إلى بيانات النموذج ${model}. هذا الفحص لا يولّد نصوصاً ولا يستهلك حصة توليد المحتوى.`,
+        };
       }
 
       const status = Number(data?.error?.code || response.status);
-      const reason = String(
-        data?.error?.details?.find?.((d: any) => d?.reason)?.reason ||
-        data?.error?.status ||
-        ''
-      );
       const apiMessage = String(data?.error?.message || '').trim();
-      lastFailure = `فشل ${model} (${status})${apiMessage ? `: ${apiMessage.slice(0, 240)}` : '.'}`;
+      lastFailure = `فشل فحص ${model} (${status})${apiMessage ? `: ${apiMessage.slice(0, 240)}` : '.'}`;
 
-      const credentialErrorText = `${reason} ${apiMessage}`;
-      // Stop immediately when Google explicitly confirms quota/rate limiting.
-      // This is not evidence that the credential itself is invalid.
-      if (status === 429 || /quota|resource_exhausted|rate limit|billing.*limit/i.test(credentialErrorText)) {
-        return {
-          success: true,
-          message: `تم قبول المفتاح من Google، لكن الحصة مستنفدة أو تم بلوغ حد الاستخدام (${status}). أُوقف فحص بقية النماذج لهذا المفتاح؛ سيُحفظ مع حالة الحصة المستنفدة.`,
-        };
+      const errorText = `${data?.error?.status || ''} ${apiMessage}`;
+      if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/i.test(errorText)) {
+        return { success: false, message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغى (${status}). أنشئ مفتاحاً جديداً.` };
       }
 
-      // Reject only explicit invalid/revoked credentials, not generic permission
-      // errors that may result from API restrictions or project configuration.
-      if (/api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/i.test(credentialErrorText)) {
+      // Try the next configured model if this model is unavailable or access is restricted.
+      if (status === 403 || status === 404 || status === 400) continue;
+      if (status === 429) {
         return {
           success: false,
-          message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغى (${status}). أنشئ مفتاحًا جديدًا.`,
+          message: `تم رفض طلب فحص بيانات النموذج بسبب حدّ طلبات API (${status}). لم يتم توليد أي نص ولم تُستهلك حصة توليد المحتوى.`,
         };
-      }
-      if (status === 401 && /invalid|unauthorized|api key/i.test(credentialErrorText)) {
-        return { success: false, message: `رفضت Google بيانات المفتاح (${status})، ولم يمكن تأكيد صلاحيته.` };
-      }
-      // All other permission/provider errors are inconclusive; keep checking
-      // fallback models, then allow the admin add route to save the key as unverified.
-      if (status === 403) {
-        sawCredentialAcceptance = true;
-        continue;
-      }
-      if (status === 429) {
-        sawCredentialAcceptance = true;
-        continue;
-      }
-
-      const isModelUnavailable =
-        status === 404 ||
-        status === 400 ||
-        /not found|no longer available|model not found|unsupported model|invalid argument/i.test(apiMessage);
-
-      if (isModelUnavailable) continue;
-
-      if (status === 503 || /unavailable|high demand/i.test(apiMessage)) {
-        // Service availability does not prove that this credential is valid.
-        continue;
       }
     } catch (err: any) {
       lastFailure = controller.signal.aborted
-        ? `انتهت مهلة محاولة فحص Gemini بعد ${Math.max(1, Math.round(attemptTimeoutMs / 1000))} ثانية؛ ستُسجّل النتيجة كغير محسومة.`
+        ? `انتهت مهلة فحص ${model}.`
         : `تعذر الاتصال بـGemini عبر ${model}: ${err?.message || 'خطأ في الشبكة.'}`;
       if (controller.signal.aborted) break;
     } finally {
@@ -227,16 +179,9 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 60000): Promise<
     }
   }
 
-  if (sawCredentialAcceptance) {
-    return {
-      success: true,
-      message: 'قبل Google الطلب لكنه أبلغ عن نفاد الحصة أو تحديد المعدل؛ تعذّر تأكيد إمكانية الاستخدام الآن. افحص الحصة ثم أعد الاختبار.',
-    };
-  }
-
   return {
     success: false,
-    message: lastFailure || 'فشل فحص مفتاح Gemini عبر جميع النماذج المتاحة.',
+    message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاح.',
   };
 }
 
