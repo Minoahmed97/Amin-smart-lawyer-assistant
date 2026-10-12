@@ -52,8 +52,7 @@ export default async function handler(req: any, res: any) {
     }
 
     let lastMessage = 'لم ينجح أي مفتاح في الاتصال بخدمة Gemini.';
-    // Test up to four keys concurrently so the health endpoint has a bounded
-    // total duration instead of spending six seconds serially on each key.
+    // Check up to four keys concurrently using metadata-only requests; do not consume generation quota.
     const keysToCheck = keys.slice(0, 4);
     const results = await Promise.all(keysToCheck.map(async (key) => {
       try {
@@ -74,7 +73,7 @@ export default async function handler(req: any, res: any) {
         checkedKeys: results.length,
         configuredKeys: keys.length,
         latencyMs: Date.now() - startedAt,
-        message: `الاتصال سليم: تم استلام نص فعلي من Gemini باستخدام أحد المفاتيح المختبرة. تم فحص ${results.length} من أصل ${keys.length} مفاتيح متاحة للفحص السريع.`,
+        message: `اتصال الخادم سليم، وتم التحقق من الوصول إلى بيانات أحد نماذج Gemini دون توليد نص أو استهلاك حصة توليد المحتوى. تم فحص ${results.length} من أصل ${keys.length} مفاتيح متاحة للفحص السريع.`,
       });
     }
 
@@ -87,7 +86,7 @@ export default async function handler(req: any, res: any) {
       checkedKeys: results.length,
       configuredKeys: keys.length,
       latencyMs: Date.now() - startedAt,
-      message: `وصل الطلب إلى السيرفر، لكن لم يتم استلام نص مولّد فعلي من المفاتيح المختبرة. هذا لا يعني بالضرورة أن المفاتيح غير صالحة؛ قد يكون السبب الحصة أو الصلاحيات أو مهلة الشبكة أو عدم إتاحة النموذج. ${lastMessage}`,
+      message: `وصل الطلب إلى السيرفر، لكن لم يتمكن الفحص من تأكيد الوصول إلى بيانات نموذج Gemini للمفاتيح المختبرة. هذا لا يعني بالضرورة أن المفاتيح غير صالحة؛ قد يكون السبب الحصة أو الصلاحيات أو مهلة الشبكة أو عدم إتاحة النموذج. ${lastMessage}`,
     });
   } catch (error: any) {
     const status = Number(error?.statusCode) || 401;
