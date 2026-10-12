@@ -86,7 +86,7 @@ export async function enforceAiCooldown(req: any) {
   const { session } = await requireActiveSession(req);
   const response = await supabase('rpc/claim_platform_ai_cooldown', {
     method: 'POST',
-    body: JSON.stringify({ p_user_id: session.userId, p_cooldown_seconds: 60 }),
+    body: JSON.stringify({ p_user_id: session.userId, p_cooldown_seconds: 30 }),
   });
 
   if (!response.ok) {
@@ -99,7 +99,7 @@ export async function enforceAiCooldown(req: any) {
   const result = await response.json();
   const row = Array.isArray(result) ? result[0] : result;
   if (!row?.allowed) {
-    const retryAfter = Math.max(1, Number(row?.retry_after_seconds) || 60);
+    const retryAfter = Math.max(1, Number(row?.retry_after_seconds) || 30);
     const err: any = new Error(`يرجى الانتظار ${retryAfter} ثانية قبل استخدام أي خدمة ذكاء اصطناعي أخرى.`);
     err.statusCode = 429;
     err.retryAfter = retryAfter;
