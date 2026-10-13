@@ -54,7 +54,14 @@ function buildPayload(options: any, model: string, stream: boolean) {
     model,
     messages: normalizeMessages(options?.contents, config.systemInstruction),
     temperature: typeof config.temperature === 'number' ? config.temperature : 0.3,
-    max_tokens: typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : 8192,
+    // Free models have different output limits. Keep requests compatible by default;
+    // legal-response continuation in counter-brief.ts can extend long answers as needed.
+    max_tokens: Math.max(1024, Math.min(
+      typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : 8192,
+      Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS) > 0
+        ? Math.min(16384, Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS))
+        : 8192,
+    )),
     stream,
   };
 }
@@ -75,7 +82,11 @@ async function request(options: any, model: string, stream: boolean) {
       'X-Title': 'Amin Smart Lawyer Assistant',
     },
     body: JSON.stringify(buildPayload(options, model, stream)),
-    signal: AbortSignal.timeout(60000),
+    // Legal drafts may be long. Do not treat normal generation time as a provider failure.
+    signal: AbortSignal.timeout(Math.max(30000, Math.min(
+      Number(process.env.AI_REQUEST_TIMEOUT_MS) > 0 ? Number(process.env.AI_REQUEST_TIMEOUT_MS) : 120000,
+      180000,
+    ))),
   });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
@@ -123,6 +134,22 @@ export function createOpenRouterCompatibleClient() {
                   text: typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '',
                   candidates: finishReason ? [{ finishReason: String(finishReason).toUpperCase() }] : [],
                 };
+              }
+            }
+            // Process a final SSE event even if the connection closes without a trailing newline.
+            if (buffer.startsWith('data:')) {
+              const raw = buffer.slice(5).trim();
+              if (raw && raw !== '[DONE]') {
+                try {
+                  const data: any = JSON.parse(raw);
+                  const choice = data?.choices?.[0];
+                  const text = choice?.delta?.content;
+                  const finishReason = choice?.finish_reason;
+                  yield {
+                    text: typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '',
+                    candidates: finishReason ? [{ finishReason: String(finishReason).toUpperCase() }] : [],
+                  };
+                } catch { /* ignore malformed final SSE event */ }
               }
             }
           } finally {
