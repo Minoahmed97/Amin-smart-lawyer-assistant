@@ -52,6 +52,16 @@ function withGeminiAttemptTimeout<T>(promise: Promise<T>, timeoutMs = KEY_ATTEMP
     }),
   ]).finally(() => { if (timer) clearTimeout(timer); });
 }
+
+function shouldFallbackFromOpenRouter(error: any): boolean {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status);
+  const message = String(error?.message || error?.error?.message || '').toLowerCase();
+  // Do not hide a missing/invalid OpenRouter credential (401) or a programming error.
+  // Fall back when free capacity is exhausted or the provider/model service is unavailable.
+  return status === 402 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 ||
+    (status === 400 && /max_tokens|context.?length|model|unsupported|parameter/.test(message)) ||
+    /quota|rate.?limit|free.*(limit|unavailable|exhaust)|no free models|temporarily unavailable|service unavailable|timed out|timeout/.test(message);
+}
 const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
 let inMemoryDynamicKeys: string[] = [];
 
@@ -275,26 +285,32 @@ export function getKeysStatus() {
 export async function executeWithKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
-  _ignoredClientFallbackKey?: string
+  _ignoredClientFallbackKey?: string,
+  _forceGeminiFallback = false
 ): Promise<T> {
-  // If the platform has been switched to OpenRouter, use its server-side key and model fallback list.
-  if (process.env.AI_PROVIDER?.trim().toLowerCase() !== 'gemini') {
+  // OpenRouter is primary unless explicitly forced to use the Gemini fallback.
+  if (!_forceGeminiFallback && process.env.AI_PROVIDER?.trim().toLowerCase() !== 'gemini') {
     if (!process.env.OPENROUTER_API_KEY?.trim()) throw new Error('أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel لتفعيل الاتصال الجديد.');
     const models = getOpenRouterModels();
     let lastError: any = null;
     for (const model of models) {
       try {
-        return await withGeminiAttemptTimeout(action(createOpenRouterCompatibleClient() as unknown as GoogleGenAI, 'openrouter', model));
+        return await action(createOpenRouterCompatibleClient() as unknown as GoogleGenAI, 'openrouter', model);
       } catch (error: any) {
         lastError = error;
         const status = Number(error?.status || error?.statusCode);
         const message = String(error?.message || '').toLowerCase();
-        const canRetry = status === 400 || status === 401 || status === 402 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
+        if (status === 402 || status === 429 || /no free models|free.*(limit|unavailable|exhaust)|quota exhausted/.test(message)) break;
+        const canRetry = status === 400 || status === 401 || status === 404 || status === 408 || status === 413 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
         if (!canRetry) throw error;
       }
     }
+    if (shouldFallbackFromOpenRouter(lastError)) {
+      console.warn('OpenRouter free route unavailable; retrying this operation through server-side Gemini fallback.');
+      return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true);
+    }
     const status = Number(lastError?.status || lastError?.statusCode);
-    if (status === 402 || status === 429) throw new Error('نفدت الحصة المجانية أو بلغ المزوّد حد الاستخدام. جرّب لاحقًا أو راجع حدود حساب OpenRouter.');
+    if (status === 402 || status === 429) throw new Error('نفدت الحصة المجانية أو بلغ المزوّد حد الاستخدام، ولم ينجح التحويل الاحتياطي.');
     throw lastError || new Error('تعذّر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
@@ -380,15 +396,15 @@ export async function executeWithKeyRotation<T>(
 }
 
 
-export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string ): Promise<void> {
-  if (process.env.AI_PROVIDER?.trim().toLowerCase() !== 'gemini') {
+export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false ): Promise<void> {
+  if (!_forceGeminiFallback && process.env.AI_PROVIDER?.trim().toLowerCase() !== 'gemini') {
     if (!process.env.OPENROUTER_API_KEY?.trim()) throw new Error('أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel لتفعيل الاتصال الجديد.');
     const models = getOpenRouterModels();
     let lastError: any = null;
     for (const model of models) {
       let emitted = false;
       try {
-        const stream = await withGeminiAttemptTimeout(action(createOpenRouterCompatibleClient() as unknown as GoogleGenAI, 'openrouter', model));
+        const stream = await action(createOpenRouterCompatibleClient() as unknown as GoogleGenAI, 'openrouter', model);
         for await (const chunk of stream) {
           const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
           if (chunkText) { emitted = true; onChunk(chunkText); }
@@ -400,12 +416,17 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         if (emitted) throw error;
         const status = Number(error?.status || error?.statusCode);
         const message = String(error?.message || '').toLowerCase();
-        const canRetry = status === 400 || status === 401 || status === 402 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
+        if (status === 402 || status === 429 || /no free models|free.*(limit|unavailable|exhaust)|quota exhausted/.test(message)) break;
+        const canRetry = status === 400 || status === 401 || status === 404 || status === 408 || status === 413 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
         if (!canRetry) throw error;
       }
     }
+    if (shouldFallbackFromOpenRouter(lastError)) {
+      console.warn('OpenRouter free route unavailable before stream output; retrying through server-side Gemini fallback.');
+      return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true);
+    }
     const status = Number(lastError?.status || lastError?.statusCode);
-    if (status === 402 || status === 429) throw new Error('نفدت الحصة المجانية أو بلغ المزوّد حد الاستخدام. جرّب لاحقًا أو راجع حدود حساب OpenRouter.');
+    if (status === 402 || status === 429) throw new Error('نفدت الحصة المجانية أو بلغ المزوّد حد الاستخدام، ولم ينجح التحويل الاحتياطي.');
     throw lastError || new Error('تعذّر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
