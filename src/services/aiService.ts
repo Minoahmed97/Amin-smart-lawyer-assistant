@@ -5,6 +5,10 @@ import { getSessionToken } from './authService.ts';
 let lastRequestTimestamp = 0;
 const MIN_REQUEST_INTERVAL_MS = 150;
 const AI_REQUEST_TIMEOUT_MS = 120_000;
+// Vercel allows this central API function to run for up to 300 seconds.
+// Keep streamed requests alive slightly less than that limit instead of aborting
+// every long legal draft after 120 seconds.
+const AI_STREAM_REQUEST_TIMEOUT_MS = 290_000;
 const AI_STREAM_IDLE_TIMEOUT_MS = 45_000;
 
 async function readWithIdleTimeout<T>(reader: ReadableStreamDefaultReader<T>): Promise<ReadableStreamReadResult<T>> {
@@ -76,7 +80,10 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
     let requestController: AbortController | undefined;
     try {
       requestController = new AbortController();
-      requestTimeout = setTimeout(() => requestController?.abort(), AI_REQUEST_TIMEOUT_MS);
+      requestTimeout = setTimeout(
+        () => requestController?.abort(),
+        onChunk ? AI_STREAM_REQUEST_TIMEOUT_MS : AI_REQUEST_TIMEOUT_MS,
+      );
       const requestPayload = onChunk ? { ...payload, stream: true } : payload;
       const response = await fetch(url, {
         method: 'POST',
@@ -148,7 +155,9 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
       throw responseError;
     } catch (err: any) {
       lastError = requestController?.signal.aborted
-        ? new Error('انتهت مهلة طلب الذكاء الاصطناعي بعد دقيقتين. يرجى المحاولة مرة أخرى.')
+        ? new Error(onChunk
+          ? 'انتهت مهلة الصياغة المتدفقة بعد نحو خمس دقائق. يرجى المحاولة مرة أخرى.'
+          : 'انتهت مهلة طلب الذكاء الاصطناعي بعد دقيقتين. يرجى المحاولة مرة أخرى.')
         : err;
       if (requestController?.signal.aborted) {
         throw lastError;
