@@ -106,6 +106,10 @@ export default async function handler(req: any, res: any) {
             ],
           },
         ],
+        config: {
+          temperature: 0.2,
+          maxOutputTokens: 32768,
+        },
       });
       return response.text?.trim() || '';
     }, GEMINI_MODELS);
