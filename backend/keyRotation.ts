@@ -3,6 +3,7 @@ import { sanitizeGeminiKey } from './centralKeys.ts';
 import { fetchServerCloudGeminiKeys } from './supabaseSync.ts';
 import fs from 'fs';
 import path from 'path';
+import { createOpenRouterCompatibleClient, getOpenRouterModels } from './openrouterAdapter.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
   if (!key || typeof key !== 'string') return false;
@@ -276,6 +277,26 @@ export async function executeWithKeyRotation<T>(
   preferredModels: string[] = GEMINI_MODELS,
   _ignoredClientFallbackKey?: string
 ): Promise<T> {
+  // If the platform has been switched to OpenRouter, use its server-side key and model fallback list.
+  if (process.env.AI_PROVIDER?.trim().toLowerCase() !== 'gemini') {
+    if (!process.env.OPENROUTER_API_KEY?.trim()) throw new Error('أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel لتفعيل الاتصال الجديد.');
+    const models = getOpenRouterModels();
+    let lastError: any = null;
+    for (const model of models) {
+      try {
+        return await withGeminiAttemptTimeout(action(createOpenRouterCompatibleClient() as unknown as GoogleGenAI, 'openrouter', model));
+      } catch (error: any) {
+        lastError = error;
+        const status = Number(error?.status || error?.statusCode);
+        const message = String(error?.message || '').toLowerCase();
+        const canRetry = status === 400 || status === 401 || status === 402 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
+        if (!canRetry) throw error;
+      }
+    }
+    const status = Number(lastError?.status || lastError?.statusCode);
+    if (status === 402 || status === 429) throw new Error('نفدت الحصة المجانية أو بلغ المزوّد حد الاستخدام. جرّب لاحقًا أو راجع حدود حساب OpenRouter.');
+    throw lastError || new Error('تعذّر الاتصال بجميع نماذج OpenRouter المتاحة.');
+  }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
   const localAndEnvKeys = getVercelGeminiKeys();
   let cloudKeys: string[] = [];
@@ -360,6 +381,33 @@ export async function executeWithKeyRotation<T>(
 
 
 export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string ): Promise<void> {
+  if (process.env.AI_PROVIDER?.trim().toLowerCase() !== 'gemini') {
+    if (!process.env.OPENROUTER_API_KEY?.trim()) throw new Error('أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel لتفعيل الاتصال الجديد.');
+    const models = getOpenRouterModels();
+    let lastError: any = null;
+    for (const model of models) {
+      let emitted = false;
+      try {
+        const stream = await withGeminiAttemptTimeout(action(createOpenRouterCompatibleClient() as unknown as GoogleGenAI, 'openrouter', model));
+        for await (const chunk of stream) {
+          const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+          if (chunkText) { emitted = true; onChunk(chunkText); }
+        }
+        return;
+      } catch (error: any) {
+        lastError = error;
+        // Never restart on another model after visible output, as that duplicates or corrupts legal text.
+        if (emitted) throw error;
+        const status = Number(error?.status || error?.statusCode);
+        const message = String(error?.message || '').toLowerCase();
+        const canRetry = status === 400 || status === 401 || status === 402 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
+        if (!canRetry) throw error;
+      }
+    }
+    const status = Number(lastError?.status || lastError?.statusCode);
+    if (status === 402 || status === 429) throw new Error('نفدت الحصة المجانية أو بلغ المزوّد حد الاستخدام. جرّب لاحقًا أو راجع حدود حساب OpenRouter.');
+    throw lastError || new Error('تعذّر الاتصال بجميع نماذج OpenRouter المتاحة.');
+  }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
   const localAndEnvKeys = getVercelGeminiKeys();
   let cloudKeys: string[] = [];
