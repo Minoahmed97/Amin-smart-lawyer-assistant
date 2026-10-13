@@ -54,13 +54,14 @@ function buildPayload(options: any, model: string, stream: boolean) {
     model,
     messages: normalizeMessages(options?.contents, config.systemInstruction),
     temperature: typeof config.temperature === 'number' ? config.temperature : 0.3,
-    // Free models have different output limits. Keep requests compatible by default;
-    // legal-response continuation in counter-brief.ts can extend long answers as needed.
+    // The provider requires a numeric cap; use the request's own limit when supplied.
+    // Otherwise use a configurable ceiling, while the legal generator continues output
+    // automatically when a model ends early. Providers/models may enforce lower limits.
     max_tokens: Math.max(1024, Math.min(
-      typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : 8192,
+      typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : 16384,
       Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS) > 0
-        ? Math.min(16384, Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS))
-        : 8192,
+        ? Math.min(32768, Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS))
+        : 16384,
     )),
     stream,
   };
