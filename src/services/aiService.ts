@@ -42,6 +42,14 @@ function getRequestHeaders(): Record<string, string> {
 export function cleanDirectResponse(rawText: string): string {
   if (!rawText) return '';
   let text = rawText.trim();
+  // Strip leaked provider safety metadata, not legal content or actual safety controls.
+  text = text
+    .replace(/\b(?:user\s*)?safety\s*:\s*safe\b/gi, '')
+    .replace(/\bfinish[_ ]?reason\s*:\s*(?:stop|length|safety|end[_ ]?turn)\b/gi, '')
+    .replace(/\[\[AMIN_STREAM_COMPLETE_[A-Z0-9]+\]\]/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   const introPatterns = [
     /^(?:[\s\*\#\-\>]*)(?:أهلاً|مرحباً|عزيزي|المحامي|إليك)[^\n]*\n+/i,
   ];
