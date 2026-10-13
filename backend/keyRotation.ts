@@ -31,7 +31,20 @@ export const GEMINI_MODELS = [
 
 let activeKeyIndex = 0;
 const permanentlyInvalidKeys = new Set<string>();
-const KEY_ATTEMPT_TIMEOUT_MS = 12000;
+// Legal document analysis can legitimately take longer than 12 seconds.
+// Let the SDK enforce the HTTP timeout instead of racing the promise, which
+// could abandon a still-running network request and then start another attempt.
+const KEY_ATTEMPT_TIMEOUT_MS = 60000;
+
+function createGeminiClient(apiKey: string): GoogleGenAI {
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      timeout: KEY_ATTEMPT_TIMEOUT_MS,
+      headers: { 'User-Agent': 'aistudio-build' },
+    },
+  });
+}
 
 function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'other' {
   const msg = String(err?.message || err?.error?.message || '').toLowerCase();
@@ -40,16 +53,6 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
   if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/.test(msg)) return 'invalid';
   if (status === 503 || status === 504 || /timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|\b503\b/.test(msg)) return 'temporary';
   return 'other';
-}
-
-function withGeminiAttemptTimeout<T>(promise: Promise<T>, timeoutMs = KEY_ATTEMPT_TIMEOUT_MS): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => {
-      timer = setTimeout(() => reject(Object.assign(new Error(`Gemini attempt timed out after ${timeoutMs}ms`), { code: 'GEMINI_ATTEMPT_TIMEOUT' })), timeoutMs);
-    }),
-  ]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
 function shouldFallbackFromOpenRouter(error: any): boolean {
@@ -341,23 +344,23 @@ export async function executeWithKeyRotation<T>(
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const ai = withAdaptiveAnswerLength(new GoogleGenAI({
-        apiKey: currentKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      }));
+      const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey));
 
       for (let m = 0; m < preferredModels.length; m++) {
         const model = preferredModels[m];
         try {
-          const result = await withGeminiAttemptTimeout(action(ai, currentKey, model));
+          const result = await action(ai, currentKey, model);
           activeKeyIndex = currentKeyIndex;
           return result;
         } catch (err: any) {
           lastError = err;
+          console.error('[Gemini key rotation] attempt failed', {
+            model,
+            keyIndex: currentKeyIndex + 1,
+            status: Number(err?.status || err?.statusCode || err?.response?.status) || undefined,
+            code: typeof err?.code === 'string' ? err.code : undefined,
+            message: String(err?.message || 'Unknown Gemini error').slice(0, 300),
+          });
           const kind = getGeminiErrorKind(err);
           if (kind === 'invalid') permanentlyInvalidKeys.add(currentKey);
           if (kind === 'quota' || kind === 'temporary' || kind === 'invalid') {
@@ -441,15 +444,12 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const ai = withAdaptiveAnswerLength(new GoogleGenAI({
-        apiKey: currentKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-      }));
+      const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey));
 
       for (let m = 0; m < preferredModels.length; m++) {
         let emittedAnyChunk = false;
         try {
-          const stream = await withGeminiAttemptTimeout(action(ai, currentKey, preferredModels[m]));
+          const stream = await action(ai, currentKey, preferredModels[m]);
           for await (const chunk of stream) {
             const text = typeof chunk?.text === 'string' ? chunk.text : '';
             if (text) {
@@ -461,6 +461,14 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           return;
         } catch (err: any) {
           lastError = err;
+          console.error('[Gemini stream key rotation] attempt failed', {
+            model: preferredModels[m],
+            keyIndex: currentKeyIndex + 1,
+            emittedAnyChunk,
+            status: Number(err?.status || err?.statusCode || err?.response?.status) || undefined,
+            code: typeof err?.code === 'string' ? err.code : undefined,
+            message: String(err?.message || 'Unknown Gemini stream error').slice(0, 300),
+          });
 
           // Once Gemini has started streaming, the response may already be visible
           // to the user, so do not silently restart and duplicate the answer.
