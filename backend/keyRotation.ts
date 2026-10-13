@@ -1,6 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
 import { sanitizeGeminiKey } from './centralKeys.ts';
-import { fetchServerCloudGeminiKeys } from './supabaseSync.ts';
 import fs from 'fs';
 import path from 'path';
 import { createOpenRouterCompatibleClient, getOpenRouterModels } from './openrouterAdapter.ts';
@@ -240,26 +239,9 @@ export function rotateToNextGeminiKey(): string {
 
 export async function getManagedGeminiKeyByIndex(index: number): Promise<string> {
   if (!Number.isInteger(index) || index < 0) throw new Error('رقم المفتاح غير صحيح.');
-
-  const localKeys = getVercelGeminiKeys();
-  let cloudKeys: string[] = [];
-  try {
-    cloudKeys = await fetchServerCloudGeminiKeys();
-  } catch (err: any) {
-    throw new Error(`تعذر قراءة المفاتيح المحفوظة لاختبارها: ${err?.message || 'خطأ في التخزين.'}`);
-  }
-
-  const merged = [...localKeys];
-  const seenMasked = new Set(localKeys.map((k) => k.length > 8 ? `${k.slice(0, 4)}...${k.slice(-4)}` : '****'));
-  for (const key of cloudKeys) {
-    const masked = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : '****';
-    if (!seenMasked.has(masked)) {
-      merged.push(key);
-      seenMasked.add(masked);
-    }
-  }
-  const key = merged[index];
-  if (!key) throw new Error('المفتاح المطلوب غير موجود. حدّث قائمة المفاتيح ثم حاول مرة أخرى.');
+  const keys = getVercelGeminiKeys();
+  const key = keys[index];
+  if (!key) throw new Error('المفتاح غير موجود في متغيرات بيئة Vercel.');
   return key;
 }
 
@@ -282,6 +264,31 @@ export function getKeysStatus() {
   };
 }
 
+/** Add guidance to let the model choose answer length based on the legal task, without a fixed word count. */
+function withAdaptiveAnswerLength(ai: any): any {
+  const instruction = 'اختر طول الإجابة بنفسك وفقاً لطبيعة الطلب وتعقيده: لا تلتزم بعدد كلمات ثابت ولا تختصر لمجرد الاختصار. قدّم إجابة قانونية مكتملة ومفصلة بالقدر اللازم، مع الوقائع والتحليل والأسانيد والخطوات العملية عند الحاجة. تجنب التكرار والحشو، ولا تخترع نصوصاً أو أحكاماً أو وقائع غير متحقق منها، وصرّح بما يحتاج إلى تحقق. إذا طلب المستخدم الإيجاز صراحةً، التزم بطلبه.';
+  const adaptOptions = (options: any) => {
+    const config = { ...(options?.config || {}) };
+    const current = config.systemInstruction;
+    if (typeof current === 'string' && current.trim()) {
+      config.systemInstruction = `${current}\n\n${instruction}`;
+    } else if (Array.isArray(current)) {
+      config.systemInstruction = [...current, { text: instruction }];
+    } else if (current && typeof current === 'object') {
+      config.systemInstruction = { ...current, parts: [...(Array.isArray(current.parts) ? current.parts : []), { text: instruction }] };
+    } else {
+      config.systemInstruction = instruction;
+    }
+    return { ...options, config };
+  };
+  return {
+    models: {
+      generateContent: (options: any) => ai.models.generateContent(adaptOptions(options)),
+      generateContentStream: (options: any) => ai.models.generateContentStream(adaptOptions(options)),
+    },
+  };
+}
+
 export async function executeWithKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -295,7 +302,7 @@ export async function executeWithKeyRotation<T>(
     let lastError: any = null;
     for (const model of models) {
       try {
-        return await action(createOpenRouterCompatibleClient() as unknown as GoogleGenAI, 'openrouter', model);
+        return await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient()) as unknown as GoogleGenAI, 'openrouter', model);
       } catch (error: any) {
         lastError = error;
         const status = Number(error?.status || error?.statusCode);
@@ -314,28 +321,12 @@ export async function executeWithKeyRotation<T>(
     throw lastError || new Error('تعذّر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
-  const localAndEnvKeys = getVercelGeminiKeys();
-  let cloudKeys: string[] = [];
-  let cloudLoadError: any = null;
-
-  try {
-    cloudKeys = await fetchServerCloudGeminiKeys();
-  } catch (err: any) {
-    // Supabase key storage must not take down AI when a valid server/env key
-    // is already configured. The admin UI can still report the storage error.
-    cloudLoadError = err;
-    console.error('Gemini: failed to load central keys from Supabase; using server/env keys.');
-  }
-
-  const keys = [...new Set([...cloudKeys, ...localAndEnvKeys])].filter((key) => !permanentlyInvalidKeys.has(key));
+  // Gemini fallback credentials are read exclusively from Vercel server environment variables.
+  // Keys previously stored through the admin panel/Supabase are intentionally not used.
+  const keys = getVercelGeminiKeys().filter((key) => !permanentlyInvalidKeys.has(key));
 
   if (keys.length === 0) {
-    if (cloudLoadError) {
-      throw new Error(`تعذر قراءة مفاتيح Gemini المركزية من Supabase: ${cloudLoadError?.message || 'خطأ غير معروف.'}`);
-    }
-    throw new Error(
-      'لم يتم العثور على أي مفاتيح ذكاء اصطناعي (Gemini API Key) صالحة.'
-    );
+    throw new Error('لم يتم العثور على مفتاح Gemini صالح في متغيرات بيئة Vercel.');
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
@@ -350,14 +341,14 @@ export async function executeWithKeyRotation<T>(
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const ai = new GoogleGenAI({
+      const ai = withAdaptiveAnswerLength(new GoogleGenAI({
         apiKey: currentKey,
         httpOptions: {
           headers: {
             'User-Agent': 'aistudio-build',
           },
         },
-      });
+      }));
 
       for (let m = 0; m < preferredModels.length; m++) {
         const model = preferredModels[m];
@@ -404,7 +395,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     for (const model of models) {
       let emitted = false;
       try {
-        const stream = await action(createOpenRouterCompatibleClient() as unknown as GoogleGenAI, 'openrouter', model);
+        const stream = await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient()) as unknown as GoogleGenAI, 'openrouter', model);
         for await (const chunk of stream) {
           const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
           if (chunkText) { emitted = true; onChunk(chunkText); }
@@ -430,24 +421,11 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     throw lastError || new Error('تعذّر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
-  const localAndEnvKeys = getVercelGeminiKeys();
-  let cloudKeys: string[] = [];
-  let cloudLoadError: any = null;
-
-  try {
-    cloudKeys = await fetchServerCloudGeminiKeys();
-  } catch (err: any) {
-    cloudLoadError = err;
-    console.error('Gemini stream: failed to load central keys from Supabase; using server/env keys.');
-  }
-
-  const keys = [...new Set([...cloudKeys, ...localAndEnvKeys])].filter((key) => !permanentlyInvalidKeys.has(key));
+  // Streaming fallback also uses Vercel environment variables only.
+  const keys = getVercelGeminiKeys().filter((key) => !permanentlyInvalidKeys.has(key));
 
   if (keys.length === 0) {
-    if (cloudLoadError) {
-      throw new Error(`تعذر قراءة مفاتيح Gemini المركزية من Supabase: ${cloudLoadError?.message || 'خطأ غير معروف.'}`);
-    }
-    throw new Error('لم يتم العثور على أي مفاتيح ذكاء اصطناعي (Gemini API Key) صالحة.');
+    throw new Error('لم يتم العثور على مفتاح Gemini صالح في متغيرات بيئة Vercel.');
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
@@ -463,10 +441,10 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const ai = new GoogleGenAI({
+      const ai = withAdaptiveAnswerLength(new GoogleGenAI({
         apiKey: currentKey,
         httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-      });
+      }));
 
       for (let m = 0; m < preferredModels.length; m++) {
         let emittedAnyChunk = false;
