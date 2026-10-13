@@ -1,9 +1,6 @@
 import { LawModelItem } from '../types.ts';
-import { DEFAULT_STYLE_TEMPLATES } from '../data/styleTemplates.ts';
 
 export type { LawModelItem };
-
-const LEGACY_STORAGE_KEY = '_egyptian_legal_models_vault_v4';
 
 export function getActiveLawyerUserId(): string {
   try {
@@ -45,21 +42,13 @@ export function getAllLawModels(userId?: string): LawModelItem[] {
       }
     }
 
-    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (legacyRaw) {
-      const legacyParsed = JSON.parse(legacyRaw);
-      if (Array.isArray(legacyParsed)) {
-        const migrated = legacyParsed.filter((model: LawModelItem) => model.source !== 'system');
-        localStorage.setItem(scopedKey, JSON.stringify(migrated));
-        // One-time migration only: never leave an unscoped legacy vault that
-        // could be copied into a later account on the same device.
-        localStorage.removeItem(LEGACY_STORAGE_KEY);
-        return migrated;
-      }
-    }
+    // Do not automatically import the legacy unscoped vault into an account.
+    // That old key has no owner ID, so assigning it to whichever account logs in
+    // first can expose another lawyer's models. Keep the legacy data untouched
+    // for recovery; only read models stored under this account's scoped key.
 
     // Start with a genuinely empty user vault. The AI must learn style only
-    // from models the lawyer explicitly adds here.
+    // from models explicitly saved in this account's own vault.
     localStorage.setItem(scopedKey, JSON.stringify([]));
     return [];
   } catch (e) {
@@ -68,10 +57,7 @@ export function getAllLawModels(userId?: string): LawModelItem[] {
   }
 }
 
-export function saveLawModel(
-  model: Omit<LawModelItem, 'id' | 'createdAt'>,
-  userId?: string
-): LawModelItem {
+export function saveLawModel( model: Omit<LawModelItem, 'id' | 'createdAt'>, userId?: string ): LawModelItem {
   const current = getAllLawModels(userId);
   const newModel: LawModelItem = {
     ...model,
@@ -88,11 +74,7 @@ export function saveLawModel(
   return newModel;
 }
 
-export function updateLawModel(
-  id: string,
-  updates: Partial<LawModelItem>,
-  userId?: string
-): LawModelItem | null {
+export function updateLawModel( id: string, updates: Partial<LawModelItem>, userId?: string ): LawModelItem | null {
   const current = getAllLawModels(userId);
   const index = current.findIndex((m) => m.id === id);
   if (index === -1) return null;
@@ -125,15 +107,7 @@ export function clearAllLawModels(userId?: string): void {
   }
 }
 
-export function findSimilarModels(
-  criteria: {
-    courtType?: string;
-    briefType?: string;
-    judicialWorkType?: string;
-    factsOrSubject?: string;
-  },
-  userId?: string
-): LawModelItem[] {
+export function findSimilarModels( criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; }, userId?: string ): LawModelItem[] {
   const models = getAllLawModels(userId);
   if (!models || models.length === 0) return [];
 
@@ -218,15 +192,7 @@ export function findSimilarModels(
   return scored.map((s) => s.model);
 }
 
-export function getLawyerStyleContext(
-  searchCriteria?: {
-    courtType?: string;
-    briefType?: string;
-    judicialWorkType?: string;
-    factsOrSubject?: string;
-  } | string,
-  userId?: string
-): string {
+export function getLawyerStyleContext( searchCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; } | string, userId?: string ): string {
   let criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string } = {};
   if (typeof searchCriteria === 'string') {
     criteria = { courtType: searchCriteria };
@@ -251,46 +217,9 @@ export function getLawyerStyleContext(
     );
   });
 
-  const normalizedWorkType = (criteria.judicialWorkType || criteria.briefType || '').toLowerCase().trim();
-  const normalizedCourtType = (criteria.courtType || '').toLowerCase().trim();
-  const matchingStyleTemplates = DEFAULT_STYLE_TEMPLATES
-    .filter((template) => {
-      if (!normalizedWorkType && !normalizedCourtType) return template.isDefault === true;
-      const work = `${template.judicialWorkType} ${template.briefType}`.toLowerCase();
-      const court = template.courtType.toLowerCase();
-      return (normalizedWorkType && work.includes(normalizedWorkType)) ||
-        (normalizedCourtType && court.includes(normalizedCourtType));
-    })
-    .slice(0, 2);
+  // Drafting must be grounded in this account's own saved vault models only.
+  // Built-in sample templates are not lawyer-owned models and can mislead the
+  // user into thinking another person's/sample pleading came from their vault.
 
-  const templateBlocks = matchingStyleTemplates
-    .slice(0, modelBlocks.length ? 1 : 2)
-    .map((template, index) => {
-      const content = template.content || '';
-      const excerpt = content.length > 4500
-        ? `${content.slice(0, 2800)}\n\n[...جزء أوسط محذوف للاختصار... ]\n\n${content.slice(-1700)}`
-        : content;
-      return (
-        `[قالب أسلوب قضائي مرجعي رقم ${index + 1}: "${template.name}" — ${template.judicialWorkType}]\n` +
-        `\`\`\`\n${excerpt}\n\`\`\``
-      );
-    });
-
-  return `[خزانة المحامي والقوالب الأسلوبية — سياق إلزامي للمهمة الحالية]:
-هذا السياق جزء أساسي من طلب الصياغة وليس معلومة اختيارية. استخدم النماذج الشخصية في الخزانة أولاً لاستخلاص البصمة الكتابية الفعلية للمحامي: الديباجة، ترتيب الفقرات، عناوين الدفوع، الانتقال بين الوقائع والدفاع والطلبات، المصطلحات، ونمط الجمل. استخدم القوالب الأسلوبية المرجعية المرفقة فقط لاستكمال البنية عند الحاجة.
-
-${modelBlocks.length ? modelBlocks.join('\n\n') : '[لا توجد نماذج شخصية مطابقة في خزنة الحساب الحالي.]'}
-${templateBlocks.length ? `\n[القوالب الأسلوبية المرجعية من styleTemplates.ts]:\n${templateBlocks.join('\n\n')}\n` : ''}
-تعليمات إلزامية لاستخدام السياق:
-1) هذه النماذج الشخصية مرشحات أسلوبية وليست نصوصاً يجب نسخها. اختر أنت داخلياً النموذج الشخصي الأقرب إلى نوع المهمة ووقائع القضية والمحكمة وطريقة الدفوع، ولا تفترض أن أول نموذج مرفق هو الأفضل.
-2) إذا كان أكثر من نموذج مناسب، قارن بينها واستخلص البصمة المشتركة والأقرب للقضية، ثم اجعل النموذج الأشد صلة هو المرجع الأساسي للتنظيم والأسلوب.
-3) طبّق أثر النموذج المختار فعلياً في الصياغة النهائية: الديباجة، ترتيب الأقسام، عناوين الدفوع، تسلسل الحجج، المصطلحات، طول الفقرات، الانتقالات، وصياغة الطلبات، مع الحفاظ على أسلوب قانوني طبيعي غير روبوتي.
-4) لا تكتفِ بذكر أن الخزانة موجودة، ولا تنتقل إلى صياغة عامة إذا كان هناك نموذج شخصي مناسب يمكن محاكاة أسلوبه. يجب أن يشعر القارئ أن المستند كُتب بنفس المدرسة والأسلوب والترتيب المعتاد للمحامي، مع اختلاف الوقائع والمضمون بحسب القضية الجديدة.
-5) لا تنسخ وقائع أو أسماء أو أرقام قضايا أو تواريخ أو مستندات أو طلبات أو دفوع خاصة بالنماذج المرجعية إلى القضية الحالية.
-6) لا تستورد مادة قانونية أو حكماً أو رقم طعن من نموذج مرجعي لمجرد وجوده فيه؛ أي سند قانوني يجب أن يكون متحققاً من السياق الحالي أو يُذكر أنه يحتاج تحققاً.
-7) القضية الحالية ومدخلات المستخدم ومستنداته لها الأولوية المطلقة عند التعارض مع أي نموذج.
-8) إذا تعارض قالب افتراضي مع نموذج شخصي مناسب، فالأولوية للنموذج الشخصي.
-9) إذا لم يوجد نموذج شخصي مناسب، استخدم القوالب المرجعية للبنية والأسلوب العام فقط، وأنشئ المحتوى حصراً من وقائع القضية الحالية.
-10) لا تخبر المستخدم بعملية الاختيار الداخلية ولا تضف فقرة تشرح أنك استخدمت نموذجاً مرجعياً؛ أخرج المستند القانوني مباشرة بأسلوبه المستخلص.`;
+  return `[خزانة المحامي الشخصية — سياق إلزامي للمهمة الحالية]: هذا السياق جزء أساسي من طلب الصياغة وليس معلومة اختيارية. استخدم النماذج الشخصية المحفوظة في خزنة هذا الحساب لاستخلاص البصمة الكتابية الفعلية للمحامي: الديباجة، ترتيب الفقرات، عناوين الدفوع، الانتقال بين الوقائع والدفاع والطلبات، المصطلحات، ونمط الجمل. لا تستخدم نماذج افتراضية أو منسوبة إلى حساب آخر. ${modelBlocks.length ? modelBlocks.join('\n\n') : '[لا توجد نماذج شخصية مطابقة في خزنة الحساب الحالي.]'} تعليمات إلزامية لاستخدام السياق: 1) هذه النماذج الشخصية مرشحات أسلوبية وليست نصوصاً يجب نسخها. اختر أنت داخلياً النموذج الشخصي الأقرب إلى نوع المهمة ووقائع القضية والمحكمة وطريقة الدفوع، ولا تفترض أن أول نموذج مرفق هو الأفضل. 2) إذا كان أكثر من نموذج مناسب، قارن بينها واستخلص البصمة المشتركة والأقرب للقضية، ثم اجعل النموذج الأشد صلة هو المرجع الأساسي للتنظيم والأسلوب. 3) طبّق أثر النموذج المختار فعلياً في الصياغة النهائية: الديباجة، ترتيب الأقسام، عناوين الدفوع، تسلسل الحجج، المصطلحات، طول الفقرات، الانتقالات، وصياغة الطلبات، مع الحفاظ على أسلوب قانوني طبيعي غير روبوتي. 4) لا تكتفِ بذكر أن الخزانة موجودة، ولا تنتقل إلى صياغة عامة إذا كان هناك نموذج شخصي مناسب يمكن محاكاة أسلوبه. يجب أن يشعر القارئ أن المستند كُتب بنفس المدرسة والأسلوب والترتيب المعتاد للمحامي، مع اختلاف الوقائع والمضمون بحسب القضية الجديدة. 5) لا تنسخ وقائع أو أسماء أو أرقام قضايا أو تواريخ أو مستندات أو طلبات أو دفوع خاصة بالنماذج المرجعية إلى القضية الحالية. 6) لا تستورد مادة قانونية أو حكماً أو رقم طعن من نموذج مرجعي لمجرد وجوده فيه؛ أي سند قانوني يجب أن يكون متحققاً من السياق الحالي أو يُذكر أنه يحتاج تحققاً. 7) القضية الحالية ومدخلات المستخدم ومستنداته لها الأولوية المطلقة عند التعارض مع أي نموذج. 8) لا تستخدم أي قالب افتراضي أو نموذج غير محفوظ في خزنة هذا الحساب. 9) إذا لم يوجد نموذج شخصي مناسب في خزنة هذا الحساب، أنشئ المحتوى من وقائع القضية الحالية فقط دون اختلاق نموذج منسوب إلى محامٍ آخر. 10) لا تخبر المستخدم بعملية الاختيار الداخلية ولا تضف فقرة تشرح أنك استخدمت نموذجاً مرجعياً؛ أخرج المستند القانوني مباشرة بأسلوبه المستخلص.`;
 }
-
