@@ -43,6 +43,119 @@ export function formatFriendlyLegalAiError(rawMsg: string): string {
   return 'تعذر إتمام العملية حالياً، يرجى المحاولة لاحقاً...';
 }
 
+
+type SavedJobType = 'counter-brief' | 'deconstruct' | 'qualify' | 'refine';
+
+function makeJobId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  } catch {}
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+function jobStorageKey(type: SavedJobType, userId?: string): string {
+  const user = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return type === 'counter-brief'
+    ? `amin_judicial_draft_job_id_${user}`
+    : `amin_ai_job_${type}_${user}`;
+}
+
+async function requestSavedJob<T extends Record<string, any>>(
+  type: SavedJobType,
+  payload: T,
+  onChunk?: (text: string) => void,
+  userId?: string,
+  resumeId?: string,
+): Promise<string> {
+  const key = jobStorageKey(type, userId);
+  const storage = typeof localStorage !== 'undefined' ? localStorage : null;
+  const jobId = resumeId || storage?.getItem(key) || makeJobId();
+  if (storage) storage.setItem(key, jobId);
+
+  const headers = getRequestHeaders();
+  let created = Boolean(resumeId);
+  if (!resumeId) {
+    let receivedHttpResponse = false;
+    try {
+      const createResponse = await fetch('/api/gemini/jobs', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ taskType: type, payload, jobId }),
+      });
+      receivedHttpResponse = true;
+      if (!createResponse.ok) {
+        const error = await createResponse.json().catch(() => ({}));
+        if (storage) storage.removeItem(key);
+        throw new Error(error?.error || `تعذر حفظ المهمة (${createResponse.status}).`);
+      }
+      created = true;
+    } catch (err: any) {
+      // Only a transport failure can mean the server accepted the idempotent POST
+      // but its response was lost. HTTP/application errors must be shown immediately.
+      if (receivedHttpResponse || !storage?.getItem(key)) throw err;
+    }
+  }
+
+  let lastText = '';
+  let transientFailures = 0;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 1000 * 60 * 20) {
+    try {
+      const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        if (response.status === 404 && !created) throw new Error(error?.error || 'لم يتم العثور على المهمة المحفوظة.');
+        throw new Error(error?.error || `تعذر استرجاع حالة المهمة (${response.status}).`);
+      }
+      const data = await response.json();
+      transientFailures = 0;
+      const currentText = String(data?.partialResult || data?.result || '');
+      if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
+        const delta = currentText.slice(lastText.length);
+        if (delta && onChunk) onChunk(delta);
+        lastText = currentText;
+      } else if (currentText && !lastText) {
+        if (onChunk) onChunk(currentText);
+        lastText = currentText;
+      }
+
+      if (data.status === 'completed') {
+        const result = String(data.result || lastText);
+        if (storage) storage.removeItem(key);
+        return result;
+      }
+      if (data.status === 'failed') {
+        if (storage) storage.removeItem(key);
+        throw new Error(data.error || 'فشلت المهمة المحفوظة.');
+      }
+    } catch (err: any) {
+      if (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message)) throw err;
+      transientFailures++;
+      if (transientFailures >= 8) {
+        throw new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error('المهمة ما زالت قيد المعالجة. ارجع لاحقًا لاستعادة النتيجة المحفوظة دون بدء توليد جديد.');
+}
+
+export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
+  return requestSavedJob('counter-brief', {}, onChunk, userId, jobId);
+}
+
+
+export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
+  return requestSavedJob(type, {}, onChunk, userId, jobId);
+}
+
 async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, onChunk?: (text: string) => void ): Promise<any> {
   let lastError: any = null;
 
@@ -168,8 +281,8 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   };
 
   try {
-    const data = await postWithSilentRetry('/api/gemini/deconstruct', payload, 5, onChunk);
-    return cleanDirectResponse(data.result);
+    const result = await requestSavedJob('deconstruct', payload, onChunk, params.userId);
+    return cleanDirectResponse(result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
@@ -191,12 +304,12 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
 
   try {
     const { userId: _userId, ...requestParams } = params;
-    const data = await postWithSilentRetry('/api/gemini/counter-brief', {
+    const result = await requestSavedJob('counter-brief', {
       ...requestParams,
       effectiveWorkType,
       vaultContext: lawyerVaultContext,
-    }, 5, onChunk);
-    return cleanDirectResponse(data.result);
+    }, onChunk, params.userId);
+    return cleanDirectResponse(result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
@@ -209,12 +322,12 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
   }, userId);
 
   try {
-    const data = await postWithSilentRetry('/api/gemini/qualify', {
+    const result = await requestSavedJob('qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
       vaultContext: lawyerVaultContext,
-    }, 5, onChunk);
-    return cleanDirectResponse(data.result);
+    }, onChunk, userId);
+    return cleanDirectResponse(result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
@@ -227,12 +340,12 @@ export async function refineDraftText( draftText: string, enhancementType: 'more
   }, userId);
 
   try {
-    const data = await postWithSilentRetry('/api/gemini/refine', {
+    const result = await requestSavedJob('refine', {
       draftText,
       enhancementType,
       vaultContext: lawyerVaultContext,
-    }, 5, onChunk);
-    return cleanDirectResponse(data.result);
+    }, onChunk, userId);
+    return cleanDirectResponse(result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
