@@ -1,4 +1,4 @@
-import { getLawyerStyleContext } from '../utils/legalVaultService.ts';
+import { getLawyerStyleContext, getAllLawModels } from '../utils/legalVaultService.ts';
 import { getSessionToken } from './authService.ts';
 
 // Throttling control to prevent burst requests
@@ -184,13 +184,89 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   }
 }
 
+function draftJobStorageKey(userId?: string): string {
+  return `amin_judicial_draft_job_id_${String(userId || 'default')}`;
+}
+
+function saveDraftJobId(jobId: string, userId?: string) {
+  try { localStorage.setItem(draftJobStorageKey(userId), jobId); } catch {}
+}
+
+function clearDraftJobId(userId?: string) {
+  try { localStorage.removeItem(draftJobStorageKey(userId)); } catch {}
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForDraftJob(jobId: string, userId?: string, onChunk?: (text: string) => void): Promise<string> {
+  let deliveredLength = 0;
+  let consecutiveNetworkErrors = 0;
+  while (true) {
+    try {
+      const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
+        method: 'GET',
+        headers: getRequestHeaders(),
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        if (response.status >= 500 || response.status === 429) {
+          consecutiveNetworkErrors += 1;
+          await wait(Math.min(5000, 1200 + consecutiveNetworkErrors * 500));
+          continue;
+        }
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 404) clearDraftJobId(userId);
+        throw new Error(errorData.error || `تعذر استرجاع مهمة الصياغة (${response.status}).`);
+      }
+
+      consecutiveNetworkErrors = 0;
+      const job = await response.json();
+      const partial = typeof job.partialResult === 'string' ? job.partialResult : '';
+      if (partial.length > deliveredLength) {
+        onChunk?.(partial.slice(deliveredLength));
+        deliveredLength = partial.length;
+      }
+
+      if (job.status === 'completed') {
+        const result = typeof job.result === 'string' && job.result ? job.result : partial;
+        if (result.length > deliveredLength) onChunk?.(result.slice(deliveredLength));
+        clearDraftJobId(userId);
+        return cleanDirectResponse(result);
+      }
+      if (job.status === 'failed') {
+        clearDraftJobId(userId);
+        throw new Error(job.error || 'تعذر إكمال الصياغة.');
+      }
+      await wait(1600);
+    } catch (err: any) {
+      if (err instanceof TypeError || /failed to fetch|network request failed|networkerror|load failed|fetch failed/i.test(String(err?.message || ''))) {
+        consecutiveNetworkErrors += 1;
+        await wait(Math.min(6000, 1200 + consecutiveNetworkErrors * 700));
+        // Keep polling the same persisted job. Mobile browsers often pause networking
+        // while backgrounded; once the app is active again this loop resumes without
+        // starting another generation or consuming credits a second time.
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
+  if (!jobId) throw new Error('لا يوجد معرّف مهمة لاستعادتها.');
+  saveDraftJobId(jobId, userId);
+  return waitForDraftJob(jobId, userId, onChunk);
+}
+
 export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
-  const effectiveWorkType =
-    params.customJudicialWorkType?.trim()
-      ? params.customJudicialWorkType.trim()
-      : params.judicialWorkType || params.briefType || '';
-
+  const effectiveWorkType = params.customJudicialWorkType?.trim()
+    ? params.customJudicialWorkType.trim()
+    : params.judicialWorkType || params.briefType || '';
+  const personalModels = getAllLawModels(params.userId);
+  if (!personalModels.length) {
+    throw new Error('خزانة هذا الحساب لا تحتوي على نماذج شخصية محفوظة. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف نموذجاً من مكتبتك أولاً لضمان أن الصياغة تستند إلى أسلوبك لا إلى قالب عام.');
+  }
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: params.courtType,
     briefType: params.briefType,
@@ -200,12 +276,27 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
 
   try {
     const { userId: _userId, ...requestParams } = params;
-    const data = await postAiRequest('/api/gemini/counter-brief', {
-      ...requestParams,
-      effectiveWorkType,
-      vaultContext: lawyerVaultContext,
-    }, 1, onChunk);
-    return cleanDirectResponse(data.result);
+    const clientJobId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+          const r = Math.random() * 16 | 0;
+          return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+    // Persist the id before the request so a lost response after server-side
+    // job creation can still be recovered without creating a second job.
+    saveDraftJobId(clientJobId, params.userId);
+    const response = await fetch('/api/gemini/jobs', {
+      method: 'POST',
+      headers: getRequestHeaders(),
+      body: JSON.stringify({ ...requestParams, jobId: clientJobId, effectiveWorkType, vaultContext: lawyerVaultContext }),
+    });
+    const created = await response.json().catch(() => ({}));
+    if (!response.ok || !created.jobId) {
+      if (response.status >= 400 && response.status < 500) clearDraftJobId(params.userId);
+      throw new Error(created.error || `تعذر بدء مهمة الصياغة (${response.status}).`);
+    }
+    saveDraftJobId(String(created.jobId), params.userId);
+    return await waitForDraftJob(String(created.jobId), params.userId, onChunk);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
