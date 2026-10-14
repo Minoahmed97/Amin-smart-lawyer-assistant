@@ -1,12 +1,9 @@
-import { getLawyerStyleContext, getAllLawModels } from '../utils/legalVaultService.ts';
+import { getLawyerStyleContext } from '../utils/legalVaultService.ts';
 import { getSessionToken } from './authService.ts';
 
 // Throttling control to prevent burst requests
 let lastRequestTimestamp = 0;
 const MIN_REQUEST_INTERVAL_MS = 150;
-// Do not abort generation because of an elapsed-time or idle timer. The backend
-// sends keepalive events while the model is working; the hosting platform's
-// function-duration limit remains the final hard limit.
 
 async function throttleRequests(): Promise<void> {
   const now = Date.now();
@@ -29,14 +26,6 @@ function getRequestHeaders(): Record<string, string> {
 export function cleanDirectResponse(rawText: string): string {
   if (!rawText) return '';
   let text = rawText.trim();
-  // Strip leaked provider safety metadata, not legal content or actual safety controls.
-  text = text
-    .replace(/\b(?:user\s*)?safety\s*:\s*safe\b/gi, '')
-    .replace(/\bfinish[_ ]?reason\s*:\s*(?:stop|length|safety|end[_ ]?turn)\b/gi, '')
-    .replace(/\[\[AMIN_STREAM_COMPLETE_[A-Z0-9]+\]\]/g, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
   const introPatterns = [
     /^(?:[\s\*\#\-\>]*)(?:أهلاً|مرحباً|عزيزي|المحامي|إليك)[^\n]*\n+/i,
   ];
@@ -54,13 +43,12 @@ export function formatFriendlyLegalAiError(rawMsg: string): string {
   return 'تعذر إتمام العملية حالياً، يرجى المحاولة لاحقاً...';
 }
 
-async function postAiRequest( url: string, payload: any, maxRetries = 1, onChunk?: (text: string) => void ): Promise<any> {
+async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, onChunk?: (text: string) => void ): Promise<any> {
   let lastError: any = null;
 
-  // Provider/model/key failover is handled server-side. Do not silently repeat
-  // the whole legal generation from the browser and unexpectedly consume quota twice.
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let streamStarted = false;
+    let responseReceived = false;
     try {
       const requestPayload = onChunk ? { ...payload, stream: true } : payload;
       const response = await fetch(url, {
@@ -68,6 +56,7 @@ async function postAiRequest( url: string, payload: any, maxRetries = 1, onChunk
         headers: getRequestHeaders(),
         body: JSON.stringify(requestPayload),
       });
+      responseReceived = true;
 
       if (response.ok && onChunk && response.body) {
         const reader = response.body.getReader();
@@ -121,31 +110,63 @@ async function postAiRequest( url: string, payload: any, maxRetries = 1, onChunk
 
       if (response.status === 429 || response.status >= 500) {
         if (attempt < maxRetries - 1) {
-          await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
           continue;
         }
       }
 
       const errorData = await response.json().catch(() => ({}));
-      const responseError: any = new Error(errorData.error || `خطأ استجابة (${response.status})`);
-      responseError.retryable = response.status === 429 || response.status >= 500;
-      throw responseError;
+      throw new Error(errorData.error || `خطأ استجابة (${response.status})`);
     } catch (err: any) {
       lastError = err;
 
-      // Do not waste time retrying session/authentication or input errors.
-      // Network failures remain retryable; HTTP failures are retried only for 429/5xx.
-      if (err?.retryable === false) throw err;
-
       // Never restart an already visible stream, otherwise the user could see
-      // duplicated legal text.
+      // duplicated legal text. Also do not fall back after receiving a stream
+      // response: the server may already have started a billable generation.
       if (streamStarted) throw err;
 
+      const message = String(err?.message || err || '');
+      const isNetworkFailure =
+        err instanceof TypeError ||
+        /failed to fetch|network error|network request failed|load failed/i.test(message);
+
+      // Mobile browsers can fail to establish a streaming fetch while ordinary
+      // JSON fetches still work. Only try the non-streaming endpoint if fetch()
+      // itself never returned a Response; never repeat a generation after the
+      // server has accepted the streaming request.
+      if (
+        onChunk &&
+        !responseReceived &&
+        isNetworkFailure &&
+        attempt === maxRetries - 1
+      ) {
+        try {
+          const fallbackResponse = await fetch(url, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(payload),
+          });
+          const fallbackData = await fallbackResponse.json().catch(() => ({}));
+          if (!fallbackResponse.ok) {
+            throw new Error(
+              fallbackData?.error || `خطأ استجابة (${fallbackResponse.status})`
+            );
+          }
+          if (typeof fallbackData?.result !== 'string' || !fallbackData.result.trim()) {
+            throw new Error('وصل رد من الخادم لكنه لا يحتوي على نتيجة نصية.');
+          }
+          onChunk(fallbackData.result);
+          return fallbackData;
+        } catch (fallbackError: any) {
+          lastError = fallbackError;
+        }
+      }
+
       if (attempt < maxRetries - 1) {
-        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
         continue;
       }
-      throw err;
+      throw lastError;
     }
   }
 
@@ -177,96 +198,20 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   };
 
   try {
-    const data = await postAiRequest('/api/gemini/deconstruct', payload, 1, onChunk);
+    const data = await postWithSilentRetry('/api/gemini/deconstruct', payload, 5, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
 }
 
-function draftJobStorageKey(userId?: string): string {
-  return `amin_judicial_draft_job_id_${String(userId || 'default')}`;
-}
-
-function saveDraftJobId(jobId: string, userId?: string) {
-  try { localStorage.setItem(draftJobStorageKey(userId), jobId); } catch {}
-}
-
-function clearDraftJobId(userId?: string) {
-  try { localStorage.removeItem(draftJobStorageKey(userId)); } catch {}
-}
-
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function waitForDraftJob(jobId: string, userId?: string, onChunk?: (text: string) => void): Promise<string> {
-  let deliveredLength = 0;
-  let consecutiveNetworkErrors = 0;
-  while (true) {
-    try {
-      const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
-        method: 'GET',
-        headers: getRequestHeaders(),
-        cache: 'no-store',
-      });
-      if (!response.ok) {
-        if (response.status >= 500 || response.status === 429) {
-          consecutiveNetworkErrors += 1;
-          await wait(Math.min(5000, 1200 + consecutiveNetworkErrors * 500));
-          continue;
-        }
-        const errorData = await response.json().catch(() => ({}));
-        if (response.status === 404) clearDraftJobId(userId);
-        throw new Error(errorData.error || `تعذر استرجاع مهمة الصياغة (${response.status}).`);
-      }
-
-      consecutiveNetworkErrors = 0;
-      const job = await response.json();
-      const partial = typeof job.partialResult === 'string' ? job.partialResult : '';
-      if (partial.length > deliveredLength) {
-        onChunk?.(partial.slice(deliveredLength));
-        deliveredLength = partial.length;
-      }
-
-      if (job.status === 'completed') {
-        const result = typeof job.result === 'string' && job.result ? job.result : partial;
-        if (result.length > deliveredLength) onChunk?.(result.slice(deliveredLength));
-        clearDraftJobId(userId);
-        return cleanDirectResponse(result);
-      }
-      if (job.status === 'failed') {
-        clearDraftJobId(userId);
-        throw new Error(job.error || 'تعذر إكمال الصياغة.');
-      }
-      await wait(1600);
-    } catch (err: any) {
-      if (err instanceof TypeError || /failed to fetch|network request failed|networkerror|load failed|fetch failed/i.test(String(err?.message || ''))) {
-        consecutiveNetworkErrors += 1;
-        await wait(Math.min(6000, 1200 + consecutiveNetworkErrors * 700));
-        // Keep polling the same persisted job. Mobile browsers often pause networking
-        // while backgrounded; once the app is active again this loop resumes without
-        // starting another generation or consuming credits a second time.
-        continue;
-      }
-      throw err;
-    }
-  }
-}
-
-export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
-  if (!jobId) throw new Error('لا يوجد معرّف مهمة لاستعادتها.');
-  saveDraftJobId(jobId, userId);
-  return waitForDraftJob(jobId, userId, onChunk);
-}
-
 export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
-  const effectiveWorkType = params.customJudicialWorkType?.trim()
-    ? params.customJudicialWorkType.trim()
-    : params.judicialWorkType || params.briefType || '';
-  const personalModels = getAllLawModels(params.userId);
-  if (!personalModels.length) {
-    throw new Error('خزانة هذا الحساب لا تحتوي على نماذج شخصية محفوظة. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف نموذجاً من مكتبتك أولاً لضمان أن الصياغة تستند إلى أسلوبك لا إلى قالب عام.');
-  }
+  const effectiveWorkType =
+    params.customJudicialWorkType?.trim()
+      ? params.customJudicialWorkType.trim()
+      : params.judicialWorkType || params.briefType || '';
+
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: params.courtType,
     briefType: params.briefType,
@@ -276,27 +221,12 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
 
   try {
     const { userId: _userId, ...requestParams } = params;
-    const clientJobId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-          const r = Math.random() * 16 | 0;
-          return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-        });
-    // Persist the id before the request so a lost response after server-side
-    // job creation can still be recovered without creating a second job.
-    saveDraftJobId(clientJobId, params.userId);
-    const response = await fetch('/api/gemini/jobs', {
-      method: 'POST',
-      headers: getRequestHeaders(),
-      body: JSON.stringify({ ...requestParams, jobId: clientJobId, effectiveWorkType, vaultContext: lawyerVaultContext }),
-    });
-    const created = await response.json().catch(() => ({}));
-    if (!response.ok || !created.jobId) {
-      if (response.status >= 400 && response.status < 500) clearDraftJobId(params.userId);
-      throw new Error(created.error || `تعذر بدء مهمة الصياغة (${response.status}).`);
-    }
-    saveDraftJobId(String(created.jobId), params.userId);
-    return await waitForDraftJob(String(created.jobId), params.userId, onChunk);
+    const data = await postWithSilentRetry('/api/gemini/counter-brief', {
+      ...requestParams,
+      effectiveWorkType,
+      vaultContext: lawyerVaultContext,
+    }, 5, onChunk);
+    return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
   }
@@ -309,11 +239,11 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
   }, userId);
 
   try {
-    const data = await postAiRequest('/api/gemini/qualify', {
+    const data = await postWithSilentRetry('/api/gemini/qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
       vaultContext: lawyerVaultContext,
-    }, 1, onChunk);
+    }, 5, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
@@ -327,11 +257,11 @@ export async function refineDraftText( draftText: string, enhancementType: 'more
   }, userId);
 
   try {
-    const data = await postAiRequest('/api/gemini/refine', {
+    const data = await postWithSilentRetry('/api/gemini/refine', {
       draftText,
       enhancementType,
       vaultContext: lawyerVaultContext,
-    }, 1, onChunk);
+    }, 5, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
