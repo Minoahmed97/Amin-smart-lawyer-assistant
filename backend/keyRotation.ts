@@ -381,6 +381,9 @@ export async function executeWithKeyRotation<T>(
           });
           const kind = getGeminiErrorKind(err);
           if (kind === 'invalid') permanentlyInvalidKeys.add(currentKey);
+          // A 503/high-demand response is usually model-specific and transient.
+          // Try the next configured Gemini model with the same key before rotating keys.
+          if (kind === 'temporary' && m < preferredModels.length - 1) continue;
           if (kind === 'quota' || kind === 'temporary' || kind === 'invalid') {
             activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
             break;
@@ -502,6 +505,9 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
           const kind = getGeminiErrorKind(err);
           if (kind === 'invalid') permanentlyInvalidKeys.add(currentKey);
+          // If Gemini is overloaded (503/504), try another model before moving
+          // to another key. Never restart after visible output (handled above).
+          if (kind === 'temporary' && m < preferredModels.length - 1) continue;
           if (kind === 'quota' || kind === 'temporary' || kind === 'invalid') {
             activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
             break;
