@@ -6,6 +6,7 @@ import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import {
   refineDraftText,
   draftCounterBrief,
+  resumeDraftCounterBrief,
 } from '../services/aiService.ts';
 import { getAllLawModels } from '../utils/legalVaultService.ts';
 import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
@@ -117,7 +118,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   useEffect(() => {
     const models = getAllLawModels(userId);
     setVaultModelsCount(models.length);
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     persistentStorage.setJSON('amin_judicial_draft_form', formData);
@@ -167,6 +168,37 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
   const [draftError, setDraftError] = useState<string>('');
 
+  // Recover an in-flight server-side job after refresh, app backgrounding, or reopening.
+  useEffect(() => {
+    let active = true;
+    let jobId = '';
+    try { jobId = localStorage.getItem(`amin_judicial_draft_job_id_${String(userId || 'default')}`) || ''; } catch {}
+    if (!jobId) return () => { active = false; };
+    setIsLoading(true);
+    setDraftError('');
+    setGeneratedBrief('');
+    void resumeDraftCounterBrief(jobId, (chunk) => {
+      if (active) setGeneratedBrief((current) => current + chunk);
+    }, userId).then(async (result) => {
+      if (!active) return;
+      setGeneratedBrief(result);
+      persistentStorage.setItem('amin_judicial_draft_result', result);
+      try {
+        const account = await getCurrentAccount();
+        onCreditsUpdated(account.credits);
+        setRefineNote(`اكتملت المهمة المحفوظة. الرصيد المتبقي: ${account.credits}.`);
+      } catch {
+        setRefineNote('اكتملت مهمة الصياغة المحفوظة.');
+      }
+    }).catch((err: any) => {
+      if (active) setDraftError(err?.message || 'تعذر استعادة مهمة الصياغة المحفوظة.');
+    }).finally(() => {
+      if (active) setIsLoading(false);
+    });
+    return () => { active = false; };
+  }, [userId]);
+
+
   const generateDraft = async () => {
     if (isUploadingDoc) return;
     if (!formData.facts.trim()) {
@@ -206,7 +238,16 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       }
     } catch (err: any) {
       console.warn('Draft error:', err);
-      setDraftError(err?.message || 'تعذر استكمال الصياغة حالياً.');
+      const rawMessage = String(err?.message || '');
+      const looksLikeNetworkFailure = /failed to fetch|network request failed|networkerror|load failed|fetch failed/i.test(rawMessage);
+      if (looksLikeNetworkFailure) {
+        const partialText = persistentStorage.getItem('amin_judicial_draft_result', '');
+        setDraftError(partialText
+          ? 'انقطع الاتصال أثناء التوليد. تم الاحتفاظ بالجزء الذي وصل بالفعل؛ راجعه قبل إعادة المحاولة حتى لا تكرر طلباً أو تستهلك رصيداً إضافياً.'
+          : 'انقطع الاتصال أثناء التوليد قبل وصول النتيجة. تحقق من الاتصال قبل إعادة المحاولة لتجنب تكرار الطلب.');
+      } else {
+        setDraftError(err?.message || 'تعذر استكمال الصياغة حالياً.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -645,6 +686,11 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
               </>
             )}
           </button>
+          {vaultModelsCount === 0 && (
+            <div role="status" className="mt-2 rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-200">
+              تنبيه: لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لن يبدأ التوليد حتى تضيف نموذجاً من مكتبتك، وذلك لمنع إنشاء صياغة عامة على أنها مستند مستند إلى أسلوبك.
+            </div>
+          )}
         </div>
 
         {/* Output Panel (7 cols) */}
