@@ -1,6 +1,6 @@
 import { getCurrentAccount } from '../services/authService.ts';
 import React, { useState, useEffect } from 'react';
-import { qualifyLegalCase } from '../services/aiService.ts';
+import { qualifyLegalCase, resumeSavedAiTask } from '../services/aiService.ts';
 import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -102,7 +102,32 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     persistentStorage.removeItem('judicial_qualify_docname');
   };
 
+
   const [qualifyError, setQualifyError] = useState<string>('');
+
+  useEffect(() => {
+    let active = true;
+    let jobId = '';
+    const userId = getActiveLawyerUserId();
+    const storageUser = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    try { jobId = localStorage.getItem(`amin_ai_job_qualify_${storageUser}`) || ''; } catch {}
+    if (!jobId) return () => { active = false; };
+    setIsLoading(true);
+    setQualifyError('');
+    void resumeSavedAiTask('qualify', jobId, (chunk) => {
+      if (active) setQualificationResult((current) => current + chunk);
+    }, userId).then((result) => {
+      if (!active) return;
+      setQualificationResult(result);
+      persistentStorage.setItem('judicial_qualify_result', result);
+    }).catch((err: any) => {
+      if (active) setQualifyError(err?.message || 'تعذر استعادة المهمة المحفوظة.');
+    }).finally(() => {
+      if (active) setIsLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
+
 
   const handleQualify = async (e: React.FormEvent) => {
     e.preventDefault();
