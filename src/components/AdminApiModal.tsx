@@ -118,7 +118,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   const [keyAddingLoading, setKeyAddingLoading] = useState<boolean>(false);
   const [keyActionMsg, setKeyActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [aiHealthLoading, setAiHealthLoading] = useState(false);
-  const [aiHealthResult, setAiHealthResult] = useState<{ ok: boolean; message: string; latencyMs?: number; checkedKeys?: number; cloudKeysReadable?: boolean } | null>(null);
+  const [aiHealthResult, setAiHealthResult] = useState<{ ok: boolean; tested?: boolean; message: string; latencyMs?: number; checkedKeys?: number; cloudKeysReadable?: boolean; routing?: { primary?: string; fallback?: string }; providers?: { openrouter?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; model?: string }; gemini?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; keysCount?: number; keysChecked?: number; cloudKeysReadable?: boolean; model?: string } } } | null>(null);
 
   const [managedPackages, setManagedPackages] = useState<PlatformPackage[]>([]);
   const [packageSaveSuccess, setPackageSaveSuccess] = useState<string>('');
@@ -243,7 +243,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
     setAiHealthResult(null);
     try {
       const res = await fetch('/api/admin/ai-health', {
-        method: 'GET',
+        method: 'POST',
         headers: { 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' },
         cache: 'no-store',
       });
@@ -254,6 +254,9 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
         latencyMs: data?.latencyMs,
         checkedKeys: data?.checkedKeys,
         cloudKeysReadable: data?.cloudKeysReadable,
+        tested: data?.tested === true,
+        providers: data?.providers,
+        routing: data?.routing,
       });
     } catch (err: any) {
       setAiHealthResult({ ok: false, message: err?.message || 'تعذر الوصول إلى واجهة API من هذا المتصفح.' });
@@ -282,6 +285,9 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
           latencyMs: data?.latencyMs,
           checkedKeys: data?.checkedKeys,
           cloudKeysReadable: data?.cloudKeysReadable,
+          tested: data?.tested === true,
+          providers: data?.providers,
+          routing: data?.routing,
         });
         if (Array.isArray(data?.keyResults)) {
           setKeyActionMsg({ type: 'success', text: `آخر فحص تلقائي: ${data.keyResults.filter((x: any) => x.status === 'working').length} مفتاح يعمل، ${data.keyResults.filter((x: any) => x.status === 'quota_exhausted').length} حصة مستنفدة.` });
@@ -859,11 +865,11 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                         </h4>
                         <span className="text-[11px] bg-emerald-950 text-emerald-300 border border-emerald-500/50 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                          مفعل ونشط
+                          إعدادات التدوير
                         </span>
                       </div>
                       <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
-                        نظام التدوير الصامت يتجاوز قيود الاستهلاك وينقل الطلب بسلاسة بين المفاتيح.
+                        يحاول النظام استخدام مفاتيح ومزوّدات بديلة عند فشل الطلب؛ ولا يتجاوز حدود الحصص التي يفرضها كل مزوّد.
                       </p>
                     </div>
                     <button
@@ -885,7 +891,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                           فحص وصول الذكاء الاصطناعي للعميل
                         </h5>
                         <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                          يختبر وصول الطلب من واجهة الموقع إلى السيرفر ثم يتأكد من استجابة Gemini، دون عرض أي مفتاح سري.
+                          فحص الإعدادات التلقائي لا يولّد نصًا. الاختبار الفعلي يرسل طلب توليد قصيرًا واحدًا إلى OpenRouter ومفتاح Gemini واحدًا فقط؛ قد يستهلك حصة بسيطة، ولا يعمل إلا عند ضغط الزر.
                         </p>
                       </div>
                       <button
@@ -895,16 +901,35 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                         className="shrink-0 px-4 py-2 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-2"
                       >
                         <RefreshCw className={`w-4 h-4 ${aiHealthLoading ? 'animate-spin' : ''}`} />
-                        {aiHealthLoading ? 'جارٍ فحص الاتصال...' : 'افحص اتصال العميل'}
+                        {aiHealthLoading ? 'جارٍ اختبار المزوّدين...' : 'اختبار فعلي للمزوّدين'}
                       </button>
                     </div>
                     {aiHealthResult && (
-                      <div className={`rounded-lg border p-3 text-xs ${aiHealthResult.ok ? 'border-emerald-600 bg-emerald-950/60 text-emerald-200' : 'border-rose-600 bg-rose-950/60 text-rose-200'}`} role="status">
+                      <div className={`rounded-lg border p-3 text-xs ${!aiHealthResult.tested ? 'border-slate-600 bg-slate-900/70 text-slate-200' : aiHealthResult.ok ? 'border-emerald-600 bg-emerald-950/60 text-emerald-200' : 'border-rose-600 bg-rose-950/60 text-rose-200'}`} role="status">
                         <div className="font-bold flex items-center gap-2">
-                          {aiHealthResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-                          {aiHealthResult.ok ? 'الاتصال يعمل' : 'فشل الفحص'}
+                          {!aiHealthResult.tested ? <RefreshCw className="w-4 h-4" /> : aiHealthResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                          {aiHealthResult.tested ? (aiHealthResult.providers?.openrouter?.ok === true && aiHealthResult.providers?.gemini?.ok === true ? 'نجح التوليد من المزوّدين' : aiHealthResult.ok ? 'التوليد يعمل عبر مزوّد واحد على الأقل' : 'فشل اختبار التوليد من المزوّدين') : 'حالة الإعدادات فقط — التوليد لم يُختبر'}
                         </div>
                         <p className="mt-1 leading-relaxed">{aiHealthResult.message}</p>
+                        {aiHealthResult.routing && <p className="mt-1 opacity-90">المزوّد الأساسي: {aiHealthResult.routing.primary === 'gemini' ? 'Gemini' : 'OpenRouter'} — البديل: {aiHealthResult.routing.fallback === 'gemini' ? 'Gemini' : 'OpenRouter'}</p>}
+                        {aiHealthResult.providers && (
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            {(['openrouter', 'gemini'] as const).map((provider) => {
+                              const result = aiHealthResult.providers?.[provider];
+                              if (!result) return null;
+                              const label = provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
+                              const status = result.ok === true ? 'نجح التوليد' : result.ok === false ? 'فشل التوليد' : result.configured ? 'مُعدّ — لم يُختبر' : 'غير مُعدّ';
+                              return (
+                                <div key={provider} className="rounded-lg border border-slate-600 bg-slate-900/70 p-2">
+                                  <div className="font-bold">{label}: {status}</div>
+                                  <div className="mt-1 leading-relaxed">{result.message}</div>
+                                  {'keysCount' in result && typeof result.keysCount === 'number' && <div className="mt-1 opacity-80">عدد مفاتيح Gemini: {result.keysCount}</div>}
+                                  {typeof result.latencyMs === 'number' && <div className="mt-1 opacity-80">زمن الاختبار: {result.latencyMs} مللي ثانية</div>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                         <p className="mt-2 opacity-90">
                           {typeof aiHealthResult.latencyMs === 'number' ? `زمن الفحص: ${aiHealthResult.latencyMs} مللي ثانية` : ''}
                           {typeof aiHealthResult.checkedKeys === 'number' ? ` • المفاتيح التي تم فحصها: ${aiHealthResult.checkedKeys}` : ''}
