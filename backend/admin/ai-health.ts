@@ -1,6 +1,6 @@
 import { requireAdmin } from '../auth.ts';
 import { getOpenRouterModels } from '../openrouterAdapter.ts';
-import { getVercelGeminiKeys, GEMINI_MODELS } from '../keyRotation.ts';
+import { getVercelGeminiKeys } from '../keyRotation.ts';
 import { fetchServerCloudGeminiKeys } from '../supabaseSync.ts';
 
 function shortError(value: unknown): string {
@@ -12,8 +12,12 @@ async function testOpenRouterGeneration() {
   if (!apiKey) return { configured: false, ok: false, latencyMs: 0, message: 'مفتاح OpenRouter غير مضبوط على Vercel.' };
 
   const startedAt = Date.now();
+  const models = getOpenRouterModels().slice(0, 2);
   let lastMessage = 'لم يرجع أي نموذج نتيجة.';
-  for (const model of getOpenRouterModels().slice(0, 1)) {
+  // One tiny generation attempt on the configured router. If the router returns
+  // HTTP 200 without actual text, try at most one explicit free model.
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
     try {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -29,14 +33,33 @@ async function testOpenRouterGeneration() {
       const raw = await response.text();
       let data: any = {};
       try { data = raw ? JSON.parse(raw) : {}; } catch {}
-      if (response.ok && String(data?.choices?.[0]?.message?.content || '').trim()) {
-        return { configured: true, ok: true, latencyMs: Date.now() - startedAt, model, message: `نجح توليد نص فعلي من OpenRouter عبر ${model}.` };
+      const choice = data?.choices?.[0];
+      const content = choice?.message?.content;
+      const generatedText = typeof content === 'string'
+        ? content.trim()
+        : Array.isArray(content)
+          ? content.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('').trim()
+          : '';
+      if (response.ok && generatedText) {
+        return {
+          configured: true, ok: true, latencyMs: Date.now() - startedAt,
+          model: data?.model || model,
+          message: `نجح توليد نص فعلي من OpenRouter عبر ${data?.model || model}.`,
+        };
       }
-      lastMessage = `النموذج ${model} فشل (${response.status}): ${shortError(data?.error?.message || raw || response.statusText)}`;
-      // Keep this diagnostic deliberately low-cost: test only one configured model per click.
-      if (![400, 401, 402, 403, 404, 408, 413, 429].includes(response.status) && response.status < 500) break;
+
+      const finishReason = choice?.finish_reason ? `؛ finish_reason=${String(choice.finish_reason).slice(0, 60)}` : '';
+      const returnedModel = data?.model ? `؛ النموذج الفعلي=${String(data.model).slice(0, 100)}` : '';
+      const providerError = data?.error?.message || data?.error?.metadata?.raw || '';
+      const detail = providerError || (response.ok
+        ? `وصل رد HTTP ${response.status} لكن بدون نص في choices[0].message.content${finishReason}${returnedModel}.`
+        : (raw || response.statusText));
+      lastMessage = `النموذج ${model} فشل (${response.status}): ${shortError(detail)}`;
+      // Retry only once for an empty HTTP-200 response or temporary server error.
+      if (i + 1 >= models.length || !(response.ok || response.status >= 500 || response.status === 408)) break;
     } catch (error: any) {
       lastMessage = shortError(error?.name === 'TimeoutError' ? 'تجاوز اختبار OpenRouter 20 ثانية دون نتيجة.' : error?.message);
+      break;
     }
   }
   return { configured: true, ok: false, latencyMs: Date.now() - startedAt, message: lastMessage };
@@ -54,33 +77,75 @@ async function testGeminiGeneration() {
   }
   if (!keys.length) return { configured: false, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked: 0, message: 'لا توجد مفاتيح Gemini في متغيرات Vercel أو لوحة الإدارة.' };
 
-  let lastMessage = 'لم يرجع Gemini نتيجة.';
-  let keysChecked = 0;
-  // Keep this diagnostic deliberately low-cost: test only one configured Gemini key per click.
-  for (const key of keys.slice(0, 1)) {
-    keysChecked++;
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODELS[0])}:generateContent`, {
-        method: 'POST',
-        headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: 'Reply with exactly OK.' }] }], generationConfig: { maxOutputTokens: 8, temperature: 0 } }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const raw = await response.text();
-      let data: any = {};
-      try { data = raw ? JSON.parse(raw) : {}; } catch {}
-      const generatedText = (data?.candidates?.[0]?.content?.parts || []).map((part: any) => part?.text || '').join('').trim();
-      if (response.ok && generatedText) {
-        return { configured: true, ok: true, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked, model: GEMINI_MODELS[0], message: `نجح توليد نص فعلي من Gemini عبر ${GEMINI_MODELS[0]}.` };
-      }
-      lastMessage = `فشل اختبار Gemini بالمفتاح رقم ${keysChecked} (${response.status}): ${shortError(data?.error?.message || raw || response.statusText)}`;
-      if (response.status === 401) continue;
-      if (response.status === 429 || response.status >= 500 || response.status === 403 || response.status === 404) continue;
-    } catch (error: any) {
-      lastMessage = shortError(error?.name === 'TimeoutError' ? 'تجاوز اختبار Gemini 15 ثانية دون نتيجة.' : error?.message);
+  // Read model metadata first (no text generation). Pick a currently listed model
+  // that explicitly supports generateContent, then make one tiny generation call.
+  let keysChecked = 1;
+  const key = keys[0];
+  try {
+    const listResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=100', {
+      method: 'GET',
+      headers: { 'x-goog-api-key': key },
+      signal: AbortSignal.timeout(10000),
+    });
+    const listRaw = await listResponse.text();
+    let listData: any = {};
+    try { listData = listRaw ? JSON.parse(listRaw) : {}; } catch {}
+    if (!listResponse.ok) {
+      const message = String(listData?.error?.message || listRaw || listResponse.statusText);
+      return {
+        configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
+        message: `تعذر التحقق من مفتاح Gemini أو قائمة النماذج (${listResponse.status}): ${shortError(message)}`,
+      };
     }
+
+    const models = Array.isArray(listData?.models) ? listData.models : [];
+    const model = models.find((item: any) =>
+      typeof item?.name === 'string' &&
+      Array.isArray(item?.supportedGenerationMethods) &&
+      item.supportedGenerationMethods.includes('generateContent')
+    );
+    if (!model?.name) {
+      return {
+        configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
+        message: 'المفتاح وصل إلى Gemini، لكن قائمة النماذج لا تعرض نموذجًا يدعم generateContent.',
+      };
+    }
+
+    const modelName = String(model.name).replace(/^models\//, '');
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`, {
+      method: 'POST',
+      headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: 'Reply with exactly OK.' }] }],
+        generationConfig: { maxOutputTokens: 8, temperature: 0 },
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const raw = await response.text();
+    let data: any = {};
+    try { data = raw ? JSON.parse(raw) : {}; } catch {}
+    const generatedText = (data?.candidates?.[0]?.content?.parts || [])
+      .map((part: any) => part?.text || '').join('').trim();
+    if (response.ok && generatedText) {
+      return {
+        configured: true, ok: true, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
+        model: modelName,
+        message: `نجح توليد نص فعلي من Gemini عبر النموذج المتاح ${modelName}.`,
+      };
+    }
+
+    const status = Number(data?.error?.code || response.status);
+    const detail = data?.error?.message || raw || response.statusText;
+    return {
+      configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked, model: modelName,
+      message: `فشل توليد Gemini (${status}) عبر ${modelName}: ${shortError(detail)}`,
+    };
+  } catch (error: any) {
+    return {
+      configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
+      message: shortError(error?.name === 'TimeoutError' ? 'تجاوز اختبار Gemini مهلة الاتصال.' : error?.message),
+    };
   }
-  return { configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked, message: lastMessage };
 }
 
 /** * GET is metadata-only and never consumes model-generation quota. * POST is an explicit admin action that tests real text generation on both providers. */
