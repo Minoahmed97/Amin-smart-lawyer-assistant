@@ -99,11 +99,23 @@ async function testGeminiGeneration() {
     }
 
     const models = Array.isArray(listData?.models) ? listData.models : [];
-    const model = models.find((item: any) =>
+    const generationModels = models.filter((item: any) =>
       typeof item?.name === 'string' &&
       Array.isArray(item?.supportedGenerationMethods) &&
       item.supportedGenerationMethods.includes('generateContent')
     );
+    // Prefer current stable Flash models. Gemini 2.5 Flash can still appear in
+    // some model listings even when Google restricts it for new API users.
+    const preferredModelNames = [
+      'models/gemini-3.8-flash',
+      'models/gemini-3.6-flash',
+      'models/gemini-3.5-flash-lite',
+      'models/gemini-3.5-flash',
+    ];
+    const model =
+      preferredModelNames.map((name) => generationModels.find((item: any) => item.name === name)).find(Boolean) ||
+      generationModels.find((item: any) => !/gemini-2\.5-(flash|pro)/i.test(String(item.name))) ||
+      generationModels[0];
     if (!model?.name) {
       return {
         configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
