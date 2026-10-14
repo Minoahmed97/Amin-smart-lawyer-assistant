@@ -48,15 +48,17 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let streamStarted = false;
-    let responseReceived = false;
     try {
-      const requestPayload = onChunk ? { ...payload, stream: true } : payload;
+      // Use the stable JSON response path for legal generation. The current mobile
+      // WebView intermittently drops long-lived SSE/NDJSON streams and reports
+      // a generic network error even when the server-side handler is healthy.
+      // Existing handlers support ordinary JSON requests as well.
+      const requestPayload = payload;
       const response = await fetch(url, {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify(requestPayload),
       });
-      responseReceived = true;
 
       if (response.ok && onChunk && response.body) {
         const reader = response.body.getReader();
@@ -105,7 +107,13 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
       }
 
       if (response.ok) {
-        return await response.json();
+        const data = await response.json();
+        if (onChunk && typeof data?.result === 'string' && data.result) {
+          // Preserve the existing UI callback contract; deliver the completed
+          // result once instead of progressive chunks.
+          onChunk(data.result);
+        }
+        return data;
       }
 
       if (response.status === 429 || response.status >= 500) {
@@ -121,52 +129,14 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
       lastError = err;
 
       // Never restart an already visible stream, otherwise the user could see
-      // duplicated legal text. Also do not fall back after receiving a stream
-      // response: the server may already have started a billable generation.
+      // duplicated legal text.
       if (streamStarted) throw err;
-
-      const message = String(err?.message || err || '');
-      const isNetworkFailure =
-        err instanceof TypeError ||
-        /failed to fetch|network error|network request failed|load failed/i.test(message);
-
-      // Mobile browsers can fail to establish a streaming fetch while ordinary
-      // JSON fetches still work. Only try the non-streaming endpoint if fetch()
-      // itself never returned a Response; never repeat a generation after the
-      // server has accepted the streaming request.
-      if (
-        onChunk &&
-        !responseReceived &&
-        isNetworkFailure &&
-        attempt === maxRetries - 1
-      ) {
-        try {
-          const fallbackResponse = await fetch(url, {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(payload),
-          });
-          const fallbackData = await fallbackResponse.json().catch(() => ({}));
-          if (!fallbackResponse.ok) {
-            throw new Error(
-              fallbackData?.error || `خطأ استجابة (${fallbackResponse.status})`
-            );
-          }
-          if (typeof fallbackData?.result !== 'string' || !fallbackData.result.trim()) {
-            throw new Error('وصل رد من الخادم لكنه لا يحتوي على نتيجة نصية.');
-          }
-          onChunk(fallbackData.result);
-          return fallbackData;
-        } catch (fallbackError: any) {
-          lastError = fallbackError;
-        }
-      }
 
       if (attempt < maxRetries - 1) {
         await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
         continue;
       }
-      throw lastError;
+      throw err;
     }
   }
 
