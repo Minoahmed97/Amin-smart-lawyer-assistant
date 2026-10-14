@@ -73,91 +73,109 @@ async function testGeminiGeneration() {
     for (const key of await fetchServerCloudGeminiKeys()) if (!keys.includes(key)) keys.push(key);
   } catch (error) {
     cloudKeysReadable = false;
-    if (!keys.length) return { configured: false, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked: 0, message: `تعذر قراءة مفاتيح Gemini من Supabase: ${shortError((error as any)?.message)}` };
+    if (!keys.length) return { configured: false, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked: 0, attempts: 0, message: `تعذر قراءة مفاتيح Gemini من Supabase: ${shortError((error as any)?.message)}` };
   }
-  if (!keys.length) return { configured: false, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked: 0, message: 'لا توجد مفاتيح Gemini في متغيرات Vercel أو لوحة الإدارة.' };
+  if (!keys.length) return { configured: false, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked: 0, attempts: 0, message: 'لا توجد مفاتيح Gemini في متغيرات Vercel أو لوحة الإدارة.' };
 
-  // Read model metadata first (no text generation). Pick a currently listed model
-  // that explicitly supports generateContent, then make one tiny generation call.
-  let keysChecked = 1;
-  const key = keys[0];
-  try {
-    const listResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=100', {
-      method: 'GET',
-      headers: { 'x-goog-api-key': key },
-      signal: AbortSignal.timeout(10000),
-    });
-    const listRaw = await listResponse.text();
-    let listData: any = {};
-    try { listData = listRaw ? JSON.parse(listRaw) : {}; } catch {}
-    if (!listResponse.ok) {
-      const message = String(listData?.error?.message || listRaw || listResponse.statusText);
-      return {
-        configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
-        message: `تعذر التحقق من مفتاح Gemini أو قائمة النماذج (${listResponse.status}): ${shortError(message)}`,
-      };
+  // Listing models is metadata-only. A 503 from one model means that endpoint is
+  // overloaded, not that the key is invalid. Test a few alternate supported
+  // models/keys with tiny outputs to avoid unnecessary quota usage.
+  let keysChecked = 0;
+  let attempts = 0;
+  const triedModels: string[] = [];
+  let lastFailure = 'لم يرجع أي نموذج نتيجة.';
+  const maxGenerationAttempts = 4;
+  const preferredModelNames = [
+    'models/gemini-3.8-flash',
+    'models/gemini-3.6-flash',
+    'models/gemini-3.5-flash',
+    'models/gemini-3.5-flash-lite',
+  ];
+
+  for (const key of keys.slice(0, 3)) {
+    keysChecked += 1;
+    try {
+      const listResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=100', {
+        method: 'GET',
+        headers: { 'x-goog-api-key': key },
+        signal: AbortSignal.timeout(8000),
+      });
+      const listRaw = await listResponse.text();
+      let listData: any = {};
+      try { listData = listRaw ? JSON.parse(listRaw) : {}; } catch {}
+      if (!listResponse.ok) {
+        const status = Number(listData?.error?.code || listResponse.status);
+        lastFailure = `تعذر قراءة قائمة نماذج Gemini (${status}): ${shortError(listData?.error?.message || listRaw || listResponse.statusText)}`;
+        continue;
+      }
+
+      const models = Array.isArray(listData?.models) ? listData.models : [];
+      const generationModels = models.filter((item: any) =>
+        typeof item?.name === 'string' &&
+        Array.isArray(item?.supportedGenerationMethods) &&
+        item.supportedGenerationMethods.includes('generateContent') &&
+        !/gemini-2\.5-(flash|pro)/i.test(String(item.name))
+      );
+      const candidates = [
+        ...preferredModelNames.map((name) => generationModels.find((item: any) => item.name === name)).filter(Boolean),
+        ...generationModels.filter((item: any) => !preferredModelNames.includes(item.name)),
+      ].filter((item: any, index: number, arr: any[]) => arr.findIndex((x) => x.name === item.name) === index).slice(0, 4);
+
+      if (!candidates.length) {
+        lastFailure = 'المفتاح وصل إلى Gemini، لكن قائمة النماذج لا تعرض نموذجًا متاحًا يدعم generateContent.';
+        continue;
+      }
+
+      for (const model of candidates) {
+        if (attempts >= maxGenerationAttempts) break;
+        const modelName = String(model.name).replace(/^models\//, '');
+        triedModels.push(modelName);
+        attempts += 1;
+        try {
+          const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`, {
+            method: 'POST',
+            headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: 'Reply with exactly OK.' }] }],
+              generationConfig: { maxOutputTokens: 4, temperature: 0 },
+            }),
+            signal: AbortSignal.timeout(10000),
+          });
+          const raw = await response.text();
+          let data: any = {};
+          try { data = raw ? JSON.parse(raw) : {}; } catch {}
+          const generatedText = (data?.candidates?.[0]?.content?.parts || [])
+            .map((part: any) => part?.text || '').join('').trim();
+          if (response.ok && generatedText) {
+            return {
+              configured: true, ok: true, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked, attempts,
+              model: modelName, triedModels,
+              message: `نجح توليد نص فعلي من Gemini عبر ${modelName}${triedModels.length > 1 ? ` بعد تجاوز نموذج مشغول (${triedModels.slice(0, -1).join('، ')})` : ''}.`,
+            };
+          }
+          const status = Number(data?.error?.code || response.status);
+          const detail = data?.error?.message || raw || response.statusText;
+          lastFailure = `فشل توليد Gemini (${status}) عبر ${modelName}: ${shortError(detail)}`;
+          // 503/404/400: try another model. Credential/quota errors move to the next key.
+          if (status === 401 || status === 403 || status === 429) break;
+        } catch (error: any) {
+          lastFailure = shortError(error?.name === 'TimeoutError' ? `تجاوز اختبار Gemini مهلة الاتصال عبر ${modelName}.` : error?.message);
+        }
+      }
+    } catch (error: any) {
+      lastFailure = shortError(error?.name === 'TimeoutError' ? 'تجاوز اختبار قائمة نماذج Gemini مهلة الاتصال.' : error?.message);
     }
-
-    const models = Array.isArray(listData?.models) ? listData.models : [];
-    const generationModels = models.filter((item: any) =>
-      typeof item?.name === 'string' &&
-      Array.isArray(item?.supportedGenerationMethods) &&
-      item.supportedGenerationMethods.includes('generateContent')
-    );
-    // Prefer current stable Flash models. Gemini 2.5 Flash can still appear in
-    // some model listings even when Google restricts it for new API users.
-    const preferredModelNames = [
-      'models/gemini-3.8-flash',
-      'models/gemini-3.6-flash',
-      'models/gemini-3.5-flash-lite',
-      'models/gemini-3.5-flash',
-    ];
-    const model =
-      preferredModelNames.map((name) => generationModels.find((item: any) => item.name === name)).find(Boolean) ||
-      generationModels.find((item: any) => !/gemini-2\.5-(flash|pro)/i.test(String(item.name))) ||
-      generationModels[0];
-    if (!model?.name) {
-      return {
-        configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
-        message: 'المفتاح وصل إلى Gemini، لكن قائمة النماذج لا تعرض نموذجًا يدعم generateContent.',
-      };
-    }
-
-    const modelName = String(model.name).replace(/^models\//, '');
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`, {
-      method: 'POST',
-      headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: 'Reply with exactly OK.' }] }],
-        generationConfig: { maxOutputTokens: 8, temperature: 0 },
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-    const raw = await response.text();
-    let data: any = {};
-    try { data = raw ? JSON.parse(raw) : {}; } catch {}
-    const generatedText = (data?.candidates?.[0]?.content?.parts || [])
-      .map((part: any) => part?.text || '').join('').trim();
-    if (response.ok && generatedText) {
-      return {
-        configured: true, ok: true, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
-        model: modelName,
-        message: `نجح توليد نص فعلي من Gemini عبر النموذج المتاح ${modelName}.`,
-      };
-    }
-
-    const status = Number(data?.error?.code || response.status);
-    const detail = data?.error?.message || raw || response.statusText;
-    return {
-      configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked, model: modelName,
-      message: `فشل توليد Gemini (${status}) عبر ${modelName}: ${shortError(detail)}`,
-    };
-  } catch (error: any) {
-    return {
-      configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked,
-      message: shortError(error?.name === 'TimeoutError' ? 'تجاوز اختبار Gemini مهلة الاتصال.' : error?.message),
-    };
+    if (attempts >= maxGenerationAttempts) break;
   }
+
+  const temporary = /\(503\)|\(504\)|high demand|overloaded|temporarily unavailable|service unavailable/i.test(lastFailure);
+  return {
+    configured: true, ok: false, latencyMs: Date.now() - startedAt, cloudKeysReadable, keysChecked, attempts, triedModels,
+    temporary,
+    message: temporary
+      ? `مفاتيح Gemini موجودة، لكن النماذج المختبرة مشغولة مؤقتًا لدى Google. هذا لا يثبت أن المفتاح تالف. آخر نتيجة: ${shortError(lastFailure)}`
+      : lastFailure,
+  };
 }
 
 /** * GET is metadata-only and never consumes model-generation quota. * POST is an explicit admin action that tests real text generation on both providers. */
@@ -190,9 +208,13 @@ export default async function handler(req: any, res: any) {
     }
 
     const [openrouter, gemini] = await Promise.all([testOpenRouterGeneration(), testGeminiGeneration()]);
-    const ok = openrouter.ok && gemini.ok;
-    return res.status(openrouter.ok || gemini.ok ? 200 : 502).json({
+    // The app's primary provider is OpenRouter. A temporary Gemini fallback
+    // outage is degraded redundancy, not a total AI outage when OpenRouter works.
+    const ok = openrouter.ok || gemini.ok;
+    const degraded = !openrouter.ok || !gemini.ok;
+    return res.status(ok ? 200 : 502).json({
       ok,
+      degraded,
       tested: true,
       aiReachable: openrouter.ok || gemini.ok,
       routing: {
@@ -201,11 +223,15 @@ export default async function handler(req: any, res: any) {
       },
       latencyMs: Math.max(openrouter.latencyMs, gemini.latencyMs),
       providers: { openrouter, gemini },
-      message: ok
+      message: openrouter.ok && gemini.ok
         ? 'نجح التوليد الفعلي من OpenRouter وGemini.'
-        : openrouter.ok || gemini.ok
-          ? 'أحد المزوّدين نجح والآخر فشل. راجع حالة كل مزوّد أدناه؛ التطبيق قد يواصل العمل عبر المزوّد السليم.'
-          : 'فشل التوليد الفعلي من المزوّدين. راجع رسائل الخطأ وإعدادات المفاتيح والحصص.',
+        : openrouter.ok
+          ? (gemini.temporary
+            ? 'OpenRouter يعمل. خدمة Gemini الاحتياطية مشغولة مؤقتًا؛ سيستمر التطبيق عبر OpenRouter مع انخفاض التكرار الاحتياطي حتى تتعافى Google.'
+            : 'OpenRouter يعمل، لكن فحص Gemini الاحتياطي لم ينجح. التطبيق متاح عبر OpenRouter؛ راجع تفاصيل Gemini أدناه.')
+          : gemini.ok
+            ? 'Gemini يعمل كبديل، لكن OpenRouter الأساسي يحتاج مراجعة.'
+            : 'فشل التوليد الفعلي من المزوّدين. راجع رسائل الخطأ وإعدادات المفاتيح والحصص.',
     });
   } catch (error: any) {
     const status = Number(error?.statusCode) || 401;
