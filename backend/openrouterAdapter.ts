@@ -83,11 +83,8 @@ async function request(options: any, model: string, stream: boolean) {
       'X-Title': 'Amin Smart Lawyer Assistant',
     },
     body: JSON.stringify(buildPayload(options, model, stream)),
-    // Legal drafts may be long. Do not treat normal generation time as a provider failure.
-    signal: AbortSignal.timeout(Math.max(30000, Math.min(
-      Number(process.env.AI_REQUEST_TIMEOUT_MS) > 0 ? Number(process.env.AI_REQUEST_TIMEOUT_MS) : 120000,
-      180000,
-    ))),
+    // No application-level timeout: allow long legal drafts to finish. Vercel's
+    // function duration is the hard platform limit, not a shorter local timer.
   });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
@@ -164,11 +161,14 @@ export function createOpenRouterCompatibleClient() {
 
 export function getOpenRouterModels(): string[] {
   const configured = (process.env.OPENROUTER_MODELS || '').split(/[;,\n]/).map((x) => x.trim()).filter(Boolean);
-  // Prefer the free router, then independent free models as fallbacks. Availability changes over time.
-  return configured.length ? configured : [
+  // This project is configured for free-tier routing: reject non-free model IDs
+  // so a Vercel environment typo cannot silently route legal requests to paid models.
+  const configuredFree = configured.filter((model) => model === 'openrouter/free' || model.endsWith(':free'));
+  // Prefer OpenRouter's live free router, then current independently addressable free models.
+  return configuredFree.length ? [...new Set(configuredFree)] : [
     'openrouter/free',
-    'google/gemma-4-31b-it:free',
     'nvidia/nemotron-3-ultra-550b-a55b:free',
+    'nvidia/nemotron-3.5-lightning:free',
     'qwen/qwen3.8-27b:free',
   ];
 }
