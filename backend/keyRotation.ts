@@ -3,6 +3,7 @@ import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
 import { createOpenRouterCompatibleClient, getOpenRouterModels } from './openrouterAdapter.ts';
+import { fetchServerCloudGeminiKeys } from './supabaseSync.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
   if (!key || typeof key !== 'string') return false;
@@ -31,18 +32,12 @@ export const GEMINI_MODELS = [
 
 let activeKeyIndex = 0;
 const permanentlyInvalidKeys = new Set<string>();
-// Legal document analysis can legitimately take longer than 12 seconds.
-// Let the SDK enforce the HTTP timeout instead of racing the promise, which
-// could abandon a still-running network request and then start another attempt.
-const KEY_ATTEMPT_TIMEOUT_MS = 60000;
-
+// Do not impose an application-level generation timeout. Long legal documents
+// are allowed to finish; Vercel's configured function duration remains the hard platform limit.
 function createGeminiClient(apiKey: string): GoogleGenAI {
   return new GoogleGenAI({
     apiKey,
-    httpOptions: {
-      timeout: KEY_ATTEMPT_TIMEOUT_MS,
-      headers: { 'User-Agent': 'aistudio-build' },
-    },
+    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
   });
 }
 
@@ -58,9 +53,9 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
 function shouldFallbackFromOpenRouter(error: any): boolean {
   const status = Number(error?.status || error?.statusCode || error?.response?.status);
   const message = String(error?.message || error?.error?.message || '').toLowerCase();
-  // Do not hide a missing/invalid OpenRouter credential (401) or a programming error.
-  // Fall back when free capacity is exhausted or the provider/model service is unavailable.
-  return status === 402 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 ||
+  // Keep the app available through Gemini when OpenRouter credentials, free capacity,
+  // or a provider/model endpoint fail. The admin diagnostics report provider failures separately.
+  return status === 401 || status === 402 || status === 403 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 ||
     (status === 400 && /max_tokens|context.?length|model|unsupported|parameter/.test(message)) ||
     /quota|rate.?limit|free.*(limit|unavailable|exhaust)|no free models|temporarily unavailable|service unavailable|timed out|timeout/.test(message);
 }
@@ -226,6 +221,22 @@ export function getVercelGeminiKeys(_ignoredClientFallbackKey?: string): string[
   return keys;
 }
 
+/** * Use both server environment keys and keys saved through the existing admin * panel in Supabase. Keep credentials server-side and preserve key order. */
+async function getAvailableGeminiKeys(): Promise<string[]> {
+  const keys = getVercelGeminiKeys();
+  try {
+    for (const key of await fetchServerCloudGeminiKeys()) {
+      if (isValidGeminiApiKey(key) && !keys.includes(key)) keys.push(key);
+    }
+  } catch (error) {
+    // If environment keys exist, a temporary Supabase read failure must not
+    // prevent the existing configured provider from working.
+    if (keys.length === 0) throw error;
+    console.error('[Gemini key rotation] Could not load admin-managed Gemini keys; using configured environment keys.');
+  }
+  return keys;
+}
+
 export function getActiveGeminiKey(): string {
   const keys = getVercelGeminiKeys();
   if (keys.length === 0) return '';
@@ -242,9 +253,9 @@ export function rotateToNextGeminiKey(): string {
 
 export async function getManagedGeminiKeyByIndex(index: number): Promise<string> {
   if (!Number.isInteger(index) || index < 0) throw new Error('رقم المفتاح غير صحيح.');
-  const keys = getVercelGeminiKeys();
+  const keys = await getAvailableGeminiKeys();
   const key = keys[index];
-  if (!key) throw new Error('المفتاح غير موجود في متغيرات بيئة Vercel.');
+  if (!key) throw new Error('المفتاح غير موجود في إعدادات Gemini الحالية.');
   return key;
 }
 
@@ -299,18 +310,25 @@ export async function executeWithKeyRotation<T>(
   _forceGeminiFallback = false
 ): Promise<T> {
   // OpenRouter is primary unless explicitly forced to use the Gemini fallback.
-  if (!_forceGeminiFallback && process.env.AI_PROVIDER?.trim().toLowerCase() !== 'gemini') {
-    if (!process.env.OPENROUTER_API_KEY?.trim()) throw new Error('أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel لتفعيل الاتصال الجديد.');
+  if (!_forceGeminiFallback) {
     const models = getOpenRouterModels();
     let lastError: any = null;
-    for (const model of models) {
+    if (!process.env.OPENROUTER_API_KEY?.trim()) {
+      lastError = Object.assign(new Error('OPENROUTER_API_KEY غير مضبوط.'), { status: 503, statusCode: 503 });
+    }
+    for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
       try {
         return await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient()) as unknown as GoogleGenAI, 'openrouter', model);
       } catch (error: any) {
         lastError = error;
         const status = Number(error?.status || error?.statusCode);
         const message = String(error?.message || '').toLowerCase();
-        if (status === 402 || status === 429 || /no free models|free.*(limit|unavailable|exhaust)|quota exhausted/.test(message)) break;
+        if (status === 401 || status === 403) break;
+        if (status === 402 || status === 429 || /no free models|free.*(limit|unavailable|exhaust)|quota exhausted/.test(message)) {
+          // A single model/provider may be out of capacity while another configured
+          // fallback is still available. Try the remaining models before Gemini fallback.
+          continue;
+        }
         const canRetry = status === 400 || status === 401 || status === 404 || status === 408 || status === 413 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
         if (!canRetry) throw error;
       }
@@ -320,16 +338,16 @@ export async function executeWithKeyRotation<T>(
       return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true);
     }
     const status = Number(lastError?.status || lastError?.statusCode);
-    if (status === 402 || status === 429) throw new Error('نفدت الحصة المجانية أو بلغ المزوّد حد الاستخدام، ولم ينجح التحويل الاحتياطي.');
+    if (status === 402 || status === 429) throw new Error('تعذر الاتصال بنماذج OpenRouter المتاحة بسبب حدود الاستخدام أو نفاد الرصيد/الحصة. راجع رصيد OpenRouter أو جرّب لاحقاً، وتأكد من إعداد مفتاح Gemini الاحتياطي إن كنت تستخدمه.');
     throw lastError || new Error('تعذّر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
-  // Gemini fallback credentials are read exclusively from Vercel server environment variables.
-  // Keys previously stored through the admin panel/Supabase are intentionally not used.
-  const keys = getVercelGeminiKeys().filter((key) => !permanentlyInvalidKeys.has(key));
+  // Gemini fallback credentials are read server-side from Vercel environment variables
+  // and the existing admin-managed Supabase key store.
+  const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
 
   if (keys.length === 0) {
-    throw new Error('لم يتم العثور على مفتاح Gemini صالح في متغيرات بيئة Vercel.');
+    throw new Error('لم يتم العثور على مفتاح Gemini صالح في متغيرات البيئة أو لوحة إدارة المفاتيح.');
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
@@ -391,11 +409,13 @@ export async function executeWithKeyRotation<T>(
 
 
 export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false ): Promise<void> {
-  if (!_forceGeminiFallback && process.env.AI_PROVIDER?.trim().toLowerCase() !== 'gemini') {
-    if (!process.env.OPENROUTER_API_KEY?.trim()) throw new Error('أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel لتفعيل الاتصال الجديد.');
+  if (!_forceGeminiFallback) {
     const models = getOpenRouterModels();
     let lastError: any = null;
-    for (const model of models) {
+    if (!process.env.OPENROUTER_API_KEY?.trim()) {
+      lastError = Object.assign(new Error('OPENROUTER_API_KEY غير مضبوط.'), { status: 503, statusCode: 503 });
+    }
+    for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
       let emitted = false;
       try {
         const stream = await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient()) as unknown as GoogleGenAI, 'openrouter', model);
@@ -410,7 +430,11 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         if (emitted) throw error;
         const status = Number(error?.status || error?.statusCode);
         const message = String(error?.message || '').toLowerCase();
-        if (status === 402 || status === 429 || /no free models|free.*(limit|unavailable|exhaust)|quota exhausted/.test(message)) break;
+        if (status === 401 || status === 403) break;
+        if (status === 402 || status === 429 || /no free models|free.*(limit|unavailable|exhaust)|quota exhausted/.test(message)) {
+          // Keep trying remaining configured models before using the Gemini fallback.
+          continue;
+        }
         const canRetry = status === 400 || status === 401 || status === 404 || status === 408 || status === 413 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
         if (!canRetry) throw error;
       }
@@ -420,15 +444,15 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true);
     }
     const status = Number(lastError?.status || lastError?.statusCode);
-    if (status === 402 || status === 429) throw new Error('نفدت الحصة المجانية أو بلغ المزوّد حد الاستخدام، ولم ينجح التحويل الاحتياطي.');
+    if (status === 402 || status === 429) throw new Error('تعذر الاتصال بنماذج OpenRouter المتاحة بسبب حدود الاستخدام أو نفاد الرصيد/الحصة. راجع رصيد OpenRouter أو جرّب لاحقاً، وتأكد من إعداد مفتاح Gemini الاحتياطي إن كنت تستخدمه.');
     throw lastError || new Error('تعذّر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
-  // Streaming fallback also uses Vercel environment variables only.
-  const keys = getVercelGeminiKeys().filter((key) => !permanentlyInvalidKeys.has(key));
+  // Streaming fallback also uses server-side environment and admin-managed keys.
+  const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
 
   if (keys.length === 0) {
-    throw new Error('لم يتم العثور على مفتاح Gemini صالح في متغيرات بيئة Vercel.');
+    throw new Error('لم يتم العثور على مفتاح Gemini صالح في متغيرات البيئة أو لوحة إدارة المفاتيح.');
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
