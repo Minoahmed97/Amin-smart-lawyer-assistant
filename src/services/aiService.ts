@@ -4,26 +4,9 @@ import { getSessionToken } from './authService.ts';
 // Throttling control to prevent burst requests
 let lastRequestTimestamp = 0;
 const MIN_REQUEST_INTERVAL_MS = 150;
-const AI_REQUEST_TIMEOUT_MS = 120_000;
-// Vercel allows this central API function to run for up to 300 seconds.
-// Keep streamed requests alive slightly less than that limit instead of aborting
-// every long legal draft after 120 seconds.
-const AI_STREAM_REQUEST_TIMEOUT_MS = 290_000;
-const AI_STREAM_IDLE_TIMEOUT_MS = 45_000;
-
-async function readWithIdleTimeout<T>(reader: ReadableStreamDefaultReader<T>): Promise<ReadableStreamReadResult<T>> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      reader.read(),
-      new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('توقف تدفق رد الذكاء الاصطناعي لمدة 45 ثانية. يرجى إعادة المحاولة.')), AI_STREAM_IDLE_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-}
+// Do not abort generation because of an elapsed-time or idle timer. The backend
+// sends keepalive events while the model is working; the hosting platform's
+// function-duration limit remains the final hard limit.
 
 async function throttleRequests(): Promise<void> {
   const now = Date.now();
@@ -71,25 +54,19 @@ export function formatFriendlyLegalAiError(rawMsg: string): string {
   return 'تعذر إتمام العملية حالياً، يرجى المحاولة لاحقاً...';
 }
 
-async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, onChunk?: (text: string) => void ): Promise<any> {
+async function postAiRequest( url: string, payload: any, maxRetries = 1, onChunk?: (text: string) => void ): Promise<any> {
   let lastError: any = null;
 
+  // Provider/model/key failover is handled server-side. Do not silently repeat
+  // the whole legal generation from the browser and unexpectedly consume quota twice.
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let streamStarted = false;
-    let requestTimeout: ReturnType<typeof setTimeout> | undefined;
-    let requestController: AbortController | undefined;
     try {
-      requestController = new AbortController();
-      requestTimeout = setTimeout(
-        () => requestController?.abort(),
-        onChunk ? AI_STREAM_REQUEST_TIMEOUT_MS : AI_REQUEST_TIMEOUT_MS,
-      );
       const requestPayload = onChunk ? { ...payload, stream: true } : payload;
       const response = await fetch(url, {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify(requestPayload),
-        signal: requestController.signal,
       });
 
       if (response.ok && onChunk && response.body) {
@@ -123,7 +100,7 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
         };
 
         while (true) {
-          const { value, done } = await readWithIdleTimeout(reader);
+          const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           const separator = isSse ? /\r?\n\r?\n/ : /\r?\n/;
@@ -154,14 +131,7 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
       responseError.retryable = response.status === 429 || response.status >= 500;
       throw responseError;
     } catch (err: any) {
-      lastError = requestController?.signal.aborted
-        ? new Error(onChunk
-          ? 'انتهت مهلة الصياغة المتدفقة بعد نحو خمس دقائق. يرجى المحاولة مرة أخرى.'
-          : 'انتهت مهلة طلب الذكاء الاصطناعي بعد دقيقتين. يرجى المحاولة مرة أخرى.')
-        : err;
-      if (requestController?.signal.aborted) {
-        throw lastError;
-      }
+      lastError = err;
 
       // Do not waste time retrying session/authentication or input errors.
       // Network failures remain retryable; HTTP failures are retried only for 429/5xx.
@@ -176,8 +146,6 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
         continue;
       }
       throw err;
-    } finally {
-      if (requestTimeout) clearTimeout(requestTimeout);
     }
   }
 
@@ -209,7 +177,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   };
 
   try {
-    const data = await postWithSilentRetry('/api/gemini/deconstruct', payload, 2, onChunk);
+    const data = await postAiRequest('/api/gemini/deconstruct', payload, 1, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
@@ -232,11 +200,11 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
 
   try {
     const { userId: _userId, ...requestParams } = params;
-    const data = await postWithSilentRetry('/api/gemini/counter-brief', {
+    const data = await postAiRequest('/api/gemini/counter-brief', {
       ...requestParams,
       effectiveWorkType,
       vaultContext: lawyerVaultContext,
-    }, 2, onChunk);
+    }, 1, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
@@ -250,11 +218,11 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
   }, userId);
 
   try {
-    const data = await postWithSilentRetry('/api/gemini/qualify', {
+    const data = await postAiRequest('/api/gemini/qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
       vaultContext: lawyerVaultContext,
-    }, 2, onChunk);
+    }, 1, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
@@ -268,11 +236,11 @@ export async function refineDraftText( draftText: string, enhancementType: 'more
   }, userId);
 
   try {
-    const data = await postWithSilentRetry('/api/gemini/refine', {
+    const data = await postAiRequest('/api/gemini/refine', {
       draftText,
       enhancementType,
       vaultContext: lawyerVaultContext,
-    }, 2, onChunk);
+    }, 1, onChunk);
     return cleanDirectResponse(data.result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
