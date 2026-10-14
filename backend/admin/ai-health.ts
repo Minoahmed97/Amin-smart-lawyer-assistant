@@ -136,8 +136,8 @@ async function testGeminiGeneration() {
             method: 'POST',
             headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              contents: [{ parts: [{ text: 'Reply with exactly OK.' }] }],
-              generationConfig: { maxOutputTokens: 4, temperature: 0 },
+              contents: [{ parts: [{ text: 'Return only the word OK. Do not add punctuation or explanation.' }] }],
+              generationConfig: { maxOutputTokens: 16, temperature: 0 },
             }),
             signal: AbortSignal.timeout(10000),
           });
@@ -154,7 +154,11 @@ async function testGeminiGeneration() {
             };
           }
           const status = Number(data?.error?.code || response.status);
-          const detail = data?.error?.message || raw || response.statusText;
+          const finishReason = String(data?.candidates?.[0]?.finishReason || '');
+          const detail = data?.error?.message ||
+            (response.ok && !generatedText
+              ? `وصل HTTP ${response.status} لكن لم يصل نص فعلي. finishReason=${finishReason || 'غير محدد'}؛ maxOutputTokens=16.`
+              : raw || response.statusText);
           lastFailure = `فشل توليد Gemini (${status}) عبر ${modelName}: ${shortError(detail)}`;
           // 503/404/400: try another model. Credential/quota errors move to the next key.
           if (status === 401 || status === 403 || status === 429) break;
