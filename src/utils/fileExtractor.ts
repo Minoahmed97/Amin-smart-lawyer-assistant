@@ -22,16 +22,8 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   });
 }
 
-/**
- * Client-Side Image Compression & Resizing.
- * Normalizes images to max 1200px bounding box at JPEG 0.70 quality.
- * Prevents HTTP 413 completely and speeds up OCR processing.
- */
-export async function compressAndResizeImage(
-  file: File,
-  maxDimension = 1200,
-  quality = 0.70
-): Promise<{ base64Data: string; mimeType: string }> {
+/** * Client-Side Image Compression & Resizing. * Normalizes images to max 1200px bounding box at JPEG 0.70 quality. * Prevents HTTP 413 completely and speeds up OCR processing. */
+export async function compressAndResizeImage( file: File, maxDimension = 1200, quality = 0.70 ): Promise<{ base64Data: string; mimeType: string }> {
   if (typeof window !== 'undefined' && 'createImageBitmap' in window) {
     try {
       const bitmap = await createImageBitmap(file);
@@ -129,70 +121,31 @@ export function resolveMimeType(file: File): string {
   return file.type || 'image/jpeg';
 }
 
-/**
- * Server OCR powered by Gemini Vision with Silent Key Rotation.
- */
-export async function extractTextViaServerOCR(
-  base64Data: string,
-  mimeType: string,
-  fileName: string
-): Promise<string> {
+/** * Server OCR routed through the central AI key-rotation service. */
+export async function extractTextViaServerOCR( base64Data: string, mimeType: string, fileName: string ): Promise<string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
   const sessionToken = getSessionToken();
   if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
 
-  const maxAttempts = 3;
-  let lastError: any = null;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      let response: globalThis.Response;
-      try {
-        response = await fetch('/api/gemini/ocr', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ base64Data, mimeType, fileName }),
-        });
-      } catch {
-        response = await fetch('/api/ocr', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ base64Data, mimeType, fileName }),
-        });
-      }
-      if (response.status === 404) {
-        response = await fetch('/api/ocr', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ base64Data, mimeType, fileName }),
-        });
-      }
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.text) {
-          return data.text.trim();
-        }
-      }
-      if (response.status === 429 || response.status >= 500) {
-        if (attempt < maxAttempts - 1) {
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-          continue;
-        }
-      }
-      const errorData = await response.json().catch(() => ({}));
-      lastError = new Error(errorData.error || `فشل الاستخراج (${response.status})`);
-    } catch (err: any) {
-      lastError = err;
-      if (attempt < maxAttempts - 1) {
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-        continue;
-      }
-    }
+  // Use one canonical endpoint and one user-initiated OCR request. The server
+  // already rotates providers/keys; client-side silent retries could duplicate
+  // generation and consume quota again after an ambiguous network failure.
+  const response = await fetch('/api/ocr', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ base64Data, mimeType, fileName }),
+  });
+
+  if (response.ok) {
+    const data = await response.json();
+    if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
+    throw new Error('خدمة استخراج النص لم تُرجع نصاً صالحاً.');
   }
 
-
-  throw lastError || new Error('فشل استخراج النص.');
+  const errorData = await response.json().catch(() => ({}));
+  throw new Error(errorData.error || `فشل الاستخراج (${response.status})`);
 }
 
 export async function extractTextFromDocx(file: File): Promise<string> {
@@ -239,13 +192,7 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
   throw new Error(`تعذر استخراج نص Word القديم (${file.name}).`);
 }
 
-/**
- * Universal fast extractor:
- * 1. Word (.docx): Client mammoth extracts instantly in 50ms.
- * 2. Word (.doc): Client stream decoding or server OCR.
- * 3. PDF and Images: Client compresses image and extracts via server OCR with Silent Key Rotation.
- * 4. Text (.txt): Instant text reading.
- */
+/** * Universal fast extractor: * 1. Word (.docx): Client mammoth extracts instantly in 50ms. * 2. Word (.doc): Client stream decoding or server OCR. * 3. PDF and Images: Client compresses the image and extracts it through the central server OCR/key-rotation service. * 4. Text (.txt): Instant text reading. */
 export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
