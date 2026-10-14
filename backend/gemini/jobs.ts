@@ -2,6 +2,16 @@ import { waitUntil } from '@vercel/functions';
 import crypto from 'node:crypto';
 import { requireActiveSession, requireSession } from '../auth.ts';
 import counterBriefHandler from './counter-brief.ts';
+import deconstructHandler from './deconstruct.ts';
+import qualifyHandler from './qualify.ts';
+import refineHandler from './refine.ts';
+
+const TASK_HANDLERS: Record<string, (req: any, res: any) => any> = {
+  'counter-brief': counterBriefHandler,
+  deconstruct: deconstructHandler,
+  qualify: qualifyHandler,
+  refine: refineHandler,
+};
 
 const JOB_TABLE = 'app_ai_generation_jobs';
 const MAX_FACTS = 200_000;
@@ -25,36 +35,36 @@ async function supabase(path: string, init: RequestInit = {}) {
   return fetch(`${url}/rest/v1/${path}`, { ...init, headers });
 }
 
-function safePayload(input: any) {
-  const payload = {
-    courtType: String(input?.courtType || ''),
-    circuit: String(input?.circuit || ''),
-    briefType: String(input?.briefType || ''),
-    judicialWorkType: String(input?.judicialWorkType || ''),
-    customJudicialWorkType: String(input?.customJudicialWorkType || ''),
-    effectiveWorkType: String(input?.effectiveWorkType || ''),
-    clientRole: String(input?.clientRole || ''),
-    clientName: String(input?.clientName || ''),
-    opponentName: String(input?.opponentName || ''),
-    caseNumber: String(input?.caseNumber || ''),
-    sessionDate: String(input?.sessionDate || ''),
-    facts: String(input?.facts || ''),
-    defenses: String(input?.defenses || ''),
-    requests: String(input?.requests || ''),
-    customInstructions: String(input?.customInstructions || ''),
-    vaultContext: String(input?.vaultContext || ''),
-  };
-  if (!payload.facts.trim()) {
-    const error: any = new Error('يرجى كتابة وقائع الدعوى.');
+function safePayload(input: any, taskType: string) {
+  if (!TASK_HANDLERS[taskType]) {
+    const error: any = new Error('نوع مهمة الذكاء الاصطناعي غير صالح.');
     error.statusCode = 400;
     throw error;
   }
-  if (payload.facts.length > MAX_FACTS || payload.vaultContext.length > MAX_CONTEXT) {
-    const error: any = new Error('حجم الوقائع أو سياق الخزانة أكبر من الحد المسموح.');
+  const payload: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input || {})) {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      payload[key] = String(value);
+    }
+  }
+  const combinedLength = Object.values(payload).reduce((sum, value) => sum + value.length, 0);
+  if (combinedLength > MAX_FACTS + MAX_CONTEXT) {
+    const error: any = new Error('حجم بيانات المهمة أكبر من الحد المسموح.');
     error.statusCode = 413;
     throw error;
   }
-  if (!payload.vaultContext.includes('[مرشح نموذج المحامي رقم')) {
+  const requiredByType: Record<string, string> = {
+    'counter-brief': 'facts',
+    deconstruct: 'opponentBriefText',
+    qualify: 'disputeDetails',
+    refine: 'draftText',
+  };
+  if (!String(payload[requiredByType[taskType]] || '').trim()) {
+    const error: any = new Error('البيانات المطلوبة لبدء المهمة غير مكتملة.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (taskType === 'counter-brief' && !String(payload.vaultContext || '').includes('[مرشح نموذج المحامي رقم')) {
     const error: any = new Error('لم يتم العثور على نموذج شخصي من خزانة هذا الحساب. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف أو استعد نماذجك الشخصية أولاً.');
     error.statusCode = 400;
     throw error;
@@ -71,7 +81,7 @@ async function patchJob(id: string, userId: string, values: Record<string, unkno
   if (!res.ok) throw new Error(`تعذر تحديث مهمة الصياغة (${res.status}).`);
 }
 
-async function processJob(jobId: string, userId: string, token: string, payload: Record<string, string>, originalReq: any) {
+async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
   let fullText = '';
   let pendingWrite = Promise.resolve();
   let persistedLength = 0;
@@ -94,11 +104,12 @@ async function processJob(jobId: string, userId: string, token: string, payload:
       this.headersSent = true;
       const lines = String(raw).split(/\r?\n/).filter(Boolean);
       for (const line of lines) {
+        const candidate = line.startsWith('data:') ? line.slice(5).trim() : line.trim();
         try {
-          const event = JSON.parse(line);
+          const event = JSON.parse(candidate);
           if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
-            if (fullText.length - persistedLength >= 1600) {
+            if (fullText.length - persistedLength >= 800) {
               persistedLength = fullText.length;
               const snapshot = fullText;
               pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch((err) => {
@@ -106,10 +117,10 @@ async function processJob(jobId: string, userId: string, token: string, payload:
               });
             }
           } else if (event.type === 'error') {
-            streamError = String(event.error || 'فشلت الصياغة.');
+            streamError = String(event.error || 'فشلت المهمة.');
           }
         } catch {
-          // Ignore non-JSON stream lines; the downstream handler normally emits NDJSON.
+          // Ignore start/keepalive lines and non-JSON frames.
         }
       }
       return true;
@@ -125,7 +136,7 @@ async function processJob(jobId: string, userId: string, token: string, payload:
       headers: { ...(originalReq?.headers || {}), authorization: `Bearer ${token}` },
       body: { ...payload, stream: true },
     };
-    await counterBriefHandler(fakeReq, fakeRes);
+    await TASK_HANDLERS[taskType](fakeReq, fakeRes);
     await pendingWrite;
 
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
@@ -157,7 +168,8 @@ export default async function handler(req: any, res: any) {
     if (req.method === 'POST') {
       const { session } = await requireActiveSession(req);
       const requestBody = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
-      const payload = safePayload(requestBody);
+      const taskType = String(requestBody?.taskType || 'counter-brief');
+      const payload = safePayload(requestBody?.payload || requestBody, taskType);
       const cleanup = await supabase(`${JOB_TABLE}?created_at=lt.${encodeURIComponent(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())}`, { method: 'DELETE' });
       if (!cleanup.ok) console.warn('Old AI job cleanup failed:', cleanup.status);
 
@@ -169,6 +181,7 @@ export default async function handler(req: any, res: any) {
         body: JSON.stringify({
           id,
           user_id: session.userId,
+          task_type: taskType,
           status: 'queued',
           payload,
           partial_result: '',
@@ -191,7 +204,7 @@ export default async function handler(req: any, res: any) {
       }
 
       const token = String(req?.headers?.authorization || '').replace(/^Bearer\s+/i, '').trim();
-      const task = processJob(id, session.userId, token, payload, req);
+      const task = processJob(id, session.userId, token, taskType, payload, req);
       try {
         waitUntil(task);
       } catch {
