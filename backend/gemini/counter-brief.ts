@@ -15,7 +15,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
   const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
-  const optimizedPrompt = `${prompt} [مراجعة داخلية سريعة قبل الإخراج] نفّذ مراجعة نهائية داخلية قبل إرسال النتيجة: تحقق من الوقائع والمستندات والتواريخ والتناقضات والنواقص والتكييف والدفوع والطلبات، واختبر أقوى حجة معاكسة، وتأكد من عدم اختلاق أي معلومة. لا تعرض هذه المراجعة أو سلسلة التفكير الداخلية؛ أخرج النتيجة القانونية المطلوبة مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
+  const optimizedPrompt = `${prompt} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   if (onChunk) {
     await executeWithKeyRotationStream(async (ai, _key, model) => {
@@ -163,6 +163,11 @@ export default async function handler(req: any, res: any) {
 
     limitBodyString(facts, 200000, 'الوقائع');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
+    if (typeof vaultContext !== 'string' || !vaultContext.includes('[مرشح نموذج المحامي رقم')) {
+      const err: any = new Error('لم يتم العثور على نموذج شخصي من خزانة هذا الحساب. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف أو استعد نماذجك الشخصية أولاً.');
+      err.statusCode = 400;
+      throw err;
+    }
 
     const finalWorkType =
       (customJudicialWorkType && customJudicialWorkType.trim()) ||
