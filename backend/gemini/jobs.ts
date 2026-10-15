@@ -17,6 +17,17 @@ const JOB_TABLE = 'app_ai_generation_jobs';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
 
+function safeDiagnosticMessage(value: unknown) {
+  return String(value || 'unknown')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|secret)\b\s*[:=]\s*["']?[^"'\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, '[REDACTED_URL]')
+    .replace(/(["'`])[^\r\n]{80,}?\1/g, '$1[REDACTED_TEXT]$1')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 400);
+}
+
 function getSupabaseConfig() {
   const url = (process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
   const key = (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || '').trim();
@@ -141,6 +152,21 @@ async function processJob(jobId: string, userId: string, token: string, taskType
 
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
       const error = streamError || `تعذر إكمال الصياغة (HTTP ${fakeRes.statusCode}).`;
+      const failureKind = fakeRes.statusCode >= 400
+        ? 'http_status'
+        : /لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة/i.test(error)
+          ? 'empty_output'
+          : streamError
+            ? 'stream_error'
+            : 'empty_output';
+      console.error('AI job generation failed:', {
+        jobId,
+        taskType,
+        failureKind,
+        httpStatus: fakeRes.statusCode,
+        outputChars: fullText.length,
+        error: safeDiagnosticMessage(error),
+      });
       await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
       return;
     }
@@ -155,6 +181,13 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   } catch (err: any) {
     await pendingWrite.catch(() => undefined);
     const message = String(err?.message || 'تعذر إكمال الصياغة.').slice(0, 1000);
+    console.error('AI job processor threw an exception:', {
+      jobId,
+      taskType,
+      errorName: safeDiagnosticMessage(err?.name || 'Error'),
+      error: safeDiagnosticMessage(message),
+      outputChars: fullText.length,
+    });
     try {
       await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
     } catch (persistError: any) {
