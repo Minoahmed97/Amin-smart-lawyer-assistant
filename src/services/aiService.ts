@@ -317,15 +317,13 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
 
 export async function qualifyLegalCase( disputeDetails: string, clientGoals?: string, onChunk?: (text: string) => void, userId?: string ): Promise<string> {
   await throttleRequests();
-  const lawyerVaultContext = getLawyerStyleContext({
-    factsOrSubject: disputeDetails,
-  }, userId);
 
   try {
+    // Legal qualification is an independent legal analysis; do not load or send
+    // the lawyer's vault context for this task. Other drafting tasks still use it.
     const result = await requestSavedJob('qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
-      vaultContext: lawyerVaultContext,
     }, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
