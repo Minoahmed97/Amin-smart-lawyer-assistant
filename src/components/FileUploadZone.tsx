@@ -10,7 +10,7 @@ import {
 import { extractTextFromAnyFile } from '../utils/fileExtractor.ts';
 
 interface FileUploadZoneProps {
-  onTextExtracted: (text: string, fileName: string, fileType?: string) => void;
+  onTextExtracted: (text: string, fileName: string, fileType?: string, sourceFile?: File) => void;
   title?: string;
   description?: string;
   maxFiles?: number;
@@ -74,7 +74,7 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         if (result && result.text) {
           totalChars += result.characterCount;
           processedNames.push(file.name);
-          onTextExtracted(result.text, result.fileName, result.fileType);
+          onTextExtracted(result.text, result.fileName, result.fileType, file);
         }
       } catch (err: any) {
         console.warn(`Extraction error for ${file.name}:`, err);
