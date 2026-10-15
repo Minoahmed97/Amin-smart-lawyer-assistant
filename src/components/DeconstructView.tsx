@@ -126,15 +126,18 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     persistentStorage.removeItem('judicial_deconstruct_docname');
   };
 
-
   const [deconstructError, setDeconstructError] = useState<string>('');
 
+  // Resume an AI task that was persisted by the service if the view was reopened.
   useEffect(() => {
     let active = true;
     let jobId = '';
-    try { jobId = localStorage.getItem(`amin_ai_job_deconstruct_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`) || ''; } catch {}
+    try {
+      jobId = localStorage.getItem(`amin_ai_job_deconstruct_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`) || '';
+    } catch {}
     if (!jobId) return () => { active = false; };
     setIsLoading(true);
+    setAnalysisResult('');
     setDeconstructError('');
     void resumeSavedAiTask('deconstruct', jobId, (chunk) => {
       if (active) setAnalysisResult((current) => current + chunk);
@@ -149,7 +152,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     });
     return () => { active = false; };
   }, [userId]);
-
 
   const handleDeconstruct = async (e: React.FormEvent) => {
     e.preventDefault();
