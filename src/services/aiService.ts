@@ -102,13 +102,7 @@ async function requestSavedJob<T extends Record<string, any>>(
   let lastText = '';
   let transientFailures = 0;
   const startedAt = Date.now();
-  const MAX_JOB_DURATION_MS = 12 * 60 * 1000;
-  const MAX_INACTIVE_MS = 3 * 60 * 1000;
-  let lastProgressAt = startedAt;
-  let lastUpdatedAt = '';
-  let lastObservedLength = 0;
-  let initializedProgress = false;
-  while (Date.now() - startedAt < MAX_JOB_DURATION_MS) {
+  while (Date.now() - startedAt < 1000 * 60 * 20) {
     try {
       const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
         method: 'GET',
@@ -123,18 +117,6 @@ async function requestSavedJob<T extends Record<string, any>>(
       const data = await response.json();
       transientFailures = 0;
       const currentText = String(data?.partialResult || data?.result || '');
-      const updatedAt = String(data?.updatedAt || '');
-      if (!initializedProgress) {
-        const serverUpdatedAt = Date.parse(updatedAt);
-        lastProgressAt = Number.isFinite(serverUpdatedAt) ? serverUpdatedAt : Date.now();
-        lastUpdatedAt = updatedAt;
-        lastObservedLength = currentText.length;
-        initializedProgress = true;
-      } else if (currentText.length > lastObservedLength || (updatedAt && updatedAt !== lastUpdatedAt)) {
-        lastProgressAt = Date.now();
-        lastObservedLength = Math.max(lastObservedLength, currentText.length);
-        lastUpdatedAt = updatedAt;
-      }
       if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
@@ -151,16 +133,12 @@ async function requestSavedJob<T extends Record<string, any>>(
       }
       if (data.status === 'failed') {
         if (storage) storage.removeItem(key);
-        throw new Error(data.error || 'فشلت المهمة المحفوظة.');
-      }
-      if ((data.status === 'queued' || data.status === 'running') && Date.now() - lastProgressAt >= MAX_INACTIVE_MS) {
-        if (storage) storage.removeItem(key);
-        const error: any = new Error('توقفت مهمة الصياغة عن إحراز تقدم لأكثر من 3 دقائق. تم إيقاف متابعة المهمة العالقة؛ راجع الجزء الظاهر قبل بدء صياغة جديدة.');
-        error.stopPolling = true;
-        throw error;
+        const failure: any = new Error(data.error || 'فشلت المهمة المحفوظة.');
+        failure.terminalJobError = true;
+        throw failure;
       }
     } catch (err: any) {
-      if (err?.stopPolling || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) throw err;
+      if (err?.terminalJobError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) throw err;
       transientFailures++;
       if (transientFailures >= 8) {
         throw new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
@@ -168,8 +146,7 @@ async function requestSavedJob<T extends Record<string, any>>(
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  if (storage) storage.removeItem(key);
-  throw new Error('تجاوزت مهمة الصياغة الحد الأقصى للانتظار (12 دقيقة). تم إيقاف متابعة المهمة العالقة؛ راجع الجزء الظاهر قبل بدء صياغة جديدة.');
+  throw new Error('المهمة ما زالت قيد المعالجة. ارجع لاحقًا لاستعادة النتيجة المحفوظة دون بدء توليد جديد.');
 }
 
 export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
@@ -342,16 +319,13 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
 
 export async function qualifyLegalCase( disputeDetails: string, clientGoals?: string, onChunk?: (text: string) => void, userId?: string ): Promise<string> {
   await throttleRequests();
-  const lawyerVaultContext = getLawyerStyleContext({
-    judicialWorkType: 'تكييف وتحليل قانوني',
-    factsOrSubject: disputeDetails,
-  }, userId);
 
   try {
+    // Legal qualification is an independent legal analysis; do not load or send
+    // the lawyer's vault context for this task. Other drafting tasks still use it.
     const result = await requestSavedJob('qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
-      vaultContext: lawyerVaultContext,
     }, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
