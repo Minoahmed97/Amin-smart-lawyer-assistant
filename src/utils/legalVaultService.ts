@@ -107,120 +107,220 @@ export function clearAllLawModels(userId?: string): void {
   }
 }
 
+function normalizeVaultText(value: string): string {
+  return (value || '')
+    .toLowerCase()
+    .replace(/[ًٌٍَُِّْـ]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/[^\u0600-\u06FFa-z0-9\s]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function canonicalDocumentType(value: string): string {
+  const text = normalizeVaultText(value);
+  if (!text) return '';
+  // Check the more specific types first. A vault item may have broad metadata
+  // (e.g. "إعلان / إنذار") but a title that identifies it as إعادة إعلان.
+  if (text.includes('اعادة') && text.includes('اعلان')) return 'اعادة اعلان';
+  if (text.includes('انذار')) return 'انذار';
+  if ((text.includes('صحيفة') || text.includes('عريضة')) && (text.includes('دعوى') || text.includes('افتتاح'))) return 'صحيفة دعوى';
+  if (text.includes('تفنيد') || (!text.includes('مذكرة') && text.includes('رد') && text.includes('مستند'))) return 'تفنيد مستندات';
+  if (text.includes('اعلان') && (text.includes('قضائي') || text.includes('رسمي'))) return 'اعلان قضائي';
+  if (text.includes('اعلان')) return 'اعلان';
+  if (text.includes('مذكرة')) return 'مذكرة';
+  return text;
+}
+
+function modelTypeText(model: LawModelItem): string {
+  return `${model.judicialWorkType || ''} ${model.category || ''} ${model.title || ''}`;
+}
+
+function modelMatchesRequestedType(model: LawModelItem, requestedType: string): boolean {
+  const requested = canonicalDocumentType(requestedType);
+  if (!requested) return false;
+
+  // Match each metadata field independently. Do not inspect model.content or
+  // case facts to choose a reference, because that can pull in another case's
+  // document simply because its facts happen to be similar.
+  const metadata = [model.judicialWorkType, model.title, model.category]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  if (metadata.some((value) => canonicalDocumentType(value) === requested)) return true;
+
+  const normalizedRequested = normalizeVaultText(requestedType);
+  const requestedTokens = new Set(normalizedRequested.split(/\s+/).filter((token) => token.length >= 3));
+  if (!requestedTokens.size) return false;
+
+  // For custom document names, use metadata-token overlap only. The body of
+  // the old legal document is deliberately excluded from type matching.
+  const bestOverlap = metadata.reduce((best, value) => {
+    const normalized = normalizeVaultText(value);
+    if (!normalized) return best;
+    if (normalized.includes(normalizedRequested)) return 1;
+    const modelTokens = new Set(normalized.split(/\s+/).filter((token) => token.length >= 3));
+    let overlap = 0;
+    requestedTokens.forEach((token) => { if (modelTokens.has(token)) overlap += 1; });
+    return Math.max(best, overlap / requestedTokens.size);
+  }, 0);
+  return bestOverlap >= 0.5;
+}
+
 export function findSimilarModels( criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; }, userId?: string ): LawModelItem[] {
   const models = getAllLawModels(userId);
-  if (!models || models.length === 0) return [];
+  if (!models.length) return [];
 
-  const { courtType = '', briefType = '', judicialWorkType = '', factsOrSubject = '' } = criteria;
+  const requestedType = criteria.judicialWorkType || criteria.briefType || '';
+  const normalizedCourt = normalizeVaultText(criteria.courtType || '');
+  const normalizedBrief = normalizeVaultText(criteria.briefType || '');
+  const normalizedWorkType = normalizeVaultText(criteria.judicialWorkType || '');
 
-  const normalize = (value: string) =>
-    value
-      .toLowerCase()
-      .replace(/[ًٌٍَُِّْـ]/g, '')
-      .replace(/[^\u0600-\u06FFa-z0-9\s]/gi, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+  // Retrieve style references by document-type metadata, not by case facts or
+  // similarity between the current case and the body of an old document.
+  const scored = models.map((model, index) => {
+    const typeText = normalizeVaultText(modelTypeText(model));
+    const categoryText = normalizeVaultText(model.category || '');
+    const titleText = normalizeVaultText(model.title || '');
+    const notesText = normalizeVaultText(model.notes || '');
+    let score = (model.weight || 3) * 2;
 
-  const tokenize = (value: string) =>
-    normalize(value)
-      .split(/\s+/)
-      .filter((token) => token.length >= 3);
-
-  const normalizedFacts = normalize(factsOrSubject);
-  const normalizedCourt = normalize(courtType);
-  const normalizedBrief = normalize(briefType);
-  const normalizedWorkType = normalize(judicialWorkType);
-  const factTokens = new Set(tokenize(factsOrSubject));
-
-  const scored = models.map((m) => {
-    let score = (m.weight || 3) * 2;
-    const titleLower = normalize(m.title);
-    const catLower = normalize(m.category);
-    const notesLower = normalize(m.notes || '');
-    const contentLower = normalize(m.content);
-    const workTypeLower = normalize(m.judicialWorkType || '');
-
-    // 1. Prefer the same judicial work type.
     if (normalizedWorkType) {
-      // Empty model fields must never match every requested work type.
-      if (workTypeLower && (workTypeLower.includes(normalizedWorkType) || normalizedWorkType.includes(workTypeLower))) {
-        score += 45;
-      }
-      if ((catLower && catLower.includes(normalizedWorkType)) || (titleLower && titleLower.includes(normalizedWorkType))) score += 25;
+      if (modelMatchesRequestedType(model, requestedType)) score += 120;
+      else if (typeText.includes(normalizedWorkType) || normalizedWorkType.includes(typeText)) score += 35;
+      if (titleText.includes(normalizedWorkType) || categoryText.includes(normalizedWorkType)) score += 15;
     }
-
-    // 2. Prefer the same court / brief type. Guard empty fields so an empty
-    // category/title cannot receive a match merely because every string includes ''.
-    if (normalizedCourt) {
-      if ((catLower && catLower.includes(normalizedCourt)) || (catLower && normalizedCourt.includes(catLower))) score += 20;
-      if (contentLower && contentLower.includes(normalizedCourt)) score += 5;
-    }
-
     if (normalizedBrief) {
-      if ((titleLower && titleLower.includes(normalizedBrief)) || (catLower && catLower.includes(normalizedBrief))) score += 15;
-      if (notesLower && notesLower.includes(normalizedBrief)) score += 8;
+      if (typeText.includes(normalizedBrief) || normalizedBrief.includes(typeText)) score += 40;
+      if (titleText.includes(normalizedBrief) || categoryText.includes(normalizedBrief)) score += 20;
+    }
+    if (normalizedCourt) {
+      if (categoryText && (categoryText.includes(normalizedCourt) || normalizedCourt.includes(categoryText))) score += 20;
+      if (notesText.includes(normalizedCourt)) score += 8;
     }
 
-    // 3. Use the actual case text to rank the closest lawyer-owned models,
-    // instead of relying only on a fixed list of legal keywords.
-    if (factTokens.size > 0) {
-      const modelTokens = new Set(tokenize(`${m.title} ${m.category} ${m.judicialWorkType || ''} ${m.notes || ''} ${m.content}`));
-      let overlap = 0;
-      factTokens.forEach((token) => {
-        if (modelTokens.has(token)) overlap += 1;
-      });
-      score += Math.min(40, overlap * 2);
-    }
-
-    // Keep exact high-value legal phrases as a small additional signal.
-    const keywords = [
-      'طرد', 'غصب', 'تعويض', 'إيجار', 'فسخ', 'بطلان',
-      'صحة توقيع', 'صحة ونفاذ', 'قسمة', 'فرز وتجنيب', 'نفقة', 'طلاق', 'خلع', 'رؤية',
-      'إيصال أمانة', 'شيك', 'نصب', 'تبديد'
-    ];
-
-    for (const kw of keywords) {
-      const normalizedKw = normalize(kw);
-      if (normalizedFacts.includes(normalizedKw) || normalizedBrief.includes(normalizedKw)) {
-        if (titleLower.includes(normalizedKw) || catLower.includes(normalizedKw) || workTypeLower.includes(normalizedKw)) score += 10;
-        if (contentLower.includes(normalizedKw)) score += 4;
-      }
-    }
-
-    return { model: m, score };
+    // Stable tie-break: preserve the existing vault order. The factsOrSubject
+    // field intentionally does not affect retrieval, because doing so favored
+    // old documents with similar facts and increased content bleed.
+    return { model, score, index };
   });
 
-  scored.sort((a, b) => b.score - a.score);
-  return scored.map((s) => s.model);
+  scored.sort((a, b) => b.score - a.score || a.index - b.index);
+  return scored.map((item) => item.model);
+}
+
+function countPhrase(text: string, phrase: string): number {
+  const normalizedText = normalizeVaultText(text);
+  const normalizedPhrase = normalizeVaultText(phrase);
+  if (!normalizedText || !normalizedPhrase) return 0;
+  return normalizedText.split(normalizedPhrase).length - 1;
+}
+
+function deriveStyleProfile(content: string, includeStructure: boolean): string {
+  const text = (content || '').replace(/\r/g, '').trim();
+  if (!text) return 'العينة النصية غير كافية لاستخلاص خصائص أسلوبية.';
+
+  const words = text.match(/[\u0600-\u06FFa-zA-Z0-9]+/g) || [];
+  const nonEmptyLines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const paragraphChunks = text.split(/\n\s*\n+/).map((part) => part.trim()).filter(Boolean);
+  const sentences = text.split(/[.!؟؛]+\s*/).map((part) => part.trim()).filter(Boolean);
+  const averageSentenceWords = sentences.length
+    ? Math.round(sentences.reduce((sum, sentence) => sum + ((sentence.match(/[\u0600-\u06FFa-zA-Z0-9]+/g) || []).length), 0) / sentences.length)
+    : 0;
+  const averageParagraphWords = paragraphChunks.length
+    ? Math.round(paragraphChunks.reduce((sum, paragraph) => sum + ((paragraph.match(/[\u0600-\u06FFa-zA-Z0-9]+/g) || []).length), 0) / paragraphChunks.length)
+    : words.length;
+
+  const paragraphStyle = averageParagraphWords < 25
+    ? 'فقرات قصيرة ومباشرة في الغالب'
+    : averageParagraphWords < 60
+      ? 'فقرات متوسطة الطول في الغالب'
+      : 'فقرات مطوّلة نسبيًا تتدرج في عرض الفكرة';
+  const sentenceStyle = averageSentenceWords < 18
+    ? 'جمل قصيرة نسبيًا'
+    : averageSentenceWords < 32
+      ? 'جمل متوسطة تميل إلى الشرح المتدرج'
+      : 'جمل طويلة مترابطة تحتاج الحفاظ على تسلسلها المنطقي';
+
+  const connectors = [
+    'وحيث إن', 'ولما كان', 'ولما كان الثابت', 'وإذ كان ذلك',
+    'ومن ثم', 'الأمر الذي', 'مما يتعين معه', 'فضلاً عن ذلك',
+    'على النحو التالي', 'بناء عليه', 'لهذه الأسباب', 'لذلك',
+    'لما تقدم', 'ومؤدى ذلك', 'ولا ينال من ذلك'
+  ];
+  const commonConnectors = connectors
+    .map((phrase) => ({ phrase, count: countPhrase(text, phrase) }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 7)
+    .map((item) => item.phrase);
+
+  const hasNumberedHeadings = /(?:^|\n)\s*(?:أولاً|اولا|ثانياً|ثانيا|ثالثاً|ثالثا|رابعاً|رابعا|خامساً|خامسا|سادساً|سادسا|[0-9٠-٩]+\s*[).ـ-])/m.test(text);
+  const hasColonHeadings = nonEmptyLines.some((line) => line.length <= 90 && /[:：]$/.test(line));
+  const styleNotes = [
+    `طول المستند المرجعي: ${words.length < 400 ? 'موجز' : words.length < 1200 ? 'متوسط' : 'مفصل'}`,
+    paragraphStyle,
+    sentenceStyle,
+    hasNumberedHeadings ? 'يميل إلى استخدام عناوين أو نقاط مرقمة' : 'لا يظهر اعتماد غالب على الترقيم المتسلسل للعناوين',
+    hasColonHeadings ? 'تظهر عناوين موجزة يتبعها نقطتان في بعض المواضع' : 'العناوين المستقلة المنتهية بنقطتين ليست سمة ظاهرة',
+    commonConnectors.length ? `روابط تعبيرية متكررة في أسلوب المحامي: ${commonConnectors.join('، ')}` : 'روابط تعبيرية غير كافية للرصد؛ استخدم انتقالات عربية قانونية طبيعية دون افتعال'
+  ];
+
+  if (includeStructure) {
+    const sectionLabels: Array<[RegExp, string]> = [
+      [/^(?:محكمة|لدى محكمة|السيد الأستاذ|إلى السيد|الى السيد|السيد رئيس)/, 'ترويسة أو مخاطبة رسمية'],
+      [/^(?:الموضوع|بشأن موضوع|موضوع الطلب)/, 'عرض موضوع المستند'],
+      [/^(?:الوقائع|وقائع الدعوى|موجز الوقائع|تتحصل الوقائع)/, 'عرض الوقائع'],
+      [/^(?:الدفاع|أوجه الدفاع|الدفوع|الأسباب|أسباب الطلب|من حيث)/, 'عرض الأسباب أو الدفوع'],
+      [/^(?:الطلبات|الطلب الختامي|بناء عليه|لهذه الأسباب|لذلك|لما تقدم)/, 'الطلبات أو الخاتمة'],
+      [/^(?:وتفضلوا|مقدمه لسيادتكم|وكيل|مع حفظ)/, 'خاتمة أو توقيع']
+    ];
+    const observedSections: string[] = [];
+    for (const line of nonEmptyLines) {
+      const normalizedLine = normalizeVaultText(line);
+      if (line.length > 110) continue;
+      const found = sectionLabels.find(([pattern]) => pattern.test(normalizedLine));
+      if (found && !observedSections.includes(found[1])) observedSections.push(found[1]);
+    }
+    if (observedSections.length) {
+      styleNotes.push(`التسلسل البنيوي العام المرصود في نموذج من النوع نفسه: ${observedSections.join(' ← ')}`);
+    }
+  }
+
+  return styleNotes.join('\n- ');
 }
 
 export function getLawyerStyleContext( searchCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; } | string, userId?: string ): string {
   let criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string } = {};
-  if (typeof searchCriteria === 'string') {
-    criteria = { courtType: searchCriteria };
-  } else if (searchCriteria) {
-    criteria = searchCriteria;
-  }
+  if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
+  else if (searchCriteria) criteria = searchCriteria;
 
   const similarModels = findSimilarModels(criteria, userId);
+  const requestedType = criteria.judicialWorkType || criteria.briefType || '';
+  const sameTypeModels = requestedType
+    ? similarModels.filter((model) => modelMatchesRequestedType(model, requestedType))
+    : [];
 
-  // Pass only the closest ranked lawyer-owned references. Too many full
-  // templates increase unrelated factual/style bleed into the current draft.
-  const selectedModels = similarModels.slice(0, 2);
-  const modelBlocks = selectedModels.map((model, index) => {
-    const content = model.content || '';
-    const excerpt = content.length > 5000
-      ? `${content.slice(0, 3200)}\n\n[...جزء أوسط محذوف للاختصار... ]\n\n${content.slice(-1800)}`
-      : content;
-    return (
-      `[مرشح نموذج المحامي رقم ${index + 1}: "${model.title}" — ${model.judicialWorkType || model.category}]\n` +
-      `\`\`\`\n${excerpt}\n\`\`\``
-    );
+  // Only exact/compatible document types may influence structure. If the vault
+  // has no model for this type, use general writing traits only—not another
+  // document's section order, argument, wording, or substantive text.
+  const selectedModels = (sameTypeModels.length ? sameTypeModels : similarModels).slice(0, 2);
+  const hasSameTypeModel = sameTypeModels.length > 0;
+  const profileBlocks = selectedModels.map((model, index) => {
+    const includeStructure = hasSameTypeModel && modelMatchesRequestedType(model, requestedType);
+    const documentType = (model.judicialWorkType || model.category || '').trim();
+    return `[مرجع أسلوبي شخصي ${index + 1}${documentType ? ` — النوع: ${documentType}` : ''}]\n- ${deriveStyleProfile(model.content || '', includeStructure)}`;
   });
 
-  // Drafting must be grounded in this account's own saved vault models only.
-  // Built-in sample templates are not lawyer-owned models and can mislead the
-  // user into thinking another person's/sample pleading came from their vault.
+  // Crucially, never send an old document, excerpt, title, party name, case
+  // number, date, request, defense, or legal citation to the drafting model.
+  // Only locally derived style attributes are sent.
+  if (!selectedModels.length) {
+    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تنشئ بصمة وهمية؛ استخدم فقط بيانات المستند الحالي.]`;
+  }
 
-  return `[خزانة المحامي الشخصية — سياق إلزامي للمهمة الحالية]: هذا السياق جزء أساسي من طلب الصياغة وليس معلومة اختيارية. استخدم النماذج الشخصية المحفوظة في خزنة هذا الحساب لاستخلاص البصمة الكتابية الفعلية للمحامي: الديباجة، ترتيب الفقرات، عناوين الدفوع، الانتقال بين الوقائع والدفاع والطلبات، المصطلحات، ونمط الجمل. لا تستخدم نماذج افتراضية أو منسوبة إلى حساب آخر. ${modelBlocks.length ? modelBlocks.join('\n\n') : '[لا توجد نماذج شخصية مطابقة في خزنة الحساب الحالي.]'} تعليمات إلزامية لاستخدام السياق: 1) هذه النماذج الشخصية مرشحات أسلوبية وليست نصوصاً يجب نسخها. اختر أنت داخلياً النموذج الشخصي الأقرب إلى نوع المهمة ووقائع القضية والمحكمة وطريقة الدفوع، ولا تفترض أن أول نموذج مرفق هو الأفضل. 2) إذا كان أكثر من نموذج مناسب، قارن بينها واستخلص البصمة المشتركة والأقرب للقضية، ثم اجعل النموذج الأشد صلة هو المرجع الأساسي للتنظيم والأسلوب. 3) طبّق أثر النموذج المختار فعلياً في الصياغة النهائية: الديباجة، ترتيب الأقسام، عناوين الدفوع، تسلسل الحجج، المصطلحات، طول الفقرات، الانتقالات، وصياغة الطلبات، مع الحفاظ على أسلوب قانوني طبيعي غير روبوتي. 4) لا تكتفِ بذكر أن الخزانة موجودة، ولا تنتقل إلى صياغة عامة إذا كان هناك نموذج شخصي مناسب يمكن محاكاة أسلوبه. يجب أن يشعر القارئ أن المستند كُتب بنفس المدرسة والأسلوب والترتيب المعتاد للمحامي، مع اختلاف الوقائع والمضمون بحسب القضية الجديدة. 5) لا تنسخ وقائع أو أسماء أو أرقام قضايا أو تواريخ أو مستندات أو طلبات أو دفوع خاصة بالنماذج المرجعية إلى القضية الحالية. 6) لا تستورد مادة قانونية أو حكماً أو رقم طعن من نموذج مرجعي لمجرد وجوده فيه؛ أي سند قانوني يجب أن يكون متحققاً من السياق الحالي أو يُذكر أنه يحتاج تحققاً. 7) القضية الحالية ومدخلات المستخدم ومستنداته لها الأولوية المطلقة عند التعارض مع أي نموذج. 8) لا تستخدم أي قالب افتراضي أو نموذج غير محفوظ في خزنة هذا الحساب. 9) إذا لم يوجد نموذج شخصي مناسب في خزنة هذا الحساب، أنشئ المحتوى من وقائع القضية الحالية فقط دون اختلاق نموذج منسوب إلى محامٍ آخر. 10) لا تخبر المستخدم بعملية الاختيار الداخلية ولا تضف فقرة تشرح أنك استخدمت نموذجاً مرجعياً؛ أخرج المستند القانوني مباشرة بأسلوبه المستخلص.`;
+  const typeLine = requestedType
+    ? `نوع المستند المطلوب حاليًا: ${requestedType}.`
+    : 'نوع المستند المطلوب يحدده طلب المستخدم الحالي.';
+  return `[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\nالبيانات التالية وصف أسلوبي مجرد مستخلص محليًا من نماذج المحامي؛ لم يُرفق أي نص من المستندات الأصلية. استخدم الوصف لمحاكاة طريقة العرض والانتقال ونمط الجمل فقط.\n${profileBlocks.join('\n\n')}\n\n[حدود إلزامية]\n1) اكتب المستند الحالي من بدايته إلى نهايته اعتمادًا على وقائع هذا الطلب ومستنداته وتعليمات المستخدم الحالية فقط.\n2) الخزنة ليست مصدرًا لوقائع أو مستندات أو أسماء أو تواريخ أو أرقام أو طلبات أو دفوع أو نصوص قانونية. لا تنقل منها أي مضمون أو عبارة مميزة مرتبطة بقضية سابقة.\n3) لا تقتبس أو تعيد صياغة أي جزء من مستند محفوظ؛ لا يتم إرسال نصوص النماذج إلى المولد أصلًا.\n4) طبّق بنية نموذج من النوع نفسه فقط إذا كان ذلك النوع موجودًا في خزنة هذا الحساب. إذا لم يوجد، خذ السمات العامة للكتابة ولا تفرض بنية مستند مختلف.\n5) نوع المستند الجديد وتعليمات المستخدم الحالية هما الحاكمان؛ لا تحوّل صحيفة دعوى إلى مذكرة، أو إنذارًا إلى إعادة إعلان، أو أي نوع إلى نوع آخر.\n6) لا تضف اسم المحامي أو مكتبه أو ترويسة أو بيانات تعريفية إلا إذا كانت مقدمة صراحةً ضمن بيانات المستند الحالي أو موجودة بالفعل في المسودة الحالية الجاري تحريرها.\n7) اجعل البصمة واضحة في أسلوب العرض وتسلسل الفقرات والانتقالات وطول الجمل والروابط التعبيرية، لا في استنساخ مضمون المستندات القديمة.`;
 }
