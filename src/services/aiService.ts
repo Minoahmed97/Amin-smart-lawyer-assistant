@@ -151,7 +151,9 @@ async function requestSavedJob<T extends Record<string, any>>(
       }
       if (data.status === 'failed') {
         if (storage) storage.removeItem(key);
-        throw new Error(data.error || 'فشلت المهمة المحفوظة.');
+        const failure: any = new Error(data.error || 'فشلت مهمة الصياغة على الخادم.');
+        failure.terminalJobError = true;
+        throw failure;
       }
       if ((data.status === 'queued' || data.status === 'running') && Date.now() - lastProgressAt >= MAX_INACTIVE_MS) {
         if (storage) storage.removeItem(key);
@@ -160,10 +162,11 @@ async function requestSavedJob<T extends Record<string, any>>(
         throw error;
       }
     } catch (err: any) {
-      if (err?.stopPolling || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) throw err;
+      if (err?.stopPolling || err?.terminalJobError) throw err;
       transientFailures++;
       if (transientFailures >= 8) {
-        throw new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
+        const detail = err?.message ? ` السبب الأخير: ${String(err.message).slice(0, 240)}` : '';
+        throw new Error(`تعذر الاتصال بحالة مهمة الصياغة بعد عدة محاولات. تم الاحتفاظ بمعرّف المهمة لتجنب بدء توليد مكرر.${detail}`);
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
