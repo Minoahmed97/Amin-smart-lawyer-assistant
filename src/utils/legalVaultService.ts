@@ -142,21 +142,23 @@ export function findSimilarModels( criteria: { courtType?: string; briefType?: s
 
     // 1. Prefer the same judicial work type.
     if (normalizedWorkType) {
-      if (workTypeLower.includes(normalizedWorkType) || normalizedWorkType.includes(workTypeLower)) {
+      // Empty model fields must never match every requested work type.
+      if (workTypeLower && (workTypeLower.includes(normalizedWorkType) || normalizedWorkType.includes(workTypeLower))) {
         score += 45;
       }
-      if (catLower.includes(normalizedWorkType) || titleLower.includes(normalizedWorkType)) score += 25;
+      if ((catLower && catLower.includes(normalizedWorkType)) || (titleLower && titleLower.includes(normalizedWorkType))) score += 25;
     }
 
-    // 2. Prefer the same court / brief type.
+    // 2. Prefer the same court / brief type. Guard empty fields so an empty
+    // category/title cannot receive a match merely because every string includes ''.
     if (normalizedCourt) {
-      if (catLower.includes(normalizedCourt) || normalizedCourt.includes(catLower)) score += 20;
-      if (contentLower.includes(normalizedCourt)) score += 5;
+      if ((catLower && catLower.includes(normalizedCourt)) || (catLower && normalizedCourt.includes(catLower))) score += 20;
+      if (contentLower && contentLower.includes(normalizedCourt)) score += 5;
     }
 
     if (normalizedBrief) {
-      if (titleLower.includes(normalizedBrief) || catLower.includes(normalizedBrief)) score += 15;
-      if (notesLower.includes(normalizedBrief)) score += 8;
+      if ((titleLower && titleLower.includes(normalizedBrief)) || (catLower && catLower.includes(normalizedBrief))) score += 15;
+      if (notesLower && notesLower.includes(normalizedBrief)) score += 8;
     }
 
     // 3. Use the actual case text to rank the closest lawyer-owned models,
@@ -202,10 +204,9 @@ export function getLawyerStyleContext( searchCriteria?: { courtType?: string; br
 
   const similarModels = findSimilarModels(criteria, userId);
 
-  // Give Gemini several automatically ranked lawyer-owned candidates.
-  // Retrieval only narrows the candidate set; Gemini makes the final choice
-  // according to the actual case and requested legal work.
-  const selectedModels = similarModels.slice(0, 4);
+  // Pass only the closest ranked lawyer-owned references. Too many full
+  // templates increase unrelated factual/style bleed into the current draft.
+  const selectedModels = similarModels.slice(0, 2);
   const modelBlocks = selectedModels.map((model, index) => {
     const content = model.content || '';
     const excerpt = content.length > 5000
