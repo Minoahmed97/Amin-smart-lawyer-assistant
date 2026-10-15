@@ -906,22 +906,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
             )}
 
             <div className="flex-1 bg-[#1e293b] border-2 border-slate-700/80 rounded-2xl p-4 sm:p-6 overflow-y-auto max-h-[850px] shadow-inner text-slate-100 relative">
-              {isLoading ? (
-                <div className="h-full flex flex-col items-center justify-center py-24 sm:py-28 text-center gap-4">
-                  <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 animate-pulse">
-                    <Scale className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <h4 className="text-white font-bold text-base mb-1">
-                      جارٍ صياغة العمل القضائي وفق الأصول المصرية...
-                    </h4>
-                    <p className="text-xs text-slate-400 max-w-md">
-                      تطبيق نصوص القانون وأحكام النقض ومحاكاة نموذجك المختار.
-                    </p>
-                  </div>
-                  <Loader2 className="w-6 h-6 animate-spin text-amber-400 mt-2" />
-                </div>
-              ) : generatedBrief ? (
+              {generatedBrief ? (
                 isLiveEditing ? (
                   <textarea
                     rows={26}
@@ -950,6 +935,21 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                     {generatedBrief}
                   </div>
                 )
+              ) : isLoading ? (
+                <div className="h-full flex flex-col items-center justify-center py-24 sm:py-28 text-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 animate-pulse">
+                    <Scale className="w-8 h-8" />
+                  </div>
+                  <div>
+                    <h4 className="text-white font-bold text-base mb-1">
+                      جارٍ صياغة العمل القضائي وفق الأصول المصرية...
+                    </h4>
+                    <p className="text-xs text-slate-400 max-w-md">
+                      تطبيق نصوص القانون وأحكام النقض ومحاكاة نموذجك المختار.
+                    </p>
+                  </div>
+                  <Loader2 className="w-6 h-6 animate-spin text-amber-400 mt-2" />
+                </div>
               ) : draftError ? (
                 <div className="h-full flex flex-col items-center justify-center py-16 sm:py-20 text-center gap-3 max-w-md mx-auto">
                   <div className="w-14 h-14 rounded-2xl bg-rose-950/60 border border-rose-500/50 flex items-center justify-center text-rose-400">
