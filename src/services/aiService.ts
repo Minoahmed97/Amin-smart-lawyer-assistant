@@ -151,9 +151,7 @@ async function requestSavedJob<T extends Record<string, any>>(
       }
       if (data.status === 'failed') {
         if (storage) storage.removeItem(key);
-        const failure: any = new Error(data.error || 'فشلت مهمة الصياغة على الخادم.');
-        failure.terminalJobError = true;
-        throw failure;
+        throw new Error(data.error || 'فشلت المهمة المحفوظة.');
       }
       if ((data.status === 'queued' || data.status === 'running') && Date.now() - lastProgressAt >= MAX_INACTIVE_MS) {
         if (storage) storage.removeItem(key);
@@ -162,11 +160,10 @@ async function requestSavedJob<T extends Record<string, any>>(
         throw error;
       }
     } catch (err: any) {
-      if (err?.stopPolling || err?.terminalJobError) throw err;
+      if (err?.stopPolling || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) throw err;
       transientFailures++;
       if (transientFailures >= 8) {
-        const detail = err?.message ? ` السبب الأخير: ${String(err.message).slice(0, 240)}` : '';
-        throw new Error(`تعذر الاتصال بحالة مهمة الصياغة بعد عدة محاولات. تم الاحتفاظ بمعرّف المهمة لتجنب بدء توليد مكرر.${detail}`);
+        throw new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -345,13 +342,16 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
 
 export async function qualifyLegalCase( disputeDetails: string, clientGoals?: string, onChunk?: (text: string) => void, userId?: string ): Promise<string> {
   await throttleRequests();
+  const lawyerVaultContext = getLawyerStyleContext({
+    judicialWorkType: 'تكييف وتحليل قانوني',
+    factsOrSubject: disputeDetails,
+  }, userId);
 
   try {
-    // Legal qualification is an independent legal analysis; do not load or send
-    // the lawyer's vault context for this task. Other drafting tasks still use it.
     const result = await requestSavedJob('qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
+      vaultContext: lawyerVaultContext,
     }, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
