@@ -23,6 +23,8 @@ import {
   clearAllLawModels,
 } from '../utils/legalVaultService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
+import { saveLegalDocTemplate, getLegalDocTemplates, deleteLegalDocTemplate, classifyLegalDocument, LegalDocTemplate } from '../utils/legalTemplateService.ts';
+import { saveLegalVaultOriginalFile, getLegalVaultOriginalFiles, downloadLegalVaultOriginalFile, deleteLegalVaultOriginalFile, LegalVaultOriginalFile } from '../utils/legalVaultOriginalFiles.ts';
 
 interface LegalVaultViewProps {
   userId: string;
@@ -48,10 +50,24 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
   const [formNotes, setFormNotes] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [successNote, setSuccessNote] = useState<string | null>(null);
+  const [wordTemplates, setWordTemplates] = useState<LegalDocTemplate[]>([]);
+  const [originalFiles, setOriginalFiles] = useState<LegalVaultOriginalFile[]>([]);
 
   useEffect(() => {
     refreshModels();
+    refreshWordTemplates();
+    refreshOriginalFiles();
   }, [userId]);
+
+  const refreshWordTemplates = async () => {
+    try { setWordTemplates(await getLegalDocTemplates(userId)); }
+    catch (error) { console.warn('Could not load Word templates:', error); }
+  };
+
+  const refreshOriginalFiles = async () => {
+    try { setOriginalFiles(await getLegalVaultOriginalFiles(userId)); }
+    catch (error) { console.warn('Could not load original vault files:', error); }
+  };
 
   const refreshModels = () => {
     const list = getAllLawModels(userId);
@@ -93,22 +109,40 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
     setTimeout(() => setSuccessNote(null), 3500);
   };
 
-  const handleUploadedText = (text: string, fileName: string) => {
+  const handleUploadedText = (text: string, fileName: string, _fileType?: string, sourceFile?: File) => {
     const cleanTitle = fileName.replace(/\.[^/.]+$/, '');
+    const classification = classifyLegalDocument(fileName, text);
     const saved = saveLawModel({
       title: `نموذج: ${cleanTitle}`,
-      category: 'عام',
-      judicialWorkType: 'مذكرة بدفاع',
+      category: classification.category,
+      judicialWorkType: classification.workType,
       content: text,
       weight: 5,
-      notes: `تم رفعه من المستند (${fileName}).`,
+      notes: `تم رفعه من المستند (${fileName}). التصنيف الأولي: ${classification.courtType} — ${classification.workType}.`,
       fileName,
       source: 'uploaded',
     }, userId);
     refreshModels();
     setSelectedModel(saved);
-    setSuccessNote(`تم استخراج نموذج "${fileName}" وحفظه في الخزينة بنجاح!`);
-    setTimeout(() => setSuccessNote(null), 3500);
+    if (sourceFile) {
+      void saveLegalVaultOriginalFile(sourceFile, userId, text)
+        .then(() => refreshOriginalFiles())
+        .catch((error) => {
+          console.warn('Original vault file could not be saved:', error);
+          setSuccessNote(`تم حفظ النص، لكن تعذر حفظ الملف الأصلي على هذا الجهاز: ${fileName}.`);
+        });
+      if (sourceFile.name.toLowerCase().endsWith('.docx')) {
+        void saveLegalDocTemplate(sourceFile, userId, text)
+          .then((template) => {
+            if (template) { void refreshWordTemplates(); setSuccessNote(`تم حفظ النص والملف الأصلي وقالب Word: ${fileName}. التصنيف الأولي: ${template.courtType} — ${template.workType}.`); }
+          })
+          .catch((error) => console.warn('Word template index could not be saved:', error));
+      }
+      setSuccessNote(`تم حفظ النص وتصنيف المستند مبدئيًا. جارٍ حفظ الملف الأصلي على هذا الجهاز: ${fileName}.`);
+    } else {
+      setSuccessNote(`تم حفظ النص فقط؛ لم يصل الملف الأصلي إلى الخزنة. أعد رفع المستند إذا كنت تريد الاحتفاظ بنسخته الأصلية.`);
+    }
+    setTimeout(() => setSuccessNote(null), 6000);
   };
 
   const handleWeightChange = (id: string, newWeight: number) => {
@@ -215,6 +249,53 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
             description="ارفع مذكراتك أو صحف دعاواك السابقة، وسيقوم الذكاء الاصطناعي باستخراجها وحفظها كنموذج استرشادي."
           />
         </div>
+
+        {originalFiles.length > 0 && (
+          <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/70 p-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h3 className="text-sm font-bold text-emerald-300">الملفات الأصلية المحفوظة ({originalFiles.length})</h3>
+              <span className="text-[11px] text-slate-400">على هذا الجهاز والمتصفح فقط</span>
+            </div>
+            <div className="mt-2 space-y-2">
+              {originalFiles.map((file) => (
+                <div key={file.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-bold text-slate-100 truncate">{file.fileName}</div>
+                    <div className="text-[10px] text-slate-400">{file.category} · {file.courtType} · {file.workType} · {(file.size / 1024).toFixed(0)} KB</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button type="button" onClick={() => void downloadLegalVaultOriginalFile(file.id, userId).catch(() => alert('تعذر تنزيل الملف الأصلي.'))} className="rounded-lg border border-emerald-800 px-2 py-1 text-[10px] font-bold text-emerald-300 hover:bg-emerald-950">تنزيل</button>
+                    <button type="button" onClick={() => { if (confirm('هل تريد حذف النسخة الأصلية من هذا الجهاز؟ سيظل النص المستخرج محفوظًا.')) void deleteLegalVaultOriginalFile(file.id, userId).then(refreshOriginalFiles).catch(() => alert('تعذر حذف الملف.')); }} className="rounded-lg border border-rose-800 px-2 py-1 text-[10px] font-bold text-rose-300 hover:bg-rose-950">حذف</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {wordTemplates.length > 0 && (
+          <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/70 p-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h3 className="text-sm font-bold text-amber-300">قوالب Word الأصلية المحفوظة ({wordTemplates.length})</h3>
+              <span className="text-[11px] text-slate-400">محفوظة على هذا الجهاز والمتصفح</span>
+            </div>
+            <div className="mt-2 space-y-2">
+              {wordTemplates.map((template) => (
+                <div key={template.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-100 truncate">{template.title}</div>
+                    <div className="text-[10px] text-slate-400">{template.courtType} · {template.workType}</div>
+                  </div>
+                  <button type="button" onClick={() => {
+                    if (confirm('هل تريد حذف ملف القالب الأصلي؟ سيظل النص المستخرج محفوظًا في الخزينة.')) {
+                      void deleteLegalDocTemplate(template.id, userId).then(refreshWordTemplates).catch(() => alert('تعذر حذف القالب.'));
+                    }
+                  }} className="shrink-0 rounded-lg border border-rose-800 px-2 py-1 text-[10px] font-bold text-rose-300 hover:bg-rose-950">حذف القالب</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {successNote && (
           <div className="mt-3 p-3 bg-emerald-950/80 border border-emerald-500 rounded-xl text-emerald-200 text-xs font-bold flex items-center gap-2 animate-in fade-in">
