@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import { copyTextSafely, shareLegalDoc } from '../utils/clipboardHelper.ts';
 import { exportLegalDocToWord } from '../utils/exportHelper.ts';
+import { getLegalDocTemplates, LegalDocTemplate } from '../utils/legalTemplateService.ts';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
 
@@ -93,6 +94,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const [fontFamily, setFontFamily] = useState<'traditional' | 'amiri'>('traditional');
   const [isLiveEditing, setIsLiveEditing] = useState<boolean>(false);
   const [vaultModelsCount, setVaultModelsCount] = useState<number>(0);
+  const [wordTemplates, setWordTemplates] = useState<LegalDocTemplate[]>([]);
+  const [templateMode, setTemplateMode] = useState<'auto' | 'manual'>('auto');
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
 
   // General task types only. The AI decides which vault references are useful;
   // the user is not asked to choose an internal template/subtype.
@@ -118,6 +122,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   useEffect(() => {
     const models = getAllLawModels(userId);
     setVaultModelsCount(models.length);
+    void getLegalDocTemplates(userId).then(setWordTemplates).catch((error) => console.warn('Could not load Word templates:', error));
   }, [userId]);
 
   useEffect(() => {
@@ -293,7 +298,14 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const exportToWord = () => {
     if (!generatedBrief) return;
     const briefTitle = formData.briefType || 'مذكرة_قضائية';
-    exportLegalDocToWord(generatedBrief, briefTitle);
+    void exportLegalDocToWord(generatedBrief, briefTitle, {
+      userId,
+      templateMode,
+      templateId: selectedTemplateId || undefined,
+      courtType: formData.courtType,
+      workType: formData.customJudicialWorkType || formData.judicialWorkType || formData.briefType,
+      facts: formData.facts,
+    });
   };
 
   const handlePrintPdfDirectly = () => {
@@ -717,6 +729,22 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
               </div>
 
               {generatedBrief && (
+                <div className="w-full flex flex-wrap items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/60 p-2">
+                  <label className="text-[11px] font-bold text-slate-300" htmlFor="word-template-mode">قالب الطباعة:</label>
+                  <select id="word-template-mode" value={templateMode} onChange={(e) => setTemplateMode(e.target.value as 'auto' | 'manual')} className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-white">
+                    <option value="auto">اختيار تلقائي حسب نوع القضية</option>
+                    <option value="manual">أختار قالبًا بنفسي</option>
+                  </select>
+                  {templateMode === 'manual' && (
+                    <select value={selectedTemplateId} onChange={(e) => setSelectedTemplateId(e.target.value)} className="min-w-[180px] flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-white">
+                      <option value="">اختر قالب Word محفوظًا</option>
+                      {wordTemplates.map((template) => <option key={template.id} value={template.id}>{template.title} — {template.courtType} / {template.workType}</option>)}
+                    </select>
+                  )}
+                  <span className="text-[10px] text-slate-400">{wordTemplates.length ? `${wordTemplates.length} قالب Word أصلي` : 'لا توجد قوالب Word أصلية بعد؛ سيُستخدم التنسيق العام'}</span>
+                </div>
+              )}
+              {generatedBrief && (
                 <div className="flex items-center gap-2 flex-wrap">
                   <button
                     onClick={copyToClipboard}
@@ -729,10 +757,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                    title="تصدير بصيغة Word (.doc)"
+                    title="تصدير Word باستخدام القالب المختار إن توفر"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصدير Word (.doc)</span>
+                    <span>تصدير Word</span>
                   </button>
                   <button
                     onClick={handlePrintPdfDirectly}
