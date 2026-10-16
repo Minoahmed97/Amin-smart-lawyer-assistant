@@ -22,11 +22,7 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   });
 }
 
-/** 
- * ضغط الصور وتغيير حجمها من جانب العميل (Client-Side). 
- * ضبط أبعاد الصور بحد أقصى 1200px بجودة JPEG 0.70. 
- * يمنع خطأ HTTP 413 تماماً ويسرّع عملية التعرف الضوئي على الحروف (OCR). 
- */
+/** * Client-Side Image Compression & Resizing. * Normalizes images to max 1200px bounding box at JPEG 0.70 quality. * Prevents HTTP 413 completely and speeds up OCR processing. */
 export async function compressAndResizeImage( file: File, maxDimension = 1200, quality = 0.70 ): Promise<{ base64Data: string; mimeType: string }> {
   if (typeof window !== 'undefined' && 'createImageBitmap' in window) {
     try {
@@ -125,100 +121,28 @@ export function resolveMimeType(file: File): string {
   return file.type || 'image/jpeg';
 }
 
-/** 
- * استخراج النصوص عبر خادم OCR الموجه من خلال خدمة التدوير الآلي لمفاتيح الذكاء الاصطناعي. 
- */
-export async function extractTextViaServerOCR(base64Data: string, mimeType: string, fileName: string): Promise<string> {
+/** * Server OCR routed through the central AI key-rotation service. */
+export async function extractTextViaServerOCR( base64Data: string, mimeType: string, fileName: string ): Promise<string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
   const sessionToken = getSessionToken();
   if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
 
-  let response: Response;
-  try {
-    // يستغرق OCR وقتاً أطول من طلبات JSON العادية.
-    // ترسل النقطة النهائية أحداث الحفاظ على الاتصال أثناء عمل Gemini لتعذير انقطاع الاتصال قبل استلام النص.
-    response = await fetch('/api/ocr', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ base64Data, mimeType, fileName, stream: true }),
-    });
-  } catch (error: any) {
-    if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
-      throw new Error('انقطع الاتصال بخادم استخراج النصوص قبل استلام النتيجة. تأكد من اتصال الإنترنت ومن نشر مسار API على الخادم، ثم أعد المحاولة.');
-    }
-    throw error;
+  const response = await fetch('/api/ocr', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ base64Data, mimeType, fileName }),
+  });
+
+  if (response.ok) {
+    const data = await response.json();
+    if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
+    throw new Error('عملية استخراج النص لم تُرجع نصاً صالحاً.');
   }
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData?.error || `فشل الاستخراج (${response.status})`);
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('text/event-stream')) {
-    if (!response.body) throw new Error('أُغلق اتصال استخراج النصوص قبل استلام النتيجة.');
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let finalResult: any = null;
-    let serverError = '';
-
-    const processFrame = (frame: string) => {
-      const data = frame
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim())
-        .join('\n');
-      if (!data) return;
-      try {
-        const event = JSON.parse(data);
-        if (event?.type === 'done') finalResult = event;
-        else if (event?.type === 'error') serverError = String(event.error || 'فشل استخراج النص من المستند.');
-      } catch {
-        // يتجاهل إطارات الحفاظ على الاتصال غير المكتملة أو غير المتعلقة؛
-        // حيث يمرر محلل المخزن الإطارات الكاملة لهذه الدالة.
-      }
-    };
-
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-
-        let separatorMatch: RegExpMatchArray | null;
-        while ((separatorMatch = buffer.match(/\r?\n\r?\n/)) !== null) {
-          const separatorIndex = separatorMatch.index ?? -1;
-          if (separatorIndex < 0) break;
-          processFrame(buffer.slice(0, separatorIndex));
-          buffer = buffer.slice(separatorIndex + separatorMatch[0].length);
-        }
-
-        if (done) {
-          if (buffer.trim()) processFrame(buffer);
-          break;
-        }
-      }
-    } catch (error: any) {
-      if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
-        throw new Error('انقطع الاتصال أثناء استخراج النص. لم تصل النتيجة كاملة؛ تحقق من الاتصال ثم أعد المحاولة.');
-      }
-      throw error;
-    } finally {
-      reader.releaseLock();
-    }
-
-    if (serverError) throw new Error(serverError);
-    if (typeof finalResult?.text === 'string' && finalResult.text.trim()) return finalResult.text.trim();
-    throw new Error('انتهى اتصال OCR دون إرجاع النص المستخرج. أعد المحاولة، وإذا تكرر الخطأ فراجع سجل API على الخادم.');
-  }
-
-  // قد ينتهي استخراج ملفات Word محلياً في الخادم ويرجع JSON عادي.
-  const data = await response.json().catch(() => ({}));
-  if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
-  throw new Error(data?.error || 'خدمة استخراج النص لم ترجع نصاً صالحاً.');
+  const errorData = await response.json().catch(() => ({}));
+  throw new Error(errorData.error || `فشل الاستخراج (${response.status})`);
 }
 
 export async function extractTextFromDocx(file: File): Promise<string> {
@@ -265,13 +189,7 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
   throw new Error(`تعذر استخراج نص Word القديم (${file.name}).`);
 }
 
-/** 
- * أداة الاستخراج الشاملة والسريعة: 
- * 1. Word (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. 
- * 2. Word (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. 
- * 3. PDF والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. 
- * 4. الملفات النصية (.txt): قراءة فورية للنص. 
- */
+/** * Universal fast extractor: * 1. Word (.docx): Client mammoth extracts instantly in 50ms. * 2. Word (.doc): Client stream decoding or server OCR. * 3. PDF and Images: Client compresses the image and extracts it through the central server OCR/key-rotation service. * 4. Text (.txt): Instant text reading. */
 export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
@@ -281,11 +199,11 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
     throw new Error(`ملف مؤقت (${fileName}) من Word. اختر المستند الأصلي.`);
   }
 
-  // 1. الملفات النصية العادية
+  // 1. Plain text files
   if (lowerName.endsWith('.txt')) {
     extractedText = await file.text();
   }
-  // 2. ملفات Word الحديثة docx
+  // 2. Word Modern docx
   else if (lowerName.endsWith('.docx')) {
     try {
       extractedText = await extractTextFromDocx(file);
@@ -295,7 +213,7 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
       extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
-  // 3. ملفات Word القديمة .doc
+  // 3. Word Legacy .doc
   else if (lowerName.endsWith('.doc')) {
     try {
       extractedText = await extractTextFromLegacyDoc(file);
@@ -305,7 +223,7 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
       extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
-  // 4. مستندات PDF والصور
+  // 4. PDF documents and Images
   else if (
     lowerName.endsWith('.pdf') ||
     lowerName.endsWith('.jpg') ||
