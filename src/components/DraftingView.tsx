@@ -1,5 +1,5 @@
 import { getCurrentAccount } from '../services/authService.ts';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { DraftingFormData } from '../types.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -83,9 +83,6 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     return persistentStorage.getItem('amin_judicial_draft_docname', '');
   });
   const [isUploadingDoc, setIsUploadingDoc] = useState<boolean>(false);
-  const factsTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
-  const extractedDocumentBatchRef = useRef(false);
-  const [documentTextInserted, setDocumentTextInserted] = useState(false);
   const [generatedBrief, setGeneratedBrief] = useState<string>(() => {
     return persistentStorage.getItem('amin_judicial_draft_result', '');
   });
@@ -93,6 +90,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const [isRefining, setIsRefining] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
   const [refineNote, setRefineNote] = useState<string>('');
+  const [refineError, setRefineError] = useState<string>('');
   const [fontSizePt, setFontSizePt] = useState<number>(18);
   const [fontFamily, setFontFamily] = useState<'traditional' | 'amiri'>('traditional');
   const [isLiveEditing, setIsLiveEditing] = useState<boolean>(false);
@@ -167,10 +165,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       customInstructions: '',
     });
     setUploadedDocName('');
-    extractedDocumentBatchRef.current = false;
-    setDocumentTextInserted(false);
     setGeneratedBrief('');
     setRefineNote('');
+    setRefineError('');
     persistentStorage.removeItem('amin_judicial_draft_form');
     persistentStorage.removeItem('amin_judicial_draft_result');
     persistentStorage.removeItem('amin_judicial_draft_docname');
@@ -224,6 +221,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
     setIsLoading(true);
     setRefineNote('');
+    setRefineError('');
     setDraftError('');
     setGeneratedBrief('');
     try {
@@ -267,6 +265,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     if (!generatedBrief) return;
     setIsRefining(true);
     setRefineNote('');
+    setRefineError('');
     const previousDraft = generatedBrief;
     setGeneratedBrief('');
     try {
@@ -276,6 +275,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       if (refined) {
         setGeneratedBrief(refined);
         persistentStorage.setItem('amin_judicial_draft_result', refined);
+        setRefineError('');
         const notes: Record<string, string> = {
           moreDecisive: 'تم تعزيز العبارات القضائية وجعل الصياغة أكثر حسماً.',
           addPrecedents: 'تم تدعيم المذكرة بأحدث مبادئ وأحكام محكمة النقض المصرية.',
@@ -285,7 +285,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         setRefineNote(notes[type] || 'تم تحسين المسودة بنجاح.');
       }
     } catch (err: any) {
-      console.warn('Refine attempt handled silently:', err);
+      console.warn('Refine attempt failed:', err);
+      setGeneratedBrief(previousDraft);
+      setRefineError(err?.message || 'تعذر تدقيق المسودة حالياً.');
     } finally {
       setIsRefining(false);
     }
@@ -385,32 +387,15 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
-            onProcessingChange={(processing) => {
-              setIsUploadingDoc(processing);
-              if (processing) {
-                extractedDocumentBatchRef.current = false;
-                setDocumentTextInserted(false);
-                return;
-              }
-
-              // After the batch has finished, show the user where the extracted text was inserted.
-              if (extractedDocumentBatchRef.current) {
-                setDocumentTextInserted(true);
-                window.requestAnimationFrame(() => {
-                  window.requestAnimationFrame(() => {
-                    factsTextAreaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  });
-                });
-              }
-            }}
+            onProcessingChange={setIsUploadingDoc}
             onTextExtracted={(extractedText, fileName) => {
               const trimmed = extractedText.trim();
               if (!trimmed) return;
-              extractedDocumentBatchRef.current = true;
               setFormData((prev) => {
                 const updatedFacts = prev.facts
                   ? `${prev.facts}\n\n========================================\n[مستند: ${fileName}]:\n${trimmed}`
                   : trimmed;
+                persistentStorage.setJSON('amin_judicial_draft_form', { ...prev, facts: updatedFacts });
                 return {
                   ...prev,
                   facts: updatedFacts,
@@ -592,8 +577,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-bold text-amber-300" htmlFor="judicial-facts-textarea">وقائع الدعوى:</label>
-              <div className="flex items-center gap-2 flex-wrap">
+              <label className="text-xs font-bold text-amber-300">وقائع الدعوى:</label>
+              <div className="flex items-center gap-2">
                 <VoiceDictateButton
                   onTranscript={(text) => {
                     setFormData((prev) => {
@@ -607,19 +592,12 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   }}
                   title="إملاء وقائع الدعوى"
                 />
-                {documentTextInserted && (
-                  <span className="text-[10px] text-emerald-300 font-bold" role="status">
-                    تم إدراج النص المستخرج هنا
-                  </span>
-                )}
                 <span className="text-[10px] text-slate-400 font-mono">
                   {formData.facts.length} حرف
                 </span>
               </div>
             </div>
             <textarea
-              id="judicial-facts-textarea"
-              ref={factsTextAreaRef}
               rows={6}
               value={formData.facts}
               onChange={(e) => {
@@ -749,7 +727,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                       جاهز للإيداع والطباعة
                     </span>
                   </h3>
-                  {generatedBrief && (
+                  {generatedBrief && !isLoading && !draftError && (
                     <span className="text-[11px] text-slate-400">
                       {generatedBrief.split(/\s+/).filter(Boolean).length} كلمة | {generatedBrief.length} حرف
                     </span>
@@ -757,7 +735,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                 </div>
               </div>
 
-              {generatedBrief && (
+              {generatedBrief && !isLoading && !draftError && (
                 <div className="w-full flex flex-wrap items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/60 p-2">
                   <label className="text-[11px] font-bold text-slate-300" htmlFor="word-template-mode">قالب الطباعة:</label>
                   <select id="word-template-mode" value={templateMode} onChange={(e) => setTemplateMode(e.target.value as 'auto' | 'manual')} className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-white">
@@ -773,7 +751,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   <span className="text-[10px] text-slate-400">{wordTemplates.length ? `${wordTemplates.length} قالب Word أصلي` : 'لا توجد قوالب Word أصلية بعد؛ سيُستخدم التنسيق العام'}</span>
                 </div>
               )}
-              {generatedBrief && (
+              {generatedBrief && !isLoading && !draftError && (
                 <div className="flex items-center gap-2 flex-wrap">
                   <button
                     onClick={copyToClipboard}
@@ -803,7 +781,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
               )}
             </div>
 
-            {generatedBrief && (
+            {generatedBrief && !isLoading && !draftError && (
               <AppliedRulesAuditBadge
                 workType={formData.customJudicialWorkType || formData.judicialWorkType || formData.briefType || 'مذكرة بدفاع'}
                 courtType={formData.courtType}
@@ -813,7 +791,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
             )}
 
             {/* Quick Refinements Bar */}
-            {generatedBrief && (
+            {generatedBrief && !isLoading && !draftError && (
               <div className="bg-slate-900 border border-slate-700 rounded-xl p-2.5 mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 text-xs text-amber-300 font-bold">
                   <Sparkles className="w-3.5 h-3.5 text-amber-400" />
@@ -858,8 +836,14 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                 <span>{refineNote}</span>
               </div>
             )}
+            {refineError && (
+              <div role="alert" className="bg-rose-950/40 border border-rose-500/40 rounded-lg px-3 py-2 text-xs text-rose-200 mb-3 flex items-center gap-2 animate-in fade-in">
+                <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                <span>{refineError}</span>
+              </div>
+            )}
 
-            {generatedBrief && (
+            {generatedBrief && !isLoading && !draftError && (
               <div className="bg-[#1e293b] border border-slate-700 rounded-xl p-2.5 mb-3 flex flex-wrap items-center justify-between gap-3 text-xs">
                 <div className="flex items-center gap-2">
                   <span className="text-slate-300 font-bold flex items-center gap-1">
@@ -935,7 +919,13 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
             )}
 
             <div className="flex-1 bg-[#1e293b] border-2 border-slate-700/80 rounded-2xl p-4 sm:p-6 overflow-y-auto max-h-[850px] shadow-inner text-slate-100 relative">
-              {isLoading ? (
+              {isLoading && generatedBrief && (
+                <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">التوليد مستمر؛ النص الظاهر مسودة جزئية، انتظر اكتمال المهمة قبل الاعتماد عليها أو تصديرها.</div>
+              )}
+              {draftError && generatedBrief && (
+                <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">{draftError} النص الظاهر غير مضمون الاكتمال.</div>
+              )}
+              {isLoading && !generatedBrief ? (
                 <div className="h-full flex flex-col items-center justify-center py-24 sm:py-28 text-center gap-4">
                   <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 animate-pulse">
                     <Scale className="w-8 h-8" />
@@ -1012,7 +1002,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
               )}
             </div>
 
-            {generatedBrief && (
+            {generatedBrief && !isLoading && !draftError && (
               <div className="bg-slate-900/90 border border-slate-700/80 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-md">
                 <div className="flex items-center gap-2 text-xs text-emerald-300 font-bold">
                   <Sparkles className="w-4 h-4 text-emerald-400" />
