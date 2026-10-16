@@ -73,10 +73,10 @@ export default async function handler(req: any, res: any) {
           }
         }
       } catch {}
-      throw new Error(`تعذر استخراج نص ملف Word (${fileName || 'المحدد'}).`);
+      throw new Error(`تعذر استخراج نص ملف وورد (${fileName || 'المحدد'}).`);
     }
 
-    // 2. Images and PDF OCR via the existing provider/key-rotation path.
+    // 2. الصور تستخدم Gemini مباشرةً، بينما تحتفظ ملفات بي دي إف بمسار المزوّدين وتدوير المفاتيح الحالي.
     // The client compresses images to JPEG even when the original filename is
     // .png or .webp, so prefer the MIME type describing the uploaded bytes.
     let safeGeminiMime = 'image/jpeg';
@@ -91,8 +91,10 @@ export default async function handler(req: any, res: any) {
     }
 
     const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل. - لا تصحح النص من عندك ولا تعيد صياغته ولا تلخصه. - لا تستنتج كلمة غير مقروءة ولا تخترع نصاً مفقوداً؛ عند تعذر قراءة جزء واضح استخدم [غير مقروء] بدلاً من التخمين. - لا تضف عناوين أو وقائع أو مواد قانونية أو أحكاماً أو أسماء غير ظاهرة في المستند. - حافظ على الجداول والقوائم والتقسيمات والعناوين قدر الإمكان. - إذا وجدت توقيعاً أو ختماً أو كتابة بخط اليد ولم يكن محتواها مقروءاً، صف وجوده بإيجاز دون اختلاق مضمونه. - أخرج النص المستخرج فقط، دون مقدمة أو تعليق أو تحليل أو ادعاء بأن الدقة مطلقة.`;
+    const isImageUpload = safeGeminiMime.startsWith('image/');
     const extractedText = await executeWithKeyRotation(async (ai, _key, model) => {
       const response = await ai.models.generateContent({
+        skipAdaptiveAnswerLength: true,
         model,
         contents: [
           {
@@ -114,7 +116,7 @@ export default async function handler(req: any, res: any) {
           temperature: 0.2,
           maxOutputTokens: 32768,
         },
-      });
+      } as any);
       const text = response.text?.trim() || '';
       if (!text) {
         // Treat an empty model response as a failed attempt so the existing
@@ -125,7 +127,7 @@ export default async function handler(req: any, res: any) {
         });
       }
       return text;
-    }, GEMINI_MODELS);
+    }, GEMINI_MODELS, undefined, isImageUpload, isImageUpload ? { ocrMode: true } : undefined);
 
     if (extractedText) {
       const usage = await consumeOperation(req, 'ocr');
