@@ -157,7 +157,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     e.preventDefault();
     if (isUploadingDoc) return;
     if (!opponentBriefText.trim()) {
-      setDeconstructError('يرجى لصق نص مذكرة الخصم أو رفع مستند Word أو PDF.');
+      setDeconstructError('يرجى لصق نص مذكرة الخصم أو رفع مستند وورد أو ملف بي دي إف.');
       return;
     }
 
@@ -211,7 +211,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
       '2- [المذكرة المقابلة المقترحة]:',
       '[المذكرة المقابلة المقترحة]:',
       'باسم الشعب',
-      'مذكرة بدفاع'
+      'مذكرة بدفوع'
     ];
     for (const m of markers) {
       const idx = text.indexOf(m);
@@ -309,7 +309,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-300 mt-1">
-                الصر المستند أو ارفعه بصيغة Word أو PDF، وسيقوم المساعد بتفنيد محتوياه واستخراج نقاط الضعف وإعداد الرد القانوني المناسب.
+                الصق المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيقوم المساعد بتفنيد محتواه واستخراج نقاط الضعف وإعداد الرد القانوني المناسب.
               </p>
             </div>
           </div>
@@ -357,8 +357,8 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 return updatedDoc;
               });
             }}
-            title="رفع مذكرة الخصم (Word / PDF / صور)"
-            description="يدعم ملفات Word القديمة والحديثة والمستندات المصورة بدقة 100%."
+            title="رفع مذكرة الخصم (وورد / بي دي إف / صور)"
+            description="يدعم ملفات وورد القديمة والحديثة والمستندات المصورة بدقة 100%."
           />
 
           {uploadedDocName && (
@@ -405,7 +405,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 rows={8}
                 value={opponentBriefText}
                 onChange={(e) => setOpponentBriefText(e.target.value)}
-                placeholder="الصق نص مذكرة الخصم هنا أو ارفع ملف Word أو PDF أعلاه..."
+                placeholder="الصق نص مذكرة الخصم هنا أو ارفع ملف وورد أو ملف بي دي إف أعلاه..."
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-xs sm:text-sm font-sans leading-relaxed focus:outline-none focus:border-[#b45309]"
               ></textarea>
             </div>
@@ -557,18 +557,18 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                    title="تصديق بصيغة Word (.doc)"
+                    title="تصديق بصيغة وورد (.doc)"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصديق Word (.doc)</span>
+                    <span>تصديق وورد (.doc)</span>
                   </button>
                   <button
                     onClick={handlePrint}
                     className="px-3 py-1.5 rounded-lg bg-[#b45309] hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                    title="طباعة / PDF"
+                    title="طباعة / ملف بي دي إف"
                   >
                     <Printer className="w-3.5 h-3.5" />
-                    <span>طباعة / PDF</span>
+                    <span>طباعة / ملف بي دي إف</span>
                   </button>
                   {onSwitchTab && (
                     <button
@@ -699,7 +699,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                       جاري تفكيك ادعاءات الخصم واستخراج الثغرات...
                     </h4>
                     <p className="text-xs text-slate-400 max-w-md">
-                      يتم فحص الثغرات الإجراءية والموضوعية وصياغة الدفوع المقابلة.
+                      يتم فحص الثغرات الإجرائية والموضوعية وصياغة الدفوع المقابلة.
                     </p>
                   </div>
                   <Loader2 className="w-6 h-6 animate-spin text-amber-400 mt-2" />
@@ -760,7 +760,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     تقرير التفنيد والرد والمذكرة المقابلة سيظهر هنا
                   </h4>
                   <p className="text-xs max-w-md leading-relaxed text-slate-400">
-                    الصق مذكرة الخصم أو ارفع ملف Word أو PDF على اليمين ثم اضغط زر التفنيد والرد.
+                    الصق مذكرة الخصم أو ارفع ملف وورد أو ملف بي دي إف على اليمين ثم اضغط زر التفنيد والرد.
                   </p>
                 </div>
               )}
@@ -792,10 +792,10 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer"
-                    title="تصديق Word"
+                    title="تصديق وورد"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصديق Word</span>
+                    <span>تصديق وورد</span>
                   </button>
                   <button
                     onClick={handlePrint}
