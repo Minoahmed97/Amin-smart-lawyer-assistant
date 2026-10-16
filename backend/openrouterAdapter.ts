@@ -74,35 +74,18 @@ async function request(options: any, model: string, stream: boolean) {
     error.statusCode = 503;
     throw error;
   }
-  const requestedTimeout = Number(options?.requestTimeoutMs);
-  const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout >= 1000
-    ? Math.min(requestedTimeout, 120000)
-    : 0;
-  const timeoutSignal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
-  let response: Response;
-  try {
-    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app',
-        'X-Title': 'Amin Smart Lawyer Assistant',
-      },
-      body: JSON.stringify(buildPayload(options, model, stream)),
-      ...(timeoutSignal ? { signal: timeoutSignal } : {}),
-      // The signal remains active while the response body is consumed, not just
-      // until fetch receives the response headers. Normal app requests have no timeout.
-    });
-  } catch (error: any) {
-    if (timeoutSignal?.aborted) {
-      const timeoutError: any = new Error(`انتهت مهلة الاتصال بنموذج OpenRouter بعد ${Math.ceil(timeoutMs / 1000)} ثانية.`);
-      timeoutError.status = 504;
-      timeoutError.statusCode = 504;
-      throw timeoutError;
-    }
-    throw error;
-  }
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app',
+      'X-Title': 'Amin Smart Lawyer Assistant',
+    },
+    body: JSON.stringify(buildPayload(options, model, stream)),
+    // No application-level timeout: allow long legal drafts to finish. Vercel's
+    // function duration is the hard platform limit, not a shorter local timer.
+  });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     const error: any = new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
@@ -117,21 +100,10 @@ export function createOpenRouterCompatibleClient() {
   return {
     models: {
       generateContent: async (options: any) => {
-        try {
-          const response = await request(options, options.model, false);
-          const data: any = await response.json();
-          const text = data?.choices?.[0]?.message?.content;
-          return { text: typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '' };
-        } catch (error: any) {
-          const timeoutMs = Number(options?.requestTimeoutMs);
-          if (timeoutMs > 0 && /abort|timeout/i.test(String(error?.message || ''))) {
-            const timeoutError: any = new Error(`انتهت مهلة الاتصال بنموذج OpenRouter بعد ${Math.ceil(timeoutMs / 1000)} ثانية.`);
-            timeoutError.status = 504;
-            timeoutError.statusCode = 504;
-            throw timeoutError;
-          }
-          throw error;
-        }
+        const response = await request(options, options.model, false);
+        const data: any = await response.json();
+        const text = data?.choices?.[0]?.message?.content;
+        return { text: typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '' };
       },
       generateContentStream: async (options: any) => {
         const response = await request(options, options.model, true);
