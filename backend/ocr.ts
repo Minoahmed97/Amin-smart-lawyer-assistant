@@ -115,20 +115,23 @@ export default async function handler(req: any, res: any) {
 
     const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل. - لا تصحح النص من عندك ولا تعيد صياغته ولا تلخصه. - لا تستنتج كلمة غير مقروءة ولا تخترع نصاً مفقوداً؛ عند تعذر قراءة جزء واضح استخدم [غير مقروء] بدلاً من التخمين. - لا تضف عناوين أو وقائع أو مواد قانونية أو أحكاماً أو أسماء غير ظاهرة في المستند. - حافظ على الجداول والقوائم والتقسيمات والعناوين قدر الإمكان. - إذا وجدت توقيعاً أو ختماً أو كتابة بخط اليد ولم يكن محتواها مقروءاً، صف وجوده بإيجاز دون اختلاق مضمونه. - أخرج النص المستخرج فقط، دون مقدمة أو تعليق أو تحليل أو ادعاء بأن الدقة مطلقة.`;
     const extractedText = await executeWithKeyRotation(async (ai, _key, model) => {
-      const response = await ai.models.generateContent({
+      const requestOptions: any = {
         model,
         contents: [
           {
             role: 'user',
+            // Keep the OCR instructions before the image for text-heavy OCR.
+            // Preserve the existing provider fallback chain so OCR can still
+            // use OpenRouter when Gemini keys or Gemini service are unavailable.
             parts: [
+              {
+                text: ocrPrompt,
+              },
               {
                 inlineData: {
                   mimeType: safeGeminiMime,
                   data: compactBase64,
                 },
-              },
-              {
-                text: ocrPrompt,
               },
             ],
           },
@@ -137,7 +140,13 @@ export default async function handler(req: any, res: any) {
           temperature: 0.2,
           maxOutputTokens: 32768,
         },
-      });
+      };
+      // Bound OCR requests to OpenRouter so a stalled free model cannot keep
+      // this serverless request open until the platform drops the connection.
+      // This option is consumed only by our OpenRouter adapter; Gemini calls
+      // retain their existing SDK behavior.
+      if (_key === 'openrouter') requestOptions.requestTimeoutMs = 25000;
+      const response = await ai.models.generateContent(requestOptions);
       const text = response.text?.trim() || '';
       if (!text) {
         // Throw inside the rotation callback so the next model/key is tried.
