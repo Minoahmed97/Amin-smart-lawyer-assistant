@@ -146,7 +146,7 @@ export async function extractTextViaServerOCR(base64Data: string, mimeType: stri
     });
   } catch (error: any) {
     if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
-      throw new Error('انقطع الاتصال بخادم استخراج النصوص قبل استلام النتيجة. تأكد من اتصال الإنترنت ومن نشر مسار API على الخادم، ثم أعد المحاولة.');
+      throw new Error('انقطع الاتصال بخادم استخراج النصوص قبل استلام النتيجة. تأكد من اتصال الإنترنت ومن نشر مسار البرمجة على الخادم، ثم أعد المحاولة.');
     }
     throw error;
   }
@@ -212,10 +212,10 @@ export async function extractTextViaServerOCR(base64Data: string, mimeType: stri
 
     if (serverError) throw new Error(serverError);
     if (typeof finalResult?.text === 'string' && finalResult.text.trim()) return finalResult.text.trim();
-    throw new Error('انتهى اتصال OCR دون إرجاع النص المستخرج. أعد المحاولة، وإذا تكرر الخطأ فراجع سجل API على الخادم.');
+    throw new Error('انتهى اتصال استخراج النص دون إرجاع النص المستخرج. أعد المحاولة، وإذا تكرر الخطأ فراجع سجل واجهة البرمجة على الخادم.');
   }
 
-  // قد ينتهي استخراج ملفات Word محلياً في الخادم ويرجع JSON عادي.
+  // قد ينتهي استخراج ملفات وورد محلياً في الخادم ويرجع JSON عادي.
   const data = await response.json().catch(() => ({}));
   if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
   throw new Error(data?.error || 'خدمة استخراج النص لم ترجع نصاً صالحاً.');
@@ -224,7 +224,7 @@ export async function extractTextViaServerOCR(base64Data: string, mimeType: stri
 export async function extractTextFromDocx(file: File): Promise<string> {
   if (file.name.startsWith('~$')) {
     throw new Error(
-      `هذا ملف مؤقت (${file.name}) تم إنشاؤه بواسطة Microsoft Word (~$). يرجى اختيار الملف الأصلي.`
+      `هذا ملف مؤقت (${file.name}) تم إنشاؤه بواسطة مايكروسوفت وورد (~$). يرجى اختيار الملف الأصلي.`
     );
   }
   if (file.size === 0) {
@@ -236,7 +236,7 @@ export async function extractTextFromDocx(file: File): Promise<string> {
     if (result.value && result.value.trim().length > 0) {
       return result.value.trim();
     }
-    throw new Error('فشل استخراج محتوى Word.');
+    throw new Error('فشل استخراج محتوى وورد.');
   } catch (err: any) {
     console.warn('Mammoth extraction failed, will attempt server fallback:', err);
     throw err;
@@ -245,7 +245,7 @@ export async function extractTextFromDocx(file: File): Promise<string> {
 
 export async function extractTextFromLegacyDoc(file: File): Promise<string> {
   if (file.name.startsWith('~$')) {
-    throw new Error('ملف مؤقت (~$). اختر ملف Word الأصلي.');
+    throw new Error('ملف مؤقت (~$). اختر ملف وورد الأصلي.');
   }
   try {
     const buffer = await file.arrayBuffer();
@@ -262,14 +262,14 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
   } catch (e) {
     console.warn('Legacy .doc parsing attempt failed:', e);
   }
-  throw new Error(`تعذر استخراج نص Word القديم (${file.name}).`);
+  throw new Error(`تعذر استخراج نص وورد القديم (${file.name}).`);
 }
 
 /** 
  * أداة الاستخراج الشاملة والسريعة: 
- * 1. Word (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. 
- * 2. Word (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. 
- * 3. PDF والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. 
+ * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. 
+ * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. 
+ * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. 
  * 4. الملفات النصية (.txt): قراءة فورية للنص. 
  */
 export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileResult> {
@@ -278,14 +278,14 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
   let extractedText = '';
 
   if (fileName.startsWith('~$')) {
-    throw new Error(`ملف مؤقت (${fileName}) من Word. اختر المستند الأصلي.`);
+    throw new Error(`ملف مؤقت (${fileName}) من وورد. اختر المستند الأصلي.`);
   }
 
   // 1. الملفات النصية العادية
   if (lowerName.endsWith('.txt')) {
     extractedText = await file.text();
   }
-  // 2. ملفات Word الحديثة docx
+  // 2. ملفات وورد الحديثة docx
   else if (lowerName.endsWith('.docx')) {
     try {
       extractedText = await extractTextFromDocx(file);
@@ -295,7 +295,7 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
       extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
-  // 3. ملفات Word القديمة .doc
+  // 3. ملفات وورد القديمة .doc
   else if (lowerName.endsWith('.doc')) {
     try {
       extractedText = await extractTextFromLegacyDoc(file);
@@ -305,7 +305,7 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
       extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
-  // 4. مستندات PDF والصور
+  // 4. مستندات بي دي إف والصور
   else if (
     lowerName.endsWith('.pdf') ||
     lowerName.endsWith('.jpg') ||
