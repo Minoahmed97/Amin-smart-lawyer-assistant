@@ -218,25 +218,22 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
             <span className="font-bold flex items-center gap-1.5">
               <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
               <span>
-                جارٍ قراءة الملف ({batchProgress.current} من {batchProgress.total}) — المكتمل: {batchProgress.current - 1}
+                جارٍ قراءة الملف ({batchProgress.current} من {batchProgress.total}):
               </span>
               <b className="text-white max-w-[220px] truncate inline-block align-bottom mr-1">
                 {batchProgress.currentFileName}
               </b>
             </span>
             <span className="font-mono text-amber-300 font-bold">
-              {Math.round(((batchProgress.current - 1) / batchProgress.total) * 100)}%
+              {Math.round((batchProgress.current / batchProgress.total) * 100)}%
             </span>
           </div>
           <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-700">
             <div
               className="bg-gradient-to-r from-amber-500 to-emerald-500 h-full transition-all duration-300"
-              style={{ width: `${((batchProgress.current - 1) / batchProgress.total) * 100}%` }}
+              style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
             ></div>
           </div>
-          <p className="text-[10px] leading-relaxed text-slate-400">
-            تُقرأ ملفات الصور وPDF بالتتابع للحفاظ على ذاكرة الهاتف وحدود الخدمة. يظهر النص المستخرج في حقل «وقائع الدعوى» بعد كل ملف، وينتقل العرض إلى الحقل بعد انتهاء الدفعة.
-          </p>
         </div>
       )}
 
