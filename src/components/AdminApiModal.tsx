@@ -259,7 +259,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
         routing: data?.routing,
       });
     } catch (err: any) {
-      setAiHealthResult({ ok: false, message: err?.message || 'تعذر الوصول إلى واجهة API من هذا المتصفح.' });
+      setAiHealthResult({ ok: false, message: err?.message || 'تعذر الوصول إلى واجهة البرمجة من هذا المتصفح.' });
     } finally {
       setAiHealthLoading(false);
     }
@@ -293,7 +293,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
           setKeyActionMsg({ type: 'success', text: `آخر فحص تلقائي: ${data.keyResults.filter((x: any) => x.status === 'working').length} مفتاح يعمل، ${data.keyResults.filter((x: any) => x.status === 'quota_exhausted').length} حصة مستنفدة.` });
         }
       } catch {
-        if (!cancelled) setAiHealthResult({ ok: false, message: 'تعذر الوصول إلى واجهة API (Failed to fetch). تحقق من نشر مسار الفحص والاتصال.' });
+        if (!cancelled) setAiHealthResult({ ok: false, message: 'تعذر الوصول إلى واجهة البرمجة (تعذر جلب البيانات). تحقق من نشر مسار الفحص والاتصال.' });
       }
     };
     // Check once when the admin panel opens; never poll in the background.
@@ -523,7 +523,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
       description: 'باقة مخصصة للصياغة والاستشارات',
       features: [
         '15 عملية قضائية',
-        'دعم ملفات Word و PDF',
+        'دعم ملفات وورد وبي دي إف',
         'استشارات قانونية فورية',
       ],
       enabled: true,
@@ -861,7 +861,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                       <div className="flex items-center gap-2 flex-wrap">
                         <h4 className="text-amber-400 text-base font-bold flex items-center gap-2">
                           <Cpu className="w-5 h-5 text-amber-500" />
-                          <span>تدوير المفاتيح الذكي (Key Rotation)</span>
+                          <span>تدوير المفاتيح الذكي</span>
                         </h4>
                         <span className="text-[11px] bg-emerald-950 text-emerald-300 border border-emerald-500/50 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
@@ -970,7 +970,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                       <div className="flex items-center justify-between">
                         <h5 className="text-xs font-bold text-amber-300 flex items-center gap-2">
                           <Plus className="w-4 h-4 text-amber-400" />
-                          <span>إضافة مفتاح Google Gemini API جديد:</span>
+                          <span>إضافة مفتاح Gemini جديد:</span>
                         </h5>
                         <a
                           href="https://aistudio.google.com/app/apikey"
@@ -978,7 +978,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                           rel="noopener noreferrer"
                           className="text-[11px] text-sky-400 hover:text-sky-300 underline font-semibold flex items-center gap-1"
                         >
-                          <span>الحصول على مفتاح مجاني (Google AI Studio)</span>
+                          <span>الحصول على مفتاح مجاني (منصة Google AI Studio)</span>
                         </a>
                       </div>
                       <div className="relative">
@@ -1126,7 +1126,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                         <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="text-emerald-400 text-base font-bold flex items-center gap-2">
                             <Cloud className="w-5 h-5 text-emerald-400" />
-                            <span>مزامنة السحابة الخارجية (Supabase Cloud Sync)</span>
+                            <span>مزامنة قاعدة البيانات السحابية (Supabase)</span>
                           </h4>
                           {supabaseConfig.isConnected ? (
                             <span className="text-[11px] bg-emerald-950 text-emerald-300 border border-emerald-500/50 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1.5">
