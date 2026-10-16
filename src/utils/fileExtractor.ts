@@ -13,12 +13,26 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
-      const result = reader.result as string;
-      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      const result = reader.result;
+      if (typeof result !== 'string' || !result) {
+        reject(new Error('تعذرت قراءة الملف المحدد.'));
+        return;
+      }
+      const commaIndex = result.indexOf(',');
+      const base64 = commaIndex >= 0 ? result.slice(commaIndex + 1) : result;
+      if (!base64) {
+        reject(new Error('الملف فارغ أو تعذرت قراءة بياناته.'));
+        return;
+      }
       resolve(base64);
     };
-    reader.onerror = (error) => reject(error);
-    reader.readAsDataURL(file);
+    reader.onerror = () => reject(reader.error || new Error('حدث خطأ أثناء قراءة الملف.'));
+    reader.onabort = () => reject(new Error('تم إلغاء قراءة الملف قبل اكتمالها.'));
+    try {
+      reader.readAsDataURL(file);
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error('تعذرت قراءة الملف المحدد.'));
+    }
   });
 }
 
