@@ -19,7 +19,7 @@ interface FileUploadZoneProps {
 
 export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
   onTextExtracted,
-  title = 'رفع المستندات (Word / PDF / صور)',
+  title = 'رفع المستندات (وورد / بي دي إف / صور)',
   description = 'استخراج فوري للنصوص بالذكاء الاصطناعي مع الحفاظ على البيانات.',
   maxFiles = 10,
   onProcessingChange,
@@ -81,7 +81,7 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         const rawMsg = err?.message || '';
         let cleanReason = rawMsg;
         if (file.name.startsWith('~$')) {
-          cleanReason = 'ملف مؤقت Word';
+          cleanReason = 'ملف مؤقت وورد';
         } else if (rawMsg.includes('413')) {
           cleanReason = 'حجم الملف كبير';
         } else if (rawMsg.includes('مفتاح') || rawMsg.includes('API Key') || rawMsg.includes('api key')) {
@@ -178,13 +178,13 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
                   حتى {maxFiles} ملفات
                 </span>
                 <span className="text-[10px] bg-blue-950/80 text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 font-mono font-bold">
-                  Word
+                  وورد
                 </span>
                 <span className="text-[10px] bg-rose-950/80 text-rose-300 px-1.5 py-0.5 rounded border border-rose-500/30 font-mono font-bold">
-                  PDF
+                  ملف بي دي إف
                 </span>
                 <span className="text-[10px] bg-emerald-950/80 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30 font-mono font-bold">
-                  صور / OCR
+                  صور / استخراج النص آليًا
                 </span>
               </div>
             </div>
