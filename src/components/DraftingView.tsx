@@ -422,7 +422,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                 return updated;
               });
             }}
-            title="إدراج مستندات القضية (Word / PDF / صور)"
+            title="إدراج مستندات القضية (وورد / بي دي إف / صور)"
             description="ارفع عقود أو إنذارات أو محاضر شرطة ليتم استخراج نصوصها وإدراجها فوراً."
           />
 
@@ -631,7 +631,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                 });
               }}
               className="w-full bg-slate-900 text-white border border-slate-700 rounded-xl p-3 text-xs sm:text-sm leading-relaxed focus:outline-none focus:border-[#b45309] font-sans"
-              placeholder="اكتب وقائع الدعوى هنا أو ارفع ملف Word أو PDF..."
+              placeholder="اكتب وقائع الدعوى هنا أو ارفع ملف وورد أو ملف بي دي إف..."
             ></textarea>
           </div>
 
@@ -766,11 +766,11 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   </select>
                   {templateMode === 'manual' && (
                     <select value={selectedTemplateId} onChange={(e) => setSelectedTemplateId(e.target.value)} className="min-w-[180px] flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-white">
-                      <option value="">اختر قالب Word محفوظًا</option>
+                      <option value="">اختر قالب وورد محفوظًا</option>
                       {wordTemplates.map((template) => <option key={template.id} value={template.id}>{template.title} — {template.courtType} / {template.workType}</option>)}
                     </select>
                   )}
-                  <span className="text-[10px] text-slate-400">{wordTemplates.length ? `${wordTemplates.length} قالب Word أصلي` : 'لا توجد قوالب Word أصلية بعد؛ سيُستخدم التنسيق العام'}</span>
+                  <span className="text-[10px] text-slate-400">{wordTemplates.length ? `${wordTemplates.length} قالب وورد أصلي` : 'لا توجد قوالب وورد أصلية بعد؛ سيُستخدم التنسيق العام'}</span>
                 </div>
               )}
               {generatedBrief && (
@@ -786,18 +786,18 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                    title="تصدير Word باستخدام القالب المختار إن توفر"
+                    title="تصدير وورد باستخدام القالب المختار إن توفر"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصدير Word</span>
+                    <span>تصدير وورد</span>
                   </button>
                   <button
                     onClick={handlePrintPdfDirectly}
                     className="px-3 py-1.5 rounded-lg bg-[#b45309] hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                    title="طباعة / PDF"
+                    title="طباعة / ملف بي دي إف"
                   >
                     <Printer className="w-3.5 h-3.5" />
-                    <span>طباعة / PDF</span>
+                    <span>طباعة / ملف بي دي إف</span>
                   </button>
                 </div>
               )}
@@ -1038,10 +1038,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer"
-                    title="تصدير بصيغة Word"
+                    title="تصدير بصيغة وورد"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصدير Word</span>
+                    <span>تصدير وورد</span>
                   </button>
                   <button
                     onClick={handlePrintPdfDirectly}
