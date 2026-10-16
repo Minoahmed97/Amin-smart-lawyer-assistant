@@ -1,4 +1,4 @@
-import { generateDeepLegalResponse } from './counter-brief.ts';
+import { assertLawyerVaultContext, generateDeepLegalResponse } from './counter-brief.ts';
 
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
@@ -26,6 +26,7 @@ export default async function handler(req: any, res: any) {
 
     limitBodyString(draftText, 200000, 'المسودة');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
+    assertLawyerVaultContext(vaultContext);
 
     const typePrompts: Record<string, string> = {
       moreDecisive: 'اجعل الصياغة أكثر حسماً وقوة قانونية مع تعزيز العبارات القضائية الصارمة.',
