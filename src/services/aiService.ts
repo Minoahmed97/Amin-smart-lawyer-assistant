@@ -111,8 +111,13 @@ async function requestSavedJob<T extends Record<string, any>>(
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        if (response.status === 404 && !created) throw new Error(error?.error || 'لم يتم العثور على المهمة المحفوظة.');
-        throw new Error(error?.error || `تعذر استرجاع حالة المهمة (${response.status}).`);
+        const failure: any = new Error(
+          error?.error || (response.status === 404
+            ? 'لم يتم العثور على المهمة المحفوظة لهذا الحساب.'
+            : `تعذر استرجاع حالة المهمة (${response.status}).`),
+        );
+        failure.statusCode = response.status;
+        throw failure;
       }
       const data = await response.json();
       transientFailures = 0;
@@ -138,7 +143,12 @@ async function requestSavedJob<T extends Record<string, any>>(
         throw failure;
       }
     } catch (err: any) {
-      if (err?.terminalJobError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) throw err;
+      const statusCode = Number(err?.statusCode);
+      const permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429;
+      if (err?.terminalJobError || permanentClientError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) {
+        if (statusCode === 404 && storage) storage.removeItem(key);
+        throw err;
+      }
       transientFailures++;
       if (transientFailures >= 8) {
         throw new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
@@ -239,17 +249,29 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
       }
 
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || `خطأ استجابة (${response.status})`);
+      const responseError: any = new Error(errorData.error || `خطأ استجابة (${response.status})`);
+      responseError.status = response.status;
+      responseError.statusCode = response.status;
+      throw responseError;
     } catch (err: any) {
       lastError = err;
 
       // Never restart an already visible stream, otherwise the user could see
-      // duplicated legal text.
+      // duplicated legal text. Do not retry permanent HTTP/client errors such
+      // as invalid input, missing session, or access denial.
       if (streamStarted) throw err;
+      const status = Number(err?.status || err?.statusCode);
+      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+        throw err;
+      }
 
+      // Retry transport failures and transient server/rate-limit responses only.
       if (attempt < maxRetries - 1) {
         await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
         continue;
+      }
+      if (!status && (err instanceof TypeError || /network|fetch|timeout|timed out|abort/i.test(String(err?.message || '')))) {
+        throw new Error('تعذر الاتصال بالخادم المركزي للذكاء الاصطناعي. تحقق من اتصال الإنترنت ثم حاول مرة أخرى.');
       }
       throw err;
     }
