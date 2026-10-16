@@ -13,26 +13,12 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== 'string' || !result) {
-        reject(new Error('تعذرت قراءة الملف المحدد.'));
-        return;
-      }
-      const commaIndex = result.indexOf(',');
-      const base64 = commaIndex >= 0 ? result.slice(commaIndex + 1) : result;
-      if (!base64) {
-        reject(new Error('الملف فارغ أو تعذرت قراءة بياناته.'));
-        return;
-      }
+      const result = reader.result as string;
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
       resolve(base64);
     };
-    reader.onerror = () => reject(reader.error || new Error('حدث خطأ أثناء قراءة الملف.'));
-    reader.onabort = () => reject(new Error('تم إلغاء قراءة الملف قبل اكتمالها.'));
-    try {
-      reader.readAsDataURL(file);
-    } catch (error) {
-      reject(error instanceof Error ? error : new Error('تعذرت قراءة الملف المحدد.'));
-    }
+    reader.onerror = (error) => reject(error);
+    reader.readAsDataURL(file);
   });
 }
 
@@ -136,30 +122,98 @@ export function resolveMimeType(file: File): string {
 }
 
 /** * Server OCR routed through the central AI key-rotation service. */
-export async function extractTextViaServerOCR( base64Data: string, mimeType: string, fileName: string ): Promise<string> {
+export async function extractTextViaServerOCR(base64Data: string, mimeType: string, fileName: string): Promise<string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
   const sessionToken = getSessionToken();
   if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
 
-  // Use one canonical endpoint and one user-initiated OCR request. The server
-  // already rotates providers/keys; client-side silent retries could duplicate
-  // generation and consume quota again after an ambiguous network failure.
-  const response = await fetch('/api/ocr', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ base64Data, mimeType, fileName }),
-  });
-
-  if (response.ok) {
-    const data = await response.json();
-    if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
-    throw new Error('خدمة استخراج النص لم تُرجع نصاً صالحاً.');
+  let response: Response;
+  try {
+    // OCR can take longer than an ordinary JSON request. The endpoint streams
+    // keepalive events while Gemini works, preventing an idle connection from
+    // being dropped before the extracted text is returned.
+    response = await fetch('/api/ocr', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ base64Data, mimeType, fileName, stream: true }),
+    });
+  } catch (error: any) {
+    if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
+      throw new Error('انقطع الاتصال بخادم استخراج النصوص قبل استلام النتيجة. تأكد من اتصال الإنترنت ومن نشر مسار API على الخادم، ثم أعد المحاولة.');
+    }
+    throw error;
   }
 
-  const errorData = await response.json().catch(() => ({}));
-  throw new Error(errorData.error || `فشل الاستخراج (${response.status})`);
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData?.error || `فشل الاستخراج (${response.status})`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/event-stream')) {
+    if (!response.body) throw new Error('أُغلق اتصال استخراج النصوص قبل استلام النتيجة.');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult: any = null;
+    let serverError = '';
+
+    const processFrame = (frame: string) => {
+      const data = frame
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+        .join('\n');
+      if (!data) return;
+      try {
+        const event = JSON.parse(data);
+        if (event?.type === 'done') finalResult = event;
+        else if (event?.type === 'error') serverError = String(event.error || 'فشل استخراج النص من المستند.');
+      } catch {
+        // Ignore incomplete or unrelated keepalive frames; the buffer parser
+        // passes complete Server-Sent Events to this function.
+      }
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+
+        let separatorMatch: RegExpMatchArray | null;
+        while ((separatorMatch = buffer.match(/\r?\n\r?\n/)) !== null) {
+          const separatorIndex = separatorMatch.index ?? -1;
+          if (separatorIndex < 0) break;
+          processFrame(buffer.slice(0, separatorIndex));
+          buffer = buffer.slice(separatorIndex + separatorMatch[0].length);
+        }
+
+        if (done) {
+          if (buffer.trim()) processFrame(buffer);
+          break;
+        }
+      }
+    } catch (error: any) {
+      if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
+        throw new Error('انقطع الاتصال أثناء استخراج النص. لم تصل النتيجة كاملة؛ تحقق من الاتصال ثم أعد المحاولة.');
+      }
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (serverError) throw new Error(serverError);
+    if (typeof finalResult?.text === 'string' && finalResult.text.trim()) return finalResult.text.trim();
+    throw new Error('انتهى اتصال OCR دون إرجاع النص المستخرج. أعد المحاولة، وإذا تكرر الخطأ فراجع سجل API على الخادم.');
+  }
+
+  // Word extraction may finish locally in the server and return ordinary JSON.
+  const data = await response.json().catch(() => ({}));
+  if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
+  throw new Error(data?.error || 'خدمة استخراج النص لم تُرجع نصاً صالحاً.');
 }
 
 export async function extractTextFromDocx(file: File): Promise<string> {
