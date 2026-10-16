@@ -224,6 +224,7 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
                 {batchProgress.currentFileName}
               </b>
             </span>
+
           </div>
           <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-700">
             <div
@@ -231,6 +232,9 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
               aria-label="جارٍ استخراج النص"
             ></div>
           </div>
+          <p className="text-[10px] leading-relaxed text-slate-400">
+            تتم معالجة الملفات بالتتابع. لا يُعتبر الاستخراج ناجحًا إلا بعد استلام النص، ثم يُدرج في حقل «وقائع الدعوى».
+          </p>
         </div>
       )}
 
