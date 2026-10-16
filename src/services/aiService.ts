@@ -72,7 +72,10 @@ async function requestSavedJob<T extends Record<string, any>>(
 ): Promise<string> {
   const key = jobStorageKey(type, userId);
   const storage = typeof localStorage !== 'undefined' ? localStorage : null;
-  const jobId = resumeId || storage?.getItem(key) || makeJobId();
+  // A new user action must always create a fresh job. Reusing a previously
+  // stored idempotency key can attach the request to an old queued/running job
+  // and leave the UI waiting forever. Reuse an id only for explicit resume.
+  const jobId = resumeId || makeJobId();
   if (storage) storage.setItem(key, jobId);
 
   const headers = getRequestHeaders();
@@ -102,6 +105,11 @@ async function requestSavedJob<T extends Record<string, any>>(
   let lastText = '';
   let transientFailures = 0;
   const startedAt = Date.now();
+  let lastServerUpdate = '';
+  let lastProgressAt = startedAt;
+  // Vercel's configured maximum duration is 300 seconds. Do not leave the UI
+  // spinning for 20 minutes if a worker was terminated while status stayed queued/running.
+  const STALE_JOB_MS = 4 * 60 * 1000 + 30 * 1000;
   while (Date.now() - startedAt < 1000 * 60 * 20) {
     try {
       const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
@@ -111,24 +119,26 @@ async function requestSavedJob<T extends Record<string, any>>(
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        const failure: any = new Error(
-          error?.error || (response.status === 404
-            ? 'لم يتم العثور على المهمة المحفوظة لهذا الحساب.'
-            : `تعذر استرجاع حالة المهمة (${response.status}).`),
-        );
-        failure.statusCode = response.status;
-        throw failure;
+        if (response.status === 404 && !created) throw new Error(error?.error || 'لم يتم العثور على المهمة المحفوظة.');
+        throw new Error(error?.error || `تعذر استرجاع حالة المهمة (${response.status}).`);
       }
       const data = await response.json();
       transientFailures = 0;
+      const serverUpdate = String(data?.updatedAt || '');
+      if (serverUpdate && serverUpdate !== lastServerUpdate) {
+        lastServerUpdate = serverUpdate;
+        lastProgressAt = Date.now();
+      }
       const currentText = String(data?.partialResult || data?.result || '');
       if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
         lastText = currentText;
+        lastProgressAt = Date.now();
       } else if (currentText && !lastText) {
         if (onChunk) onChunk(currentText);
         lastText = currentText;
+        lastProgressAt = Date.now();
       }
 
       if (data.status === 'completed') {
@@ -138,17 +148,18 @@ async function requestSavedJob<T extends Record<string, any>>(
       }
       if (data.status === 'failed') {
         if (storage) storage.removeItem(key);
-        const failure: any = new Error(data.error || 'فشلت المهمة المحفوظة.');
-        failure.terminalJobError = true;
-        throw failure;
+        const failureMessage = String(data.error || 'لم يقدم الخادم تفاصيل إضافية.');
+        if (failureMessage === 'لم يتم العثور على نموذج مناسب في خزينة حسابك. أضف نموذجًا إلى الخزينة ثم أعد المحاولة') {
+          throw new Error(failureMessage);
+        }
+        throw new Error(`فشلت المهمة المحفوظة: ${failureMessage}`);
+      }
+      if (Date.now() - lastProgressAt > STALE_JOB_MS) {
+        if (storage) storage.removeItem(key);
+        throw new Error('توقفت المهمة دون تحديث من الخادم لأكثر من أربع دقائق ونصف. لم تصل نتيجة مكتملة؛ أعد المحاولة مرة واحدة، وإذا تكرر الأمر راجع سجلات Vercel لمعرفة سبب توقف العامل.');
       }
     } catch (err: any) {
-      const statusCode = Number(err?.statusCode);
-      const permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429;
-      if (err?.terminalJobError || permanentClientError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) {
-        if (statusCode === 404 && storage) storage.removeItem(key);
-        throw err;
-      }
+      if (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة|لم يتم العثور على نموذج مناسب في خزينة حسابك|توقفت المهمة دون تحديث/.test(err.message)) throw err;
       transientFailures++;
       if (transientFailures >= 8) {
         throw new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
@@ -160,11 +171,25 @@ async function requestSavedJob<T extends Record<string, any>>(
 }
 
 export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
+  try {
+    getLawyerStyleContext(undefined, userId);
+  } catch (error) {
+    try { localStorage.removeItem(jobStorageKey('counter-brief', userId)); } catch {}
+    throw error;
+  }
   return requestSavedJob('counter-brief', {}, onChunk, userId, jobId);
 }
 
 
 export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
+  if (type === 'deconstruct') {
+    try {
+      getLawyerStyleContext(undefined, userId);
+    } catch (error) {
+      try { localStorage.removeItem(jobStorageKey('deconstruct', userId)); } catch {}
+      throw error;
+    }
+  }
   return requestSavedJob(type, {}, onChunk, userId, jobId);
 }
 
@@ -249,29 +274,17 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
       }
 
       const errorData = await response.json().catch(() => ({}));
-      const responseError: any = new Error(errorData.error || `خطأ استجابة (${response.status})`);
-      responseError.status = response.status;
-      responseError.statusCode = response.status;
-      throw responseError;
+      throw new Error(errorData.error || `خطأ استجابة (${response.status})`);
     } catch (err: any) {
       lastError = err;
 
       // Never restart an already visible stream, otherwise the user could see
-      // duplicated legal text. Do not retry permanent HTTP/client errors such
-      // as invalid input, missing session, or access denial.
+      // duplicated legal text.
       if (streamStarted) throw err;
-      const status = Number(err?.status || err?.statusCode);
-      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-        throw err;
-      }
 
-      // Retry transport failures and transient server/rate-limit responses only.
       if (attempt < maxRetries - 1) {
         await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
         continue;
-      }
-      if (!status && (err instanceof TypeError || /network|fetch|timeout|timed out|abort/i.test(String(err?.message || '')))) {
-        throw new Error('تعذر الاتصال بالخادم المركزي للذكاء الاصطناعي. تحقق من اتصال الإنترنت ثم حاول مرة أخرى.');
       }
       throw err;
     }
