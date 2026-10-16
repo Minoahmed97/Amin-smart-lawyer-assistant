@@ -134,7 +134,7 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
       if (sourceFile.name.toLowerCase().endsWith('.docx')) {
         void saveLegalDocTemplate(sourceFile, userId, text)
           .then((template) => {
-            if (template) { void refreshWordTemplates(); setSuccessNote(`تم حفظ النص والملف الأصلي وقالب Word: ${fileName}. التصنيف الأولي: ${template.courtType} — ${template.workType}.`); }
+            if (template) { void refreshWordTemplates(); setSuccessNote(`تم حفظ النص والملف الأصلي وقالب وورد: ${fileName}. التصنيف الأولي: ${template.courtType} — ${template.workType}.`); }
           })
           .catch((error) => console.warn('Word template index could not be saved:', error));
       }
@@ -216,7 +216,7 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-300 mt-1 leading-relaxed max-w-3xl">
-                احفظ نماذجك القضائية المفضلة أو ارفع مذكراتك السابقة (Word أو PDF) ليتعلم المساعد القضائي أسلوبك الخاص.
+                احفظ نماذجك القضائية المفضلة أو ارفع مذكراتك السابقة (وورد أو بي دي إف) ليتعلم المساعد القضائي أسلوبك الخاص.
               </p>
             </div>
           </div>
@@ -245,7 +245,7 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
         <div className="mt-4 pt-4 border-t border-slate-800">
           <FileUploadZone
             onTextExtracted={handleUploadedText}
-            title="إيداع مستندات في الخزينة (Word / PDF / صور ممسوحة ضوئياً)"
+            title="إيداع مستندات في الخزينة (وورد / بي دي إف / صور ممسوحة ضوئيًا)"
             description="ارفع مذكراتك أو صحف دعاواك السابقة، وسيقوم الذكاء الاصطناعي باستخراجها وحفظها كنموذج استرشادي."
           />
         </div>
@@ -276,7 +276,7 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
         {wordTemplates.length > 0 && (
           <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/70 p-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <h3 className="text-sm font-bold text-amber-300">قوالب Word الأصلية المحفوظة ({wordTemplates.length})</h3>
+              <h3 className="text-sm font-bold text-amber-300">قوالب وورد الأصلية المحفوظة ({wordTemplates.length})</h3>
               <span className="text-[11px] text-slate-400">محفوظة على هذا الجهاز والمتصفح</span>
             </div>
             <div className="mt-2 space-y-2">
@@ -506,7 +506,7 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
               <FolderArchive className="w-10 h-10 mx-auto text-slate-600" />
               <p className="text-xs font-bold text-slate-300">خزينتك خالية حتى الآن</p>
               <p className="text-[11px] text-slate-500">
-                ارفع مستندات Word أو أضف نماذج ليتعلم المساعد أسلوبك.
+                ارفع مستندات وورد أو أضف نماذج ليتعلم المساعد أسلوبك.
               </p>
             </div>
           )}
@@ -546,7 +546,7 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
                     className="px-3 py-1.5 bg-emerald-800 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصدير Word</span>
+                    <span>تصدير وورد</span>
                   </button>
                   <button
                     onClick={() => handleDelete(selectedModel.id)}
