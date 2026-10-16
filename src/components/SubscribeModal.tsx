@@ -100,7 +100,7 @@ export const SubscribeModal: React.FC<SubscribeModalProps> = ({
                 </span>
               </h3>
               <p className="text-xs text-slate-300">
-                اختر الباقة المناسبة لمكتبك مع إمكانية التصدير الفوري لمستندات Word
+                اختر الباقة المناسبة لمكتبك مع إمكانية التصدير الفوري لمستندات وورد
               </p>
             </div>
           </div>
