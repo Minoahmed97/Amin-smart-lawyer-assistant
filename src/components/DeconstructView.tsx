@@ -286,7 +286,8 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
       setTimeout(() => setCopied(false), 2000);
     });
   };
-    return (
+
+  return (
     <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-5 space-y-4 sm:space-y-5" style={{ fontFamily: 'Cairo, sans-serif' }}>
       {/* Top Judicial Banner */}
       <div className="bg-[#0f172a] border-2 border-[#b45309] rounded-2xl p-4 sm:p-5 shadow-xl">
@@ -339,7 +340,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
             </span>
           </div>
 
-          {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
             onProcessingChange={setIsUploadingDoc}
             onTextExtracted={(text, fileName) => {
