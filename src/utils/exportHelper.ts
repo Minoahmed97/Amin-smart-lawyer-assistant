@@ -55,10 +55,10 @@ function isGeneratedHeading(line: string): boolean {
 function replaceDocxBodyXml(documentXml: string, content: string): string {
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(documentXml, 'application/xml');
-  if (xmlDoc.getElementsByTagName('parsererror').length) throw new Error('ملف Word القالب يحتوي على XML غير صالح.');
+  if (xmlDoc.getElementsByTagName('parsererror').length) throw new Error('ملف وورد القالب يحتوي على XML غير صالح.');
   const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const body = xmlDoc.getElementsByTagNameNS(ns, 'body')[0];
-  if (!body) throw new Error('لم يتم العثور على متن المستند داخل قالب Word.');
+  if (!body) throw new Error('لم يتم العثور على متن المستند داخل قالب وورد.');
   const originalParagraphs = Array.from(body.getElementsByTagNameNS(ns, 'p'));
   const nonEmpty = originalParagraphs.filter((p) => textOfParagraph(p));
   const headingTemplate = nonEmpty.find((p) => isHeadingLike(textOfParagraph(p), p)) || nonEmpty[0];
@@ -100,14 +100,14 @@ function replaceDocxBodyXml(documentXml: string, content: string): string {
   }
   if (sectPr) body.appendChild(sectPr);
   const serialized = new XMLSerializer().serializeToString(xmlDoc);
-  if (!serialized || !serialized.includes('<w:document')) throw new Error('تعذر إعادة إنشاء محتوى مستند Word.');
+  if (!serialized || !serialized.includes('<w:document')) throw new Error('تعذر إعادة إنشاء محتوى مستند وورد.');
   return serialized;
 }
 
 async function makeTemplateDocxBlob(content: string, templateBlob: Blob): Promise<Blob> {
   const zip = await JSZip.loadAsync(templateBlob);
   const documentEntry = zip.file('word/document.xml');
-  if (!documentEntry) throw new Error('قالب Word لا يحتوي على ملف document.xml صالح.');
+  if (!documentEntry) throw new Error('قالب وورد لا يحتوي على ملف document.xml صالح.');
   const originalXml = await documentEntry.async('string');
   const updatedXml = replaceDocxBodyXml(originalXml, content);
   zip.file('word/document.xml', updatedXml);
@@ -125,7 +125,7 @@ export async function exportLegalDocToWord(content: string, baseTitle = 'صيا�
       if (options.templateMode === 'manual' && options.templateId) {
         template = await getLegalDocTemplate(options.templateId, userId);
       } else if (options.templateMode === 'manual' && !options.templateId) {
-        window.alert('اختَر قالب Word من القائمة أولًا، أو غيّر الاختيار إلى التنسيق التلقائي.');
+        window.alert('اختَر قالب وورد من القائمة أولًا، أو غيّر الاختيار إلى التنسيق التلقائي.');
         return;
       } else if (options.templateMode === 'auto') {
         const templates = await getLegalDocTemplates(userId);
@@ -141,11 +141,11 @@ export async function exportLegalDocToWord(content: string, baseTitle = 'صيا�
         return;
       }
       if (options.templateMode === 'manual' && options.templateId) {
-        window.alert('تعذر العثور على القالب المختار. سيتم استخدام تنسيق Word العام.');
+        window.alert('تعذر العثور على القالب المختار. سيتم استخدام تنسيق وورد العام.');
       }
     } catch (error) {
       console.error('Template-based Word export failed:', error);
-      window.alert('تعذر تطبيق القالب الأصلي بالكامل. سيتم تنزيل نسخة Word بالتنسيق العام بدلًا من إيقاف التصدير.');
+      window.alert('تعذر تطبيق القالب الأصلي بالكامل. سيتم تنزيل نسخة وورد بالتنسيق العام بدلًا من إيقاف التصدير.');
     }
   }
   downloadBlob(makeGenericWordBlob(content), `${cleanTitle}_${Date.now()}.doc`);
