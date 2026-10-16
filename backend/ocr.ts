@@ -76,18 +76,14 @@ export default async function handler(req: any, res: any) {
       throw new Error(`تعذر استخراج نص ملف Word (${fileName || 'المحدد'}).`);
     }
 
-    // 2. Images and PDF OCR via the existing provider/key-rotation path.
-    // The client compresses images to JPEG even when the original filename is
-    // .png or .webp, so prefer the MIME type describing the uploaded bytes.
+    // 2. Images and PDF OCR via Gemini Vision
     let safeGeminiMime = 'image/jpeg';
-    if (lowerMime === 'application/pdf' || lowerName.endsWith('.pdf')) {
+    if (lowerName.endsWith('.pdf') || mimeType === 'application/pdf') {
       safeGeminiMime = 'application/pdf';
-    } else if (lowerMime === 'image/png') {
+    } else if (lowerName.endsWith('.png') || mimeType === 'image/png') {
       safeGeminiMime = 'image/png';
-    } else if (lowerMime === 'image/webp') {
+    } else if (lowerName.endsWith('.webp') || mimeType === 'image/webp') {
       safeGeminiMime = 'image/webp';
-    } else if (lowerMime === 'image/bmp') {
-      safeGeminiMime = 'image/bmp';
     }
 
     const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل. - لا تصحح النص من عندك ولا تعيد صياغته ولا تلخصه. - لا تستنتج كلمة غير مقروءة ولا تخترع نصاً مفقوداً؛ عند تعذر قراءة جزء واضح استخدم [غير مقروء] بدلاً من التخمين. - لا تضف عناوين أو وقائع أو مواد قانونية أو أحكاماً أو أسماء غير ظاهرة في المستند. - حافظ على الجداول والقوائم والتقسيمات والعناوين قدر الإمكان. - إذا وجدت توقيعاً أو ختماً أو كتابة بخط اليد ولم يكن محتواها مقروءاً، صف وجوده بإيجاز دون اختلاق مضمونه. - أخرج النص المستخرج فقط، دون مقدمة أو تعليق أو تحليل أو ادعاء بأن الدقة مطلقة.`;
@@ -99,13 +95,13 @@ export default async function handler(req: any, res: any) {
             role: 'user',
             parts: [
               {
-                text: ocrPrompt,
-              },
-              {
                 inlineData: {
                   mimeType: safeGeminiMime,
                   data: compactBase64,
                 },
+              },
+              {
+                text: ocrPrompt,
               },
             ],
           },
@@ -115,16 +111,7 @@ export default async function handler(req: any, res: any) {
           maxOutputTokens: 32768,
         },
       });
-      const text = response.text?.trim() || '';
-      if (!text) {
-        // Treat an empty model response as a failed attempt so the existing
-        // provider/model/key rotation can continue instead of stopping early.
-        throw Object.assign(new Error(`لم يُرجع النموذج ${model} نصاً مستخرجاً صالحاً.`), {
-          status: 503,
-          statusCode: 503,
-        });
-      }
-      return text;
+      return response.text?.trim() || '';
     }, GEMINI_MODELS);
 
     if (extractedText) {
