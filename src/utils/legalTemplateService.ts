@@ -19,7 +19,7 @@ const STORE_NAME = 'templates';
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
-      reject(new Error('تخزين قوالب Word غير متاح في هذا المتصفح.'));
+      reject(new Error('تخزين قوالب وورد غير متاح في هذا المتصفح.'));
       return;
     }
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -31,7 +31,7 @@ function openDb(): Promise<IDBDatabase> {
       }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('تعذر فتح مخزن قوالب Word.'));
+    request.onerror = () => reject(request.error || new Error('تعذر فتح مخزن قوالب وورد.'));
   });
 }
 
@@ -79,8 +79,8 @@ export async function saveLegalDocTemplate(file: File, userId: string, extracted
       const tx = db.transaction(STORE_NAME, 'readwrite');
       tx.objectStore(STORE_NAME).put(record);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error('تعذر حفظ قالب Word.'));
-      tx.onabort = () => reject(tx.error || new Error('تم إلغاء حفظ قالب Word.'));
+      tx.onerror = () => reject(tx.error || new Error('تعذر حفظ قالب وورد.'));
+      tx.onabort = () => reject(tx.error || new Error('تم إلغاء حفظ قالب وورد.'));
     });
   } finally {
     db.close();
@@ -95,7 +95,7 @@ export async function getLegalDocTemplates(userId: string): Promise<LegalDocTemp
       const tx = db.transaction(STORE_NAME, 'readonly');
       const request = tx.objectStore(STORE_NAME).index('userId').getAll(userId);
       request.onsuccess = () => resolve((request.result || []) as LegalDocTemplate[]);
-      request.onerror = () => reject(request.error || new Error('تعذر قراءة قوالب Word.'));
+      request.onerror = () => reject(request.error || new Error('تعذر قراءة قوالب وورد.'));
     });
     return records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   } finally {
@@ -112,7 +112,7 @@ export async function getLegalDocTemplate(id: string, userId: string): Promise<L
         const value = request.result as LegalDocTemplate | undefined;
         resolve(value && value.userId === userId ? value : null);
       };
-      request.onerror = () => reject(request.error || new Error('تعذر قراءة قالب Word.'));
+      request.onerror = () => reject(request.error || new Error('تعذر قراءة قالب وورد.'));
     });
   } finally {
     db.close();
@@ -131,7 +131,7 @@ export async function deleteLegalDocTemplate(id: string, userId: string): Promis
         if (value && value.userId === userId) store.delete(id);
       };
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error('تعذر حذف قالب Word.'));
+      tx.onerror = () => reject(tx.error || new Error('تعذر حذف قالب وورد.'));
     });
   } finally {
     db.close();
