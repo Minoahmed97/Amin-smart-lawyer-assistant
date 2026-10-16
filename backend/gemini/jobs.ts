@@ -1,7 +1,7 @@
 import { waitUntil } from '@vercel/functions';
 import crypto from 'node:crypto';
 import { requireActiveSession, requireSession } from '../auth.ts';
-import counterBriefHandler from './counter-brief.ts';
+import counterBriefHandler, { assertLawyerVaultContext } from './counter-brief.ts';
 import deconstructHandler from './deconstruct.ts';
 import qualifyHandler from './qualify.ts';
 import refineHandler from './refine.ts';
@@ -16,17 +16,6 @@ const TASK_HANDLERS: Record<string, (req: any, res: any) => any> = {
 const JOB_TABLE = 'app_ai_generation_jobs';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
-
-function safeDiagnosticMessage(value: unknown) {
-  return String(value || 'unknown')
-    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_API_KEY]')
-    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
-    .replace(/\b(api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|secret)\b\s*[:=]\s*["']?[^"'\s,;]+/gi, '$1=[REDACTED]')
-    .replace(/https?:\/\/[^\s"'<>]+/gi, '[REDACTED_URL]')
-    .replace(/(["'`])[^\r\n]{80,}?\1/g, '$1[REDACTED_TEXT]$1')
-    .replace(/[\r\n\t]+/g, ' ')
-    .slice(0, 400);
-}
 
 function getSupabaseConfig() {
   const url = (process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
@@ -75,10 +64,8 @@ function safePayload(input: any, taskType: string) {
     error.statusCode = 400;
     throw error;
   }
-  if (taskType === 'counter-brief' && !String(payload.vaultContext || '').includes('[بصمة أسلوب مستخلصة من خزنة الحساب]')) {
-    const error: any = new Error('لم يتم العثور على نموذج شخصي من خزانة هذا الحساب. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف أو استعد نماذجك الشخصية أولاً.');
-    error.statusCode = 400;
-    throw error;
+  if (taskType === 'counter-brief' || taskType === 'deconstruct' || taskType === 'refine') {
+    assertLawyerVaultContext(payload.vaultContext);
   }
   return payload;
 }
@@ -152,21 +139,6 @@ async function processJob(jobId: string, userId: string, token: string, taskType
 
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
       const error = streamError || `تعذر إكمال الصياغة (HTTP ${fakeRes.statusCode}).`;
-      const failureKind = fakeRes.statusCode >= 400
-        ? 'http_status'
-        : /لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة/i.test(error)
-          ? 'empty_output'
-          : streamError
-            ? 'stream_error'
-            : 'empty_output';
-      console.error('AI job generation failed:', {
-        jobId,
-        taskType,
-        failureKind,
-        httpStatus: fakeRes.statusCode,
-        outputChars: fullText.length,
-        error: safeDiagnosticMessage(error),
-      });
       await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
       return;
     }
@@ -181,13 +153,6 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   } catch (err: any) {
     await pendingWrite.catch(() => undefined);
     const message = String(err?.message || 'تعذر إكمال الصياغة.').slice(0, 1000);
-    console.error('AI job processor threw an exception:', {
-      jobId,
-      taskType,
-      errorName: safeDiagnosticMessage(err?.name || 'Error'),
-      error: safeDiagnosticMessage(message),
-      outputChars: fullText.length,
-    });
     try {
       await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
     } catch (persistError: any) {
