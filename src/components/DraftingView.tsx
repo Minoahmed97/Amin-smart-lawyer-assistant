@@ -1,5 +1,5 @@
 import { getCurrentAccount } from '../services/authService.ts';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { DraftingFormData } from '../types.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -83,9 +83,6 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     return persistentStorage.getItem('amin_judicial_draft_docname', '');
   });
   const [isUploadingDoc, setIsUploadingDoc] = useState<boolean>(false);
-  const factsTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
-  const extractedDocumentBatchRef = useRef(false);
-  const [documentTextInserted, setDocumentTextInserted] = useState(false);
   const [generatedBrief, setGeneratedBrief] = useState<string>(() => {
     return persistentStorage.getItem('amin_judicial_draft_result', '');
   });
@@ -167,8 +164,6 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       customInstructions: '',
     });
     setUploadedDocName('');
-    extractedDocumentBatchRef.current = false;
-    setDocumentTextInserted(false);
     setGeneratedBrief('');
     setRefineNote('');
     persistentStorage.removeItem('amin_judicial_draft_form');
@@ -385,34 +380,15 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
-            onProcessingChange={(processing) => {
-              setIsUploadingDoc(processing);
-              if (processing) {
-                extractedDocumentBatchRef.current = false;
-                setDocumentTextInserted(false);
-                return;
-              }
-
-              // The OCR result is appended to the facts field per file below.
-              // After the whole batch finishes, bring that field into view so the
-              // user can immediately verify the extracted text on mobile.
-              if (extractedDocumentBatchRef.current) {
-                setDocumentTextInserted(true);
-                window.requestAnimationFrame(() => {
-                  window.requestAnimationFrame(() => {
-                    factsTextAreaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  });
-                });
-              }
-            }}
+            onProcessingChange={setIsUploadingDoc}
             onTextExtracted={(extractedText, fileName) => {
               const trimmed = extractedText.trim();
               if (!trimmed) return;
-              extractedDocumentBatchRef.current = true;
               setFormData((prev) => {
                 const updatedFacts = prev.facts
                   ? `${prev.facts}\n\n========================================\n[مستند: ${fileName}]:\n${trimmed}`
                   : trimmed;
+                persistentStorage.setJSON('amin_judicial_draft_form', { ...prev, facts: updatedFacts });
                 return {
                   ...prev,
                   facts: updatedFacts,
@@ -435,8 +411,6 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                 type="button"
                 onClick={() => {
                   setUploadedDocName('');
-                  extractedDocumentBatchRef.current = false;
-                  setDocumentTextInserted(false);
                   setFormData((prev) => {
                     const updated = { ...prev, facts: '' };
                     persistentStorage.setJSON('amin_judicial_draft_form', updated);
@@ -596,8 +570,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-bold text-amber-300" htmlFor="judicial-facts-textarea">وقائع الدعوى:</label>
-              <div className="flex items-center gap-2 flex-wrap">
+              <label className="text-xs font-bold text-amber-300">وقائع الدعوى:</label>
+              <div className="flex items-center gap-2">
                 <VoiceDictateButton
                   onTranscript={(text) => {
                     setFormData((prev) => {
@@ -611,19 +585,12 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   }}
                   title="إملاء وقائع الدعوى"
                 />
-                {documentTextInserted && (
-                  <span className="text-[10px] text-emerald-300 font-bold" role="status">
-                    تم إدراج النص المستخرج هنا
-                  </span>
-                )}
                 <span className="text-[10px] text-slate-400 font-mono">
                   {formData.facts.length} حرف
                 </span>
               </div>
             </div>
             <textarea
-              id="judicial-facts-textarea"
-              ref={factsTextAreaRef}
               rows={6}
               value={formData.facts}
               onChange={(e) => {
@@ -939,7 +906,22 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
             )}
 
             <div className="flex-1 bg-[#1e293b] border-2 border-slate-700/80 rounded-2xl p-4 sm:p-6 overflow-y-auto max-h-[850px] shadow-inner text-slate-100 relative">
-              {generatedBrief ? (
+              {isLoading ? (
+                <div className="h-full flex flex-col items-center justify-center py-24 sm:py-28 text-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 animate-pulse">
+                    <Scale className="w-8 h-8" />
+                  </div>
+                  <div>
+                    <h4 className="text-white font-bold text-base mb-1">
+                      جارٍ صياغة العمل القضائي وفق الأصول المصرية...
+                    </h4>
+                    <p className="text-xs text-slate-400 max-w-md">
+                      تطبيق نصوص القانون وأحكام النقض ومحاكاة نموذجك المختار.
+                    </p>
+                  </div>
+                  <Loader2 className="w-6 h-6 animate-spin text-amber-400 mt-2" />
+                </div>
+              ) : generatedBrief ? (
                 isLiveEditing ? (
                   <textarea
                     rows={26}
@@ -968,21 +950,6 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                     {generatedBrief}
                   </div>
                 )
-              ) : isLoading ? (
-                <div className="h-full flex flex-col items-center justify-center py-24 sm:py-28 text-center gap-4">
-                  <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 animate-pulse">
-                    <Scale className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <h4 className="text-white font-bold text-base mb-1">
-                      جارٍ صياغة العمل القضائي وفق الأصول المصرية...
-                    </h4>
-                    <p className="text-xs text-slate-400 max-w-md">
-                      تطبيق نصوص القانون وأحكام النقض ومحاكاة نموذجك المختار.
-                    </p>
-                  </div>
-                  <Loader2 className="w-6 h-6 animate-spin text-amber-400 mt-2" />
-                </div>
               ) : draftError ? (
                 <div className="h-full flex flex-col items-center justify-center py-16 sm:py-20 text-center gap-3 max-w-md mx-auto">
                   <div className="w-14 h-14 rounded-2xl bg-rose-950/60 border border-rose-500/50 flex items-center justify-center text-rose-400">
