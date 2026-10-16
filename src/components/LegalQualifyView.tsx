@@ -244,7 +244,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
           <FileUploadZone
             onProcessingChange={setIsUploadingDoc}
             onTextExtracted={handleExtractedDocumentText}
-            title="رفع مستندات النزاع (Word / PDF / صور)"
+            title="رفع مستندات النزاع (وورد / بي دي إف / صور)"
             description="ارفع عقود، إيصالات، محاضر، أو أحكام سابقة للتكييف التلقائي."
           />
 
@@ -287,7 +287,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
                 rows={8}
                 value={disputeDetails}
                 onChange={(e) => setDisputeDetails(e.target.value)}
-                placeholder="اكتب تفاصيل النزاع هنا أو ارفع مستند Word أو PDF أعلاه..."
+                placeholder="اكتب تفاصيل النزاع هنا أو ارفع مستند وورد أو ملف بي دي إف أعلاه..."
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3.5 text-white text-xs sm:text-sm leading-relaxed focus:outline-none focus:border-emerald-500 font-sans"
               ></textarea>
             </div>
@@ -373,10 +373,10 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow transition-colors cursor-pointer"
-                    title="تصدير بصيغة Word (.doc)"
+                    title="تصدير بصيغة وورد (.doc)"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصدير Word (.doc)</span>
+                    <span>تصدير وورد (.doc)</span>
                   </button>
                   {!isClientOnly && (
                     <button
@@ -561,10 +561,10 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer"
-                    title="تصدير Word"
+                    title="تصدير وورد"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصدير Word</span>
+                    <span>تصدير وورد</span>
                   </button>
                   <button
                     onClick={handlePrint}
