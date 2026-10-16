@@ -1,5 +1,5 @@
 import { getCurrentAccount } from '../services/authService.ts';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { DraftingFormData } from '../types.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -83,6 +83,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     return persistentStorage.getItem('amin_judicial_draft_docname', '');
   });
   const [isUploadingDoc, setIsUploadingDoc] = useState<boolean>(false);
+  const factsTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const extractedDocumentBatchRef = useRef(false);
+  const [documentTextInserted, setDocumentTextInserted] = useState(false);
   const [generatedBrief, setGeneratedBrief] = useState<string>(() => {
     return persistentStorage.getItem('amin_judicial_draft_result', '');
   });
@@ -164,6 +167,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       customInstructions: '',
     });
     setUploadedDocName('');
+    extractedDocumentBatchRef.current = false;
+    setDocumentTextInserted(false);
     setGeneratedBrief('');
     setRefineNote('');
     persistentStorage.removeItem('amin_judicial_draft_form');
@@ -380,15 +385,32 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
-            onProcessingChange={setIsUploadingDoc}
+            onProcessingChange={(processing) => {
+              setIsUploadingDoc(processing);
+              if (processing) {
+                extractedDocumentBatchRef.current = false;
+                setDocumentTextInserted(false);
+                return;
+              }
+
+              // After the batch has finished, show the user where the extracted text was inserted.
+              if (extractedDocumentBatchRef.current) {
+                setDocumentTextInserted(true);
+                window.requestAnimationFrame(() => {
+                  window.requestAnimationFrame(() => {
+                    factsTextAreaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  });
+                });
+              }
+            }}
             onTextExtracted={(extractedText, fileName) => {
               const trimmed = extractedText.trim();
               if (!trimmed) return;
+              extractedDocumentBatchRef.current = true;
               setFormData((prev) => {
                 const updatedFacts = prev.facts
                   ? `${prev.facts}\n\n========================================\n[مستند: ${fileName}]:\n${trimmed}`
                   : trimmed;
-                persistentStorage.setJSON('amin_judicial_draft_form', { ...prev, facts: updatedFacts });
                 return {
                   ...prev,
                   facts: updatedFacts,
@@ -570,8 +592,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-bold text-amber-300">وقائع الدعوى:</label>
-              <div className="flex items-center gap-2">
+              <label className="text-xs font-bold text-amber-300" htmlFor="judicial-facts-textarea">وقائع الدعوى:</label>
+              <div className="flex items-center gap-2 flex-wrap">
                 <VoiceDictateButton
                   onTranscript={(text) => {
                     setFormData((prev) => {
@@ -585,12 +607,19 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   }}
                   title="إملاء وقائع الدعوى"
                 />
+                {documentTextInserted && (
+                  <span className="text-[10px] text-emerald-300 font-bold" role="status">
+                    تم إدراج النص المستخرج هنا
+                  </span>
+                )}
                 <span className="text-[10px] text-slate-400 font-mono">
                   {formData.facts.length} حرف
                 </span>
               </div>
             </div>
             <textarea
+              id="judicial-facts-textarea"
+              ref={factsTextAreaRef}
               rows={6}
               value={formData.facts}
               onChange={(e) => {
