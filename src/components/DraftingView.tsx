@@ -272,11 +272,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     try {
       const refined = await refineDraftText(previousDraft, type, (chunk) => {
         setGeneratedBrief((current) => current + chunk);
-      }, userId, {
-        courtType: formData.courtType,
-        briefType: formData.briefType,
-        judicialWorkType: formData.customJudicialWorkType || formData.judicialWorkType || formData.briefType,
-      });
+      }, userId);
       if (refined) {
         setGeneratedBrief(refined);
         persistentStorage.setItem('amin_judicial_draft_result', refined);
@@ -521,7 +517,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
             )}
 
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              لا تحتاج إلى اختيار نموذج يدويًا. بعد تحديد المهمة، يفحص المساعد نماذج خزنة حسابك ويستخدم أقرب نموذج مناسب لأسلوبك. إذا لم يصل إلى نموذج نصي صالح، يوقف الصياغة ويطلب استعادة النموذج بدل إنشاء مستند بقالب عام.
+              لا تحتاج إلى اختيار نموذج. بعد تحديد المهمة، يفحص المساعد خزنة حسابك فقط ويستخدم النموذج المطابق أو الأقرب إن كان مفيداً، وإلا يكتب من الصفر.
             </p>
           </div>
 
