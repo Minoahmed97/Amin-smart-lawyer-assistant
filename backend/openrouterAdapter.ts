@@ -67,7 +67,24 @@ function buildPayload(options: any, model: string, stream: boolean) {
   };
 }
 
-async function request(options: any, model: string, stream: boolean) {
+type OpenRouterRequest = {
+  response: Response;
+  timeoutMs: () => number;
+  clearTimeout: () => void;
+  resetTimeout: (timeoutMs?: number) => void;
+  didTimeout: () => boolean;
+};
+
+function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
+  const error: any = new Error(beforeFirstText
+    ? `لم يصل أول جزء من النص عبر OpenRouter خلال ${Math.ceil(timeoutMs / 1000)} ثانية.`
+    : `انتهت مهلة طلب OpenRouter بعد ${Math.ceil(timeoutMs / 1000)} ثانية دون تحديث.`);
+  error.status = 504;
+  error.statusCode = 504;
+  return error;
+}
+
+async function request(options: any, model: string, stream: boolean): Promise<OpenRouterRequest> {
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) {
     const error: any = new Error('اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
@@ -75,10 +92,31 @@ async function request(options: any, model: string, stream: boolean) {
     throw error;
   }
   const requestedTimeout = Number(options?.requestTimeoutMs);
-  const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout >= 1000
-    ? Math.min(requestedTimeout, 120000)
-    : 0;
-  const timeoutSignal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+  const baseTimeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout >= 1000
+    ? Math.min(requestedTimeout, 285000)
+    : (stream ? 60000 : 120000);
+  const requestDeadlineAt = Number(options?.requestDeadlineAt);
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let activeTimeoutMs = baseTimeoutMs;
+  const resetTimeout = (timeoutOverrideMs?: number) => {
+    if (timer) clearTimeout(timer);
+    const remainingMs = Number.isFinite(requestDeadlineAt) ? requestDeadlineAt - Date.now() : Number.POSITIVE_INFINITY;
+    const requestedMs = Number.isFinite(timeoutOverrideMs) && Number(timeoutOverrideMs) >= 1000
+      ? Number(timeoutOverrideMs)
+      : baseTimeoutMs;
+    activeTimeoutMs = Math.max(1000, Math.min(requestedMs, remainingMs));
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, activeTimeoutMs);
+  };
+  const clearRequestTimeout = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+  resetTimeout();
   let response: Response;
   try {
     response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -90,56 +128,87 @@ async function request(options: any, model: string, stream: boolean) {
         'X-Title': 'Amin Smart Lawyer Assistant',
       },
       body: JSON.stringify(buildPayload(options, model, stream)),
-      ...(timeoutSignal ? { signal: timeoutSignal } : {}),
-      // The signal remains active while the response body is consumed, not just
-      // until fetch receives the response headers. Normal app requests have no timeout.
+      signal: controller.signal,
     });
   } catch (error: any) {
-    if (timeoutSignal?.aborted) {
-      const timeoutError: any = new Error(`انتهت مهلة الاتصال بنموذج OpenRouter بعد ${Math.ceil(timeoutMs / 1000)} ثانية.`);
-      timeoutError.status = 504;
-      timeoutError.statusCode = 504;
-      throw timeoutError;
+    clearRequestTimeout();
+    if (timedOut) {
+      throw createTimeoutError(activeTimeoutMs, stream);
     }
     throw error;
   }
   if (!response.ok) {
-    const body = await response.text().catch(() => '');
+    let body = '';
+    try {
+      body = await response.text();
+    } catch {
+      clearRequestTimeout();
+      if (timedOut) throw createTimeoutError(activeTimeoutMs, stream);
+    }
+    clearRequestTimeout();
     const error: any = new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
     error.status = response.status;
     error.statusCode = response.status;
     throw error;
   }
-  return response;
+  return {
+    response,
+    timeoutMs: () => activeTimeoutMs,
+    clearTimeout: clearRequestTimeout,
+    resetTimeout,
+    didTimeout: () => timedOut,
+  };
 }
 
-export function createOpenRouterCompatibleClient() {
+export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number) {
+  const applyDefaultTimeout = (options: any) => ({
+    ...options,
+    requestTimeoutMs: Number(options?.requestTimeoutMs) >= 1000
+      ? options.requestTimeoutMs
+      : defaultTimeoutMs,
+    ...(Number.isFinite(requestDeadlineAt) ? { requestDeadlineAt } : {}),
+  });
   return {
     models: {
       generateContent: async (options: any) => {
+        const timedOptions = applyDefaultTimeout(options);
+        let pending: OpenRouterRequest | null = null;
         try {
-          const response = await request(options, options.model, false);
-          const data: any = await response.json();
+          pending = await request(timedOptions, timedOptions.model, false);
+          const data: any = await pending.response.json();
           const text = data?.choices?.[0]?.message?.content;
-          return { text: typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '' };
-        } catch (error: any) {
-          const timeoutMs = Number(options?.requestTimeoutMs);
-          if (timeoutMs > 0 && /abort|timeout/i.test(String(error?.message || ''))) {
-            const timeoutError: any = new Error(`انتهت مهلة الاتصال بنموذج OpenRouter بعد ${Math.ceil(timeoutMs / 1000)} ثانية.`);
-            timeoutError.status = 504;
-            timeoutError.statusCode = 504;
-            throw timeoutError;
+          const finishReason = data?.choices?.[0]?.finish_reason;
+          const normalizedText = typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '';
+          if (!normalizedText.trim()) {
+            const emptyError: any = new Error(`OpenRouter model ${timedOptions.model} returned no text (finish_reason: ${finishReason || 'UNKNOWN'}).`);
+            emptyError.status = 503;
+            emptyError.statusCode = 503;
+            throw emptyError;
           }
+          return {
+            text: normalizedText,
+            candidates: finishReason ? [{ finishReason: String(finishReason).toUpperCase() }] : [],
+          };
+        } catch (error: any) {
+          if (pending?.didTimeout()) throw createTimeoutError(pending.timeoutMs());
           throw error;
+        } finally {
+          pending?.clearTimeout();
         }
       },
       generateContentStream: async (options: any) => {
-        const response = await request(options, options.model, true);
-        if (!response.body) throw new Error('OpenRouter لم يُرجع تدفق استجابة.');
+        const timedOptions = applyDefaultTimeout(options);
+        const pending = await request(timedOptions, timedOptions.model, true);
+        const response = pending.response;
+        if (!response.body) {
+          pending.clearTimeout();
+          throw new Error('OpenRouter لم يُرجع تدفق استجابة.');
+        }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         return (async function* () {
           let buffer = '';
+          let firstTextSeen = false;
           try {
             while (true) {
               const { value, done } = await reader.read();
@@ -156,8 +225,15 @@ export function createOpenRouterCompatibleClient() {
                 const choice = data?.choices?.[0];
                 const text = choice?.delta?.content;
                 const finishReason = choice?.finish_reason;
+                const normalizedText = typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '';
+                if (normalizedText) {
+                  firstTextSeen = true;
+                  // After the first visible token, allow a longer gap between
+                  // chunks; the shorter initial timeout prevents long silent waits.
+                  pending.resetTimeout(90000);
+                }
                 yield {
-                  text: typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '',
+                  text: normalizedText,
                   candidates: finishReason ? [{ finishReason: String(finishReason).toUpperCase() }] : [],
                 };
               }
@@ -171,14 +247,30 @@ export function createOpenRouterCompatibleClient() {
                   const choice = data?.choices?.[0];
                   const text = choice?.delta?.content;
                   const finishReason = choice?.finish_reason;
+                  const normalizedText = typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '';
+                  if (normalizedText) {
+                    firstTextSeen = true;
+                    pending.resetTimeout(90000);
+                  }
                   yield {
-                    text: typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '',
+                    text: normalizedText,
                     candidates: finishReason ? [{ finishReason: String(finishReason).toUpperCase() }] : [],
                   };
                 } catch { /* ignore malformed final SSE event */ }
               }
             }
+            if (!firstTextSeen && !pending.didTimeout()) {
+              const emptyError: any = new Error(`OpenRouter model ${timedOptions.model} closed its stream before returning text.`);
+              emptyError.status = 503;
+              emptyError.statusCode = 503;
+              throw emptyError;
+            }
+          } catch (error: any) {
+            if (pending.didTimeout()) throw createTimeoutError(pending.timeoutMs(), !firstTextSeen);
+            throw error;
           } finally {
+            pending.clearTimeout();
+            if (pending.didTimeout()) await reader.cancel().catch(() => undefined);
             reader.releaseLock();
           }
         })();
