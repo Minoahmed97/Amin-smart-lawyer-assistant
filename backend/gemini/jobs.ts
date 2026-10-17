@@ -1,8 +1,7 @@
 import { waitUntil } from '@vercel/functions';
 import crypto from 'node:crypto';
 import { requireActiveSession, requireSession } from '../auth.ts';
-import counterBriefHandler, { generateDeepLegalResponse } from './counter-brief.ts';
-import { buildArabicProofreadingPrompt, generatedTextIssueScore, hasLawyerVaultReference, inspectGeneratedArabicText } from './qualityGuard.ts';
+import counterBriefHandler from './counter-brief.ts';
 import deconstructHandler from './deconstruct.ts';
 import qualifyHandler from './qualify.ts';
 import refineHandler from './refine.ts';
@@ -76,11 +75,8 @@ function safePayload(input: any, taskType: string) {
     error.statusCode = 400;
     throw error;
   }
-  // Validate the actual reference content shared with the generation request.
-  // Do not couple this gate to a presentation/header string that may change
-  // between compatible front-end versions.
-  if (['counter-brief', 'deconstruct', 'refine'].includes(taskType) && !hasLawyerVaultReference(payload.vaultContext)) {
-    const error: any = new Error('لم يصل نص النموذج الشخصي الكامل من خزنة هذا الحساب إلى مهمة التوليد. لم يبدأ التوليد ولم يُخصم رصيد؛ أعد تحميل الخزنة وحاول مرة أخرى، وإذا استمرت المشكلة افحص مصدر تخزين النماذج لهذا الحساب.');
+  if (taskType === 'counter-brief' && !String(payload.vaultContext || '').includes('[بصمة أسلوب مستخلصة من خزنة الحساب]')) {
+    const error: any = new Error('لم يتم العثور على نموذج شخصي من خزانة هذا الحساب. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف أو استعد نماذجك الشخصية أولاً.');
     error.statusCode = 400;
     throw error;
   }
@@ -174,79 +170,6 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
       return;
     }
-    // Every generated legal document receives one conservative final Arabic
-    // proofreading pass. The first draft can be grammatically weak even when it
-    // contains no detectable English/Chinese/Markdown artifact, so artifact-only
-    // gating would miss the user's Arabic spelling and sentence-structure issues.
-    // The vault text is deliberately not supplied to the proofreader; it edits
-    // the generated result only and therefore does not connect qualification to
-    // the lawyer's vault. No second consumeOperation call is made (no extra user
-    // credit), although this pass does consume provider time/tokens.
-    const qualityIssues = inspectGeneratedArabicText(fullText, payload);
-    const originalText = fullText;
-    try {
-      const originalScore = generatedTextIssueScore(originalText, payload);
-      const minimumLength = Math.min(300, Math.floor(originalText.length * 0.65));
-      let reviewed = (await generateDeepLegalResponse(
-        buildArabicProofreadingPrompt(originalText, taskType, payload),
-      )).trim();
-      let reviewedIssues = inspectGeneratedArabicText(reviewed, payload);
-      let reviewedScore = reviewed ? generatedTextIssueScore(reviewed, payload) : Number.POSITIVE_INFINITY;
-
-      // If a first review still contains Chinese/Japanese/Korean text or
-      // unexplained Latin words, make one targeted second pass. Do not silently
-      // publish the original contaminated output just because the first review
-      // was incomplete.
-      const hasForeignLeak = (issues: string[]) => issues.some((issue) =>
-        issue === 'cjk-or-east-asian-characters' || issue === 'unexpected-latin-words' || issue === 'low-arabic-text-ratio'
-      );
-      if (reviewed && hasForeignLeak(reviewedIssues)) {
-        try {
-          const secondPassPrompt = `${buildArabicProofreadingPrompt(reviewed, taskType, payload)}\n\nتنبيه حاسم: ما زال النص السابق يحتوي على كلمات أجنبية غير مبررة. أزل أو ترجم إلى العربية كل كلمة إنجليزية أو صينية أو يابانية أو كورية ليست اسماً أو مصطلحاً وارداً حرفياً في بيانات القضية الحالية. أخرج النص القانوني كاملاً بالعربية فقط.`;
-          const secondReviewed = (await generateDeepLegalResponse(secondPassPrompt)).trim();
-          const secondIssues = inspectGeneratedArabicText(secondReviewed, payload);
-          const secondScore = secondReviewed ? generatedTextIssueScore(secondReviewed, payload) : Number.POSITIVE_INFINITY;
-          if (secondReviewed.length >= minimumLength && !hasForeignLeak(secondIssues) && secondScore <= reviewedScore) {
-            reviewed = secondReviewed;
-            reviewedIssues = secondIssues;
-            reviewedScore = secondScore;
-          }
-        } catch (secondPassError: any) {
-          console.warn('AI targeted foreign-language cleanup failed:', { jobId, taskType, error: safeDiagnosticMessage(secondPassError?.message || 'unknown') });
-        }
-      }
-
-      const sufficientlyComplete = reviewed.length >= minimumLength;
-      const noNewIssues = reviewedScore <= originalScore;
-      const foreignLeaksResolved = !hasForeignLeak(reviewedIssues);
-      const accepted = Boolean(reviewed) && sufficientlyComplete && noNewIssues && foreignLeaksResolved;
-      if (accepted) {
-        fullText = reviewed;
-        await patchJob(jobId, userId, { partial_result: fullText });
-        console.info('AI output final proofreading applied:', { jobId, taskType, detectedIssues: qualityIssues, remainingIssues: reviewedIssues, changedText: reviewed !== originalText });
-      } else if (hasForeignLeak(qualityIssues)) {
-        // Do not mark a contaminated document as completed. The caller receives
-        // an explicit failure instead of a successful result containing foreign
-        // text; the original draft remains available in the job's partial data.
-        throw new Error('تعذر تنقية النص النهائي بالكامل من الكلمات الأجنبية غير المطلوبة. لم تُعتمد النتيجة؛ أعد المحاولة مرة واحدة، وإذا تكرر الأمر فراجع إعداد النموذج المستخدم.');
-      } else {
-        // For Arabic-only drafts, keep the original if proofreading returned an
-        // incomplete or lower-quality replacement; never discard valid content.
-        console.warn('AI final proofreading was not accepted; retaining original result:', {
-          jobId,
-          taskType,
-          detectedIssues: qualityIssues,
-          originalIssueScore: originalScore,
-          reviewedIssueScore: reviewedScore,
-          reviewedLength: reviewed.length,
-          remainingIssues: reviewedIssues,
-        });
-      }
-    } catch (repairError: any) {
-      if (/تعذر تنقية النص النهائي بالكامل/u.test(String(repairError?.message || ''))) throw repairError;
-      console.warn('AI final proofreading failed; retaining original result:', { jobId, taskType, error: safeDiagnosticMessage(repairError?.message || 'unknown') });
-    }
-
     await patchJob(jobId, userId, {
       status: 'completed',
       result: fullText,
