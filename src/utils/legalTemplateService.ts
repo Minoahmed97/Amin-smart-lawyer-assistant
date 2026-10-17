@@ -36,12 +36,11 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 export function classifyLegalDocument(fileName: string, text: string): Pick<LegalDocTemplate, 'category' | 'courtType' | 'workType'> {
-  const normalizedName = (fileName || '').toLowerCase();
-  const openingText = (text || '').replace(/\r/g, '').split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 14).join(' ').toLowerCase();
-  const sample = `${fileName} ${text.slice(0, 12000)}`.toLowerCase();
+  const file = String(fileName || '').toLowerCase();
+  const opening = String(text || '').slice(0, 2200).toLowerCase();
+  const sample = `${fileName} ${String(text || '').slice(0, 12000)}`.toLowerCase();
   const has = (...terms: string[]) => terms.some((term) => sample.includes(term.toLowerCase()));
-  const nameHas = (...terms: string[]) => terms.some((term) => normalizedName.includes(term.toLowerCase()));
-  const openingHas = (...terms: string[]) => terms.some((term) => openingText.includes(term.toLowerCase()));
+  const hasOpening = (...terms: string[]) => terms.some((term) => opening.includes(term.toLowerCase()));
 
   let courtType = 'غير مصنف';
   if (has('مجلس الدولة', 'محكمة القضاء الإداري', 'المحكمة الإدارية العليا', 'هيئة مفوضي الدولة', 'قضاء إداري')) {
@@ -50,35 +49,27 @@ export function classifyLegalDocument(fileName: string, text: string): Pick<Lega
     courtType = 'القضاء العادي';
   }
 
-  // Prefer the file name and opening heading over generic party words. Many
-  // defence memoranda mention both "المدعي" and "المدعى عليه"; those words
-  // alone do not make a document a statement of claim.
+  // Classify by the document's explicit title/heading first. The words
+  // "المدعي" and "المدعى عليه" occur in memoranda too, so they must not
+  // override an actual heading such as "مذكرة بدفاع" or "مذكرة ختامية".
   let workType = 'مذكرة / مستند عام';
-  // Trust a clear file-name classification first. A memo may mention a claim,
-  // appeal, or notice in its body without being that document type.
-  if (nameHas('أسباب الطعن بالنقض', 'طعن بالنقض')) workType = 'طعن بالنقض';
-  else if (nameHas('صحيفة استئناف', 'استئناف')) workType = 'استئناف';
-  else if (nameHas('صحيفة دعوى', 'عريضة افتتاحية')) workType = 'صحيفة دعوى';
-  else if (nameHas('تفنيد', 'مذكرة رد', 'مذكرة تعقيب', 'مذكرة جوابية')) workType = 'تفنيد / رد';
-  else if (nameHas('إعلان على يد محضر', 'إعلان رسمي', 'إنذار رسمي')) workType = 'إعلان / إنذار';
-  else if (nameHas('انضباط', 'مجلس تأديب', 'جزاء تأديبي')) workType = 'انضباط / تأديب';
-  else if (nameHas('مذكرة بدفاع', 'مذكرة دفاع', 'مذكرة ختامية', 'مذكرة')) workType = 'مذكرة بدفاع';
-  // If the name is generic, use the document's opening heading, then limited
-  // body clues. Party labels such as المدعي/المدعى عليه are not enough.
-  else if (openingHas('أسباب الطعن بالنقض', 'طعن بالنقض')) workType = 'طعن بالنقض';
-  else if (openingHas('صحيفة الاستئناف', 'صحيفة استئناف', 'مذكرة بأسباب الاستئناف')) workType = 'استئناف';
-  else if (openingHas('صحيفة دعوى', 'عريضة افتتاحية', 'صحيفة افتتاح دعوى')) workType = 'صحيفة دعوى';
-  else if (openingHas('تفنيد', 'مذكرة رد', 'مذكرة تعقيب', 'مذكرة جوابية', 'الرد على مذكرة الخصم')) workType = 'تفنيد / رد';
-  else if (openingHas('إعلان على يد محضر', 'إعلان رسمي', 'إنذار رسمي')) workType = 'إعلان / إنذار';
-  else if (openingHas('انضباط', 'مجلس تأديب', 'جزاء تأديبي')) workType = 'انضباط / تأديب';
-  else if (openingHas('مذكرة بدفاع', 'مذكرة دفاع', 'مذكرة ختامية', 'مذكرة')) workType = 'مذكرة بدفاع';
+  if (/(?:صحيفة|عريضة).{0,20}(?:دعوى|الدعوى|افتتاحية)|(?:دعوى|الدعوى).{0,20}(?:صحيفة|عريضة)/.test(file) ||
+      hasOpening('صحيفة دعوى', 'صحيفة افتتاح دعوى', 'عريضة افتتاحية', 'صحيفة افتتاحية')) {
+    workType = 'صحيفة دعوى';
+  } else if (hasOpening('مذكرة بدفاع', 'مذكرة دفاع', 'مذكرة ختامية', 'مذكرة جوابية', 'مذكرة تعقيب') ||
+      /مذكرة/.test(file) || /^\s*مذكرة/.test(opening)) {
+    workType = 'مذكرة بدفاع';
+  } else if (has('طعن بالنقض', 'أسباب الطعن بالنقض', 'محكمة النقض')) workType = 'طعن بالنقض';
+  else if (has('استئناف', 'محكمة الاستئناف')) workType = 'استئناف';
   else if (has('انضباط', 'مجلس تأديب', 'جزاء تأديبي')) workType = 'انضباط / تأديب';
+  else if (has('إعلان على يد محضر', 'إعلان رسمي', 'إنذار رسمي')) workType = 'إعلان / إنذار';
+  else if (has('صحيفة دعوى', 'المدعي', 'المدعى عليه')) workType = 'صحيفة دعوى';
 
   let category = courtType;
   if (workType.includes('طعن') || workType === 'استئناف') category = workType;
   else if (workType.includes('انضباط')) category = 'انضباط';
   else if (workType.includes('إعلان')) category = 'إعلانات';
-  else if (workType.includes('تفنيد') || workType.includes('رد')) category = 'تفنيد / رد';
+  else if (workType.includes('مذكرة')) category = 'مذكرات';
   return { category, courtType, workType };
 }
 
@@ -159,7 +150,10 @@ export async function deleteLegalDocTemplate(id: string, userId: string): Promis
   }
 }
 
-export function chooseBestLegalDocTemplate( templates: LegalDocTemplate[], criteria: { courtType?: string; workType?: string; facts?: string }, ): LegalDocTemplate | null {
+export function chooseBestLegalDocTemplate(
+  templates: LegalDocTemplate[],
+  criteria: { courtType?: string; workType?: string; facts?: string },
+): LegalDocTemplate | null {
   if (!templates.length) return null;
   const normalize = (value: string) => value.toLowerCase().replace(/[ًٌٍَُِّْـ]/g, '').replace(/[^\u0600-\u06FFa-z0-9\s]/gi, ' ').replace(/\s+/g, ' ').trim();
   const court = normalize(criteria.courtType || '');
