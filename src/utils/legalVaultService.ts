@@ -396,7 +396,11 @@ function inferSafeModelType(model: LawModelItem): string {
   return 'مستند قضائي محفوظ';
 }
 
-/** * Create a structural blueprint from a private vault model. The source document * itself is never sent to the model: this keeps case facts, party identities, * dates, case numbers, legal citations and old requests out of the new prompt. */
+/**
+ * Create a structural blueprint from a private vault model. The source document
+ * itself is never sent to the model: this keeps case facts, party identities,
+ * dates, case numbers, legal citations and old requests out of the new prompt.
+ */
 function buildSanitizedJudicialBlueprint(content: string, documentType: string): string {
   const raw = String(content || '').replace(/\r/g, '\n').trim();
   if (!raw) return 'النموذج المرجعي لا يحتوي نصاً قابلاً لاستخلاص بنية منه.';
@@ -576,35 +580,79 @@ function isGenericJudicialTask(value: string): boolean {
   return /^(?:انشاء صيغه قانونيه|صيغه قانونيه|صياغه مستند|مهمه قانونيه اخري|مهمه قانونيه عامه|العمل القضائي|مهمه قانونيه)$/.test(text);
 }
 
+function buildPersonalReferenceText(content: string, maxChars = 18000): string {
+  const text = String(content || '').replace(/\r\n?/g, '\n').trim();
+  if (!text) return '';
+  if (text.length <= maxChars) return text;
+
+  // Preserve the actual opening, substantive middle, and closing of the
+  // lawyer's own document. A generic description alone cannot reproduce the
+  // lawyer's syntax, transitions, cadence, or drafting fingerprint.
+  const openingLength = 6000;
+  const middleLength = 8000;
+  const closingLength = maxChars - openingLength - middleLength - 120;
+  const middleStart = Math.max(openingLength, Math.floor((text.length - middleLength) / 2));
+  const middleEnd = Math.min(text.length - closingLength, middleStart + middleLength);
+  const opening = text.slice(0, openingLength);
+  const middle = text.slice(middleStart, middleEnd);
+  const closing = text.slice(-closingLength);
+  return `${opening}\n[مقتطف محذوف من منتصف النموذج المرجعي للحفاظ على حد السياق]\n${middle}\n[مقتطف محذوف قبل خاتمة النموذج المرجعي]\n${closing}`;
+}
+
 export function getLawyerStyleContext( searchCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; } | string, userId?: string ): string {
   let criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string } = {};
   if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
   else if (searchCriteria) criteria = searchCriteria;
 
-  const similarModels = findSimilarModels(criteria, userId);
+  const models = findSimilarModels(criteria, userId).filter((model) => String(model.content || '').trim().length > 100);
   const requestedType = String(criteria.judicialWorkType || criteria.briefType || '').trim();
-  const genericTask = isGenericJudicialTask(requestedType);
-  const sameTypeModels = requestedType
-    ? similarModels.filter((model) => modelMatchesRequestedType(model, requestedType))
+  const compatibleModels = requestedType
+    ? models.filter((model) => modelMatchesRequestedType(model, requestedType))
     : [];
 
-  // Use one primary reference to avoid blending incompatible document layouts.
-  // Exact/compatible task type wins. For a generic/unspecified task only, the
-  // best-ranked personal model may provide a candidate skeleton; the generator
-  // must still select a document type appropriate to the new task.
-  const selectedModel = sameTypeModels[0] || (genericTask ? similarModels[0] : undefined);
-  const canUseStructure = Boolean(selectedModel && (sameTypeModels.length > 0 || genericTask));
+  // Always use one real model from this account's vault. Prefer a model of the
+  // requested document type; if none exists, use the closest personal model as
+  // a style exemplar and adapt its structure to the requested task. Never
+  // silently fall back to a generic/system template.
+  const selectedModel = compatibleModels[0] || models[0];
   if (!selectedModel) {
-    return `[خزانة المحامي والقوالب الأسلوبية — سياق إلزامي للمهمة الحالية]\n[بصمة أسلوب مستخلصة من خزنة الحساب]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. استخدم فقط بيانات المستند الحالي، ولا تخترع قالباً أو ديباجة أو بيانات أطراف.]`;
+    return '[لا توجد نماذج شخصية محفوظة وصالحة في خزنة هذا الحساب. لا تُنشئ المستند بقالب عام؛ أوقف الصياغة واطلب من المستخدم حفظ نموذج شخصي أولاً.]';
   }
 
   const documentType = inferSafeModelType(selectedModel);
-  const typeLine = requestedType
-    ? `نوع العمل المطلوب حاليًا: ${requestedType}.`
-    : 'لم يُحدد نوع العمل مسبقاً؛ استنتج نوع المستند من الطلب ووقائع القضية الحالية ولا تجعل نوع النموذج المرجعي يفرض نوعاً غير مناسب.';
-  const reference = canUseStructure
-    ? buildSanitizedJudicialBlueprint(selectedModel.content || '', documentType)
-    : `لم يوجد نموذج متوافق مع نوع العمل المطلوب. لا تفرض بنية النموذج الأقرب لأنه من نوع مختلف؛ استخدم سمات أسلوب المحامي العامة فقط: ${deriveStyleProfile(selectedModel.content || '', false)}`;
+  const exactTypeMatch = compatibleModels.length > 0;
+  const referenceText = buildPersonalReferenceText(selectedModel.content);
+  if (!referenceText) {
+    return '[لا يوجد نص صالح في النموذج الشخصي المختار. لا تستخدم قالباً عاماً؛ اطلب نموذجاً آخر من خزنة الحساب.]';
+  }
 
-  return `[خزانة المحامي والقوالب الأسلوبية — سياق إلزامي للمهمة الحالية]\n[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\n[المرجع الشخصي الرئيسي]\n${reference}\n\n[طريقة استعمال المرجع — إلزامية]\n1) إذا كان المرجع متوافقاً مع نوع العمل، استخدم خريطة ترتيب أقسامه فعلياً كهيكل عمل للمستند الجديد؛ لا تكتفِ بتقليد طول الجمل على نحو عام. حافظ على تسلسل الديباجة وعرض الموضوع/الوقائع والأسباب والطلبات بالترتيب المرصود حيث يلائم نوع المستند.\n2) أعد إنشاء كل فقرة وحجة من معلومات القضية الحالية ومستنداتها وطلبات المستخدم؛ لا تنقل أي واقعة أو اسم أو صفة أو تاريخ أو رقم قضية أو طلب أو دفع موضوعي أو حكم أو مادة قانونية من قضية المرجع.\n3) قدّم بيانات الأطراف من الحقول الحالية فقط. إذا لم يرد اسم أو رقم أو تاريخ، فلا تختلقه ولا تستخدم أسماء نموذج قديم ولا تترك حقولاً شكلية بعلامات نجوم؛ احذف البيان غير المتاح أو ضع تنبيهاً موجزاً فقط إذا كان ضرورياً.\n4) لا تكتب رموز تنسيق Markdown مثل ** أو ## ولا تعليمات تحريرية داخل النص النهائي. لا تُنشئ عنواناً مثل «مذكرة ختامية» إلا إذا كان هو نوع العمل المطلوب أو كان مناسباً بوضوح لمعلومات القضية الحالية.\n5) إذا لم يتوفر نموذج متوافق، خذ السمات العامة فقط ولا تنقل عناوين أو أقساماً خاصة بنوع مختلف.\n6) لا تستخدم هذا السياق في التكييف القانوني؛ فهو مخصص لصياغة المستندات والردود والتفنيد وتحسين المسودات فقط.`;
+  const typeLine = requestedType
+    ? `نوع المستند المطلوب: ${requestedType}.`
+    : 'يُستنتج نوع المستند المطلوب من بيانات المهمة الحالية.';
+  const matchLine = exactTypeMatch
+    ? 'النموذج المرجعي متوافق مع نوع المستند المطلوب؛ اقتدِ ببنيته وترتيبه ما دام مناسباً للمهمة.'
+    : `لم يوجد نموذج من النوع نفسه؛ النموذج الشخصي الأقرب في خزنة الحساب هو «${documentType}». خذ منه بصمة الكتابة والديباجة والانتقالات والإيقاع، واستعر ترتيب الأقسام فقط بقدر ملاءمته لنوع المستند المطلوب، ولا تستبدل نوع المستند الجديد بنوع المرجع.`;
+
+  return `[خزانة المحامي الشخصية — المرجع الأساسي والإلزامي للصياغة]
+${typeLine}
+${matchLine}
+[معلومات المرجع]
+- نوع النموذج: ${documentType}
+- المصدر: مستند حقيقي محفوظ في خزنة هذا الحساب فقط.
+- الأولوية: هذا النص المرجعي الشخصي أعلى من أي قالب عام أو أسلوب افتراضي.
+
+[النص الأصلي للنموذج الشخصي — اقرأه كاملاً بوصفه مرجع أسلوب وبناء]
+<LAWYER_VAULT_REFERENCE>
+${referenceText}
+</LAWYER_VAULT_REFERENCE>
+
+[تعليمات إلزامية لاستخدام المرجع]
+1) لا تكتب من قالب قانوني عام ولا تكتفِ بوصف نظري للأسلوب. اقتدِ فعلياً بطريقة المحامي الظاهرة في النص: الديباجة، صياغة الجمل، تراكيب الربط، ترتيب عرض الوقائع، طريقة بناء الفقرة والحجة، الانتقال من واقعة إلى دليل ثم إلى أثرها، تسلسل الدفوع، العناوين، الخاتمة والطلبات.
+2) اجعل الناتج يبدو مكتوباً بالطريقة نفسها التي كُتب بها النموذج المرجعي، مع إعادة بناء المضمون بالكامل على القضية الحالية. لا تنسخ فقرة موضوعية من المرجع لمجرد أنها تبدو مناسبة.
+3) ممنوع نقل أي واقعة أو اسم طرف أو صفة أو عنوان أو رقم قضية أو تاريخ أو مبلغ أو مستند أو طلب أو دفع موضوعي أو مادة قانونية أو حكم أو رقم طعن خاص بالقضية القديمة. هذه البيانات لا تُستخدم إطلاقاً في المستند الجديد.
+4) استمد بيانات القضية الجديدة حصراً من مدخلات المستخدم ومستنداته الحالية. إذا كانت بيانات الطرف أو المحكمة أو التاريخ غير متاحة، فلا تملأها من النموذج القديم ولا تضع بدلاً منها نجومًا أو حقولاً وهمية.
+5) حافظ على الترويسة والديباجة والتوقيع فقط بالقدر الذي تسمح به بيانات القضية الحالية؛ انقل الصيغة المهنية العامة للمحامي من المرجع، لكن استبدل بيانات الأشخاص والقضية القديمة ببيانات القضية الحالية أو احذف ما لا تتوفر له بيانات.
+6) لا تستخدم قالباً عاماً بديلاً عند وجود نموذج شخصي في الخزنة. إذا لم توجد نماذج صالحة، لا تكتب المستند حتى يُضاف نموذج شخصي؛ أخبر المستخدم بذلك بوضوح.
+7) لا تضع علامات Markdown مثل ** أو ## ولا تعليمات تحريرية داخل المستند النهائي. اكتب بالعربية القانونية، ولا تُدرج الإنجليزية إلا إذا كانت اسماً أو مصطلحاً ضرورياً في مستند القضية الحالية.
+8) هذا السياق مخصص للصياغة والتفنيد والرد على المستندات وتحسين المسودات. لا يُستخدم في التكييف القانوني المستقل.`;
 }
