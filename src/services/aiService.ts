@@ -294,20 +294,54 @@ async function callDirectGeminiApi(_prompt: string, _systemInstruction = EGYPTIA
   throw new Error('تعذر الاتصال بالخادم المركزي للذكاء الاصطناعي.');
 }
 
+function hasUsablePersonalVaultReference(vaultContext: string): boolean {
+  const openTag = '<LAWYER_VAULT_REFERENCE>';
+  const closeTag = '</LAWYER_VAULT_REFERENCE>';
+  const start = String(vaultContext || '').indexOf(openTag);
+  if (start < 0) return false;
+  const contentStart = start + openTag.length;
+  const end = String(vaultContext || '').indexOf(closeTag, contentStart);
+  if (end < 0) return false;
+  const reference = String(vaultContext || '').slice(contentStart, end).trim();
+  return reference.length >= 80 && (reference.match(/[\u0600-\u06FF]/g) || []).length >= 12;
+}
+
+function isGenericTaskLabel(value: string): boolean {
+  const text = String(value || '').toLowerCase()
+    .replace(/[ًٌٍَُِّْـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه')
+    .replace(/[^\u0600-\u06FFa-z0-9\s]/gi, ' ').replace(/\s+/g, ' ').trim();
+  return !text || /^(?:انشاء صيغه قانونيه|صيغه قانونيه|صياغه مستند|مهمه قانونيه اخري|مهمه قانونيه عامه|العمل القضائي|مهمه قانونيه|مذكرة قضائيه|مذكره قضائيه|مذكرة|مذكره|مستند قانوني|نموذج قانوني)$/.test(text);
+}
+
+function resolveDocumentType(criteria: { customJudicialWorkType?: string; briefType?: string; judicialWorkType?: string }): string {
+  const candidates = [criteria.customJudicialWorkType, criteria.briefType, criteria.judicialWorkType]
+    .map((value) => String(value || '').trim())
+    .filter((value) => value && value !== '__custom__');
+  return candidates.find((value) => !isGenericTaskLabel(value)) || candidates[0] || '';
+}
+
 function requirePersonalVaultModel(vaultContext: string): void {
-  if (!vaultContext || vaultContext.includes('[لا توجد نماذج شخصية محفوظة') || vaultContext.includes('[لا يوجد نص صالح في النموذج الشخصي')) {
-    throw new Error('لا يمكن تنفيذ الصياغة بأسلوب المحامي لأن خزنة هذا الحساب لا تحتوي نموذجًا شخصيًا صالحًا. أضف مذكرة أو مستندًا من كتابتك إلى الخزنة ثم أعد المحاولة.');
+  if (hasUsablePersonalVaultReference(vaultContext)) return;
+  const context = String(vaultContext || '');
+  const firstLine = context.split(/\r?\n/, 1)[0].trim();
+  if (firstLine.startsWith('[') && firstLine.endsWith(']') && /خزنة|نموذجاً صالحاً|نموذجاً نصياً/u.test(firstLine)) {
+    throw new Error(firstLine.slice(1, -1));
   }
+  throw new Error('تعذر تمرير نص النموذج الشخصي الحقيقي إلى الصياغة. لم يبدأ التوليد ولم يُخصم رصيد؛ تحقق من أن حزمة الواجهة والخادم متوافقة ومحدّثة معاً.');
 }
 
 export async function deconstructBrief( params: { opponentBriefText: string; courtType?: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
-  const lawyerVaultContext = getLawyerStyleContext({
+  const requestedWorkType = isGenericTaskLabel(params.judicialWorkType || '')
+    ? 'تفنيد مستند أو مذكرة'
+    : String(params.judicialWorkType || 'تفنيد مستند أو مذكرة').trim();
+  const lawyerVaultContext = await getLawyerStyleContext({
     courtType: params.courtType,
-    // In smart mode, use the personal vault's rebuttal/response examples as
-    // the style reference while leaving the AI free to choose the actual output type.
-    judicialWorkType: params.judicialWorkType?.trim() || 'تفنيد مستند أو مذكرة',
-    factsOrSubject: params.opponentBriefText,
+    // A selected generic category must not override the actual requested
+    // response/memo subtype. Use the opposing document only for domain cues,
+    // never to match old case facts.
+    judicialWorkType: requestedWorkType,
+    factsOrSubject: `${params.caseNature || ''}\n${params.opponentBriefText}`,
   }, params.userId);
   requirePersonalVaultModel(lawyerVaultContext);
 
@@ -331,12 +365,12 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
 
 export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
-  const effectiveWorkType =
-    params.customJudicialWorkType?.trim()
-      ? params.customJudicialWorkType.trim()
-      : params.judicialWorkType || params.briefType || '';
+  // A generic task selector (such as "إنشاء صيغة قانونية") often remains
+  // selected while the user specifies "مذكرة مدنية" in the document/title field.
+  // Resolve the specific description first so the vault selects the right model.
+  const effectiveWorkType = resolveDocumentType(params);
 
-  const lawyerVaultContext = getLawyerStyleContext({
+  const lawyerVaultContext = await getLawyerStyleContext({
     courtType: params.courtType,
     briefType: params.briefType,
     judicialWorkType: effectiveWorkType,
@@ -381,18 +415,23 @@ export async function refineDraftText(
   styleCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string },
 ): Promise<string> {
   await throttleRequests();
-  const lawyerVaultContext = getLawyerStyleContext({
+  const documentType = resolveDocumentType({
+    briefType: styleCriteria?.briefType,
+    judicialWorkType: styleCriteria?.judicialWorkType,
+  });
+  const lawyerVaultContext = await getLawyerStyleContext({
     courtType: styleCriteria?.courtType,
     briefType: styleCriteria?.briefType,
-    judicialWorkType: styleCriteria?.judicialWorkType || styleCriteria?.briefType,
+    judicialWorkType: documentType,
     factsOrSubject: draftText,
   }, userId);
+  requirePersonalVaultModel(lawyerVaultContext);
 
   try {
     const result = await requestSavedJob('refine', {
       draftText,
       enhancementType,
-      documentType: styleCriteria?.judicialWorkType || styleCriteria?.briefType || '',
+      documentType,
       vaultContext: lawyerVaultContext,
     }, onChunk, userId);
     return cleanDirectResponse(result);
