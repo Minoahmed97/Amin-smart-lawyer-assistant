@@ -20,7 +20,7 @@ function requireSupabaseServerConfig() {
   return config;
 }
 
-export async function fetchServerCloudGeminiKeys(): Promise<string[]> {
+export async function fetchServerCloudGeminiKeys(timeoutMs?: number): Promise<string[]> {
   const { supabaseUrl, supabaseKey } = getSupabaseServerConfig();
   if (!supabaseUrl || !supabaseKey) {
     cachedServerCloudKeys = [];
@@ -36,6 +36,7 @@ export async function fetchServerCloudGeminiKeys(): Promise<string[]> {
   }
 
   try {
+    const timeout = Number(timeoutMs);
     const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_keys?select=api_key,is_active`, {
       method: 'GET',
       headers: {
@@ -43,6 +44,7 @@ export async function fetchServerCloudGeminiKeys(): Promise<string[]> {
         ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
         'Content-Type': 'application/json',
       },
+      ...(Number.isFinite(timeout) && timeout >= 1000 ? { signal: AbortSignal.timeout(timeout) } : {}),
     });
     if (!res.ok) throw new Error(`Supabase رفض قراءة مفاتيح Gemini (HTTP ${res.status}).`);
     const records = (await res.json()) as any[];
