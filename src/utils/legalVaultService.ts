@@ -125,7 +125,7 @@ function canonicalDocumentType(value: string): string {
   // (e.g. "إعلان / إنذار") but a title that identifies it as إعادة إعلان.
   if (text.includes('اعادة') && text.includes('اعلان')) return 'اعادة اعلان';
   if (text.includes('انذار')) return 'انذار';
-  if ((text.includes('صحيفة') || text.includes('عريضة')) && (text.includes('دعوى') || text.includes('افتتاح'))) return 'صحيفة دعوى';
+  if ((text.includes('صحيفة') || text.includes('عريضة')) && (text.includes('دعوي') || text.includes('افتتاح'))) return 'صحيفة دعوى';
   if (text.includes('تفنيد') || (!text.includes('مذكرة') && text.includes('رد') && text.includes('مستند'))) return 'تفنيد مستندات';
   if (text.includes('اعلان') && (text.includes('قضائي') || text.includes('رسمي'))) return 'اعلان قضائي';
   if (text.includes('اعلان')) return 'اعلان';
@@ -133,29 +133,77 @@ function canonicalDocumentType(value: string): string {
   return text;
 }
 
+function inferExplicitDocumentType(value: string): string {
+  const text = normalizeVaultText(value || '');
+  if (!text) return '';
+  if (text.includes('اسباب الطعن بالنقض') || text.includes('طعن بالنقض')) return 'طعن بالنقض';
+  if (text.includes('صحيفة الاستئناف') || text.includes('صحيفة استئناف') || text.includes('مذكرة باسباب الاستئناف')) return 'استئناف';
+  if (text.includes('صحيفة دعوي') || text.includes('عريضة افتتاحية') || text.includes('صحيفة افتتاح دعوي')) return 'صحيفة دعوى';
+  if (text.includes('تفنيد') || text.includes('مذكرة رد') || text.includes('مذكرة تعقيب') || text.includes('مذكرة جوابية') || text.includes('الرد علي مذكرة')) return 'تفنيد مستندات';
+  if (text.includes('انذار رسمي') || text.includes('انذار علي يد محضر')) return 'إنذار';
+  if (text.includes('اعلان رسمي') || text.includes('اعلان علي يد محضر')) return 'إعلان';
+  if (text.includes('مذكرة بدفاع') || text.includes('مذكرة دفاع') || text.includes('مذكرة ختامية') || text.includes('مذكرة')) return 'مذكرة';
+  return '';
+}
+
+function modelTypeLabels(model: LawModelItem): string[] {
+  // Uploaded files may have older, broad auto-classification metadata. Prefer
+  // an explicit type in the filename/title or the document's opening lines,
+  // but never classify by party names alone.
+  if (model.source === 'uploaded') {
+    const titleType = inferExplicitDocumentType(`${model.title || ''} ${model.fileName || ''}`);
+    if (titleType) return [titleType, String(model.title || '')];
+    const openingText = String(model.content || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 14).join(' ');
+    const headingType = inferExplicitDocumentType(openingText);
+    if (headingType) return [headingType, String(model.title || '')];
+  }
+  return [model.judicialWorkType, model.title, model.category]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+}
+
 function modelTypeText(model: LawModelItem): string {
-  return `${model.judicialWorkType || ''} ${model.category || ''} ${model.title || ''}`;
+  return modelTypeLabels(model).join(' ');
+}
+
+function documentTypeFamily(value: string): string {
+  const text = normalizeVaultText(value);
+  if (!text) return '';
+  if (text.includes('طعن') || text.includes('استئناف') || text.includes('نقض')) return 'appeal';
+  if (text.includes('صحيفة') || text.includes('عريضة')) return 'claim';
+  if (text.includes('انذار') || text.includes('اعلان')) return 'service';
+  if (text.includes('تفنيد') || text.includes('تعقيب') || text.includes('مذكرة رد') || text.includes('جوابية') || text.includes('دفاع') || text.includes('دفوع')) return 'response';
+  if (text.includes('مذكرة')) return 'memo';
+  return '';
 }
 
 function modelMatchesRequestedType(model: LawModelItem, requestedType: string): boolean {
   const requested = canonicalDocumentType(requestedType);
   if (!requested) return false;
 
-  // Match each metadata field independently. Do not inspect model.content or
-  // case facts to choose a reference, because that can pull in another case's
-  // document simply because its facts happen to be similar.
-  const metadata = [model.judicialWorkType, model.title, model.category]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
-  if (metadata.some((value) => canonicalDocumentType(value) === requested)) return true;
+  // Use explicit document headings to repair misclassified uploaded files;
+  // do not use similarities between the facts of separate cases.
+  const labels = modelTypeLabels(model);
+  if (labels.some((value) => canonicalDocumentType(value) === requested)) return true;
+
+  const requestedFamily = documentTypeFamily(requestedType);
+  const modelFamilies = labels.map(documentTypeFamily).filter(Boolean);
+  if (requestedFamily && modelFamilies.some((family) => family === requestedFamily)) return true;
+  // A lawyer's defence memorandum is an appropriate stylistic reference for
+  // drafting rebuttals and replies, and vice versa; other document families
+  // (claims, appeals, notices) remain distinct.
+  if ((requestedFamily === 'response' && modelFamilies.includes('memo')) ||
+      (requestedFamily === 'memo' && modelFamilies.includes('response'))) return true;
+  // Do not let loose token overlap turn a different standard document type
+  // (such as an appeal or claim) into a structural reference for a defence
+  // memo. Fuzzy matching remains available for genuinely custom types.
+  if (requestedFamily && modelFamilies.length) return false;
 
   const normalizedRequested = normalizeVaultText(requestedType);
   const requestedTokens = new Set(normalizedRequested.split(/\s+/).filter((token) => token.length >= 3));
   if (!requestedTokens.size) return false;
 
-  // For custom document names, use metadata-token overlap only. The body of
-  // the old legal document is deliberately excluded from type matching.
-  const bestOverlap = metadata.reduce((best, value) => {
+  const bestOverlap = labels.reduce((best, value) => {
     const normalized = normalizeVaultText(value);
     if (!normalized) return best;
     if (normalized.includes(normalizedRequested)) return 1;
@@ -267,13 +315,32 @@ function deriveStyleProfile(content: string, includeStructure: boolean): string 
   ];
 
   if (includeStructure) {
+    const preambleLabels: Array<[RegExp, string]> = [
+      [/محكمة|لدي محكمة|رئيس المحكمة|المحكمة المختصة/, 'المخاطبة القضائية أو تحديد المحكمة'],
+      [/صحيفة دعوي|مذكرة|عريضة|انذار|طعن|استئناف/, 'عنوان نوع المستند'],
+      [/المدعي|المدعية|المدعي عليه|المدعي عليها|المستأنف|الطاعن|ضد/, 'بيان الخصوم وصفاتهم'],
+      [/رقم الدعوي|رقم القضية|الدائرة|جلسة/, 'بيانات الدعوى أو الجلسة'],
+      [/الموضوع|بشان موضوع|موضوع الطلب/, 'تحديد موضوع المستند'],
+      [/مقدمة لسيادتكم|مقدم لسيادتكم|يتشرف|تتحصل الوقائع|الوقائع/, 'مدخل تمهيدي قبل عرض الوقائع']
+    ];
+    const observedPreamble: string[] = [];
+    for (const line of nonEmptyLines.slice(0, 12)) {
+      const normalizedLine = normalizeVaultText(line);
+      if (line.length > 160) continue;
+      const found = preambleLabels.find(([pattern]) => pattern.test(normalizedLine));
+      if (found && !observedPreamble.includes(found[1])) observedPreamble.push(found[1]);
+    }
+    if (observedPreamble.length) {
+      styleNotes.push(`بنية الديباجة المستخلصة دون أسماء أو بيانات قضية قديمة: ${observedPreamble.join(' ← ')}`);
+    }
+
     const sectionLabels: Array<[RegExp, string]> = [
       [/^(?:محكمة|لدى محكمة|السيد الأستاذ|إلى السيد|الى السيد|السيد رئيس)/, 'ترويسة أو مخاطبة رسمية'],
       [/^(?:الموضوع|بشأن موضوع|موضوع الطلب)/, 'عرض موضوع المستند'],
       [/^(?:الوقائع|وقائع الدعوى|موجز الوقائع|تتحصل الوقائع)/, 'عرض الوقائع'],
       [/^(?:الدفاع|أوجه الدفاع|الدفوع|الأسباب|أسباب الطلب|من حيث)/, 'عرض الأسباب أو الدفوع'],
       [/^(?:الطلبات|الطلب الختامي|بناء عليه|لهذه الأسباب|لذلك|لما تقدم)/, 'الطلبات أو الخاتمة'],
-      [/^(?:وتفضلوا|مقدمه لسيادتكم|وكيل|مع حفظ)/, 'خاتمة أو توقيع']
+      [/^(?:وتفضلوا|مقدمة لسيادتكم|مقدم لسيادتكم|وكيل|مع حفظ)/, 'خاتمة أو توقيع']
     ];
     const observedSections: string[] = [];
     for (const line of nonEmptyLines) {
@@ -284,6 +351,22 @@ function deriveStyleProfile(content: string, includeStructure: boolean): string 
     }
     if (observedSections.length) {
       styleNotes.push(`التسلسل البنيوي العام المرصود في نموذج من النوع نفسه: ${observedSections.join(' ← ')}`);
+    }
+
+    const reasoningMarkers: Array<[RegExp, string]> = [
+      [/(?:وقائع الدعوى|تتحصل الوقائع|بموجب|الثابت من الأوراق)/, 'عرض الواقعة أو مضمون المستند'],
+      [/(?:المستند|المحرر|الدليل|الإقرار|الثابت بالأوراق)/, 'ربط الواقعة بدليلها'],
+      [/(?:ولما كان|وحيث إن|عملاً بنص|مؤدى ذلك|القانون)/, 'بيان القاعدة أو التعليل القانوني'],
+      [/(?:وإذ كان ذلك|لما كان الثابت|تأسيساً على|تطبيقاً لذلك)/, 'تطبيق التعليل على الواقعة'],
+      [/(?:ومن ثم|مما يتعين معه|الأمر الذي|بناء عليه|لهذه الأسباب)/, 'استخلاص النتيجة أو الطلب']
+    ];
+    const reasoningOrder = reasoningMarkers
+      .map(([pattern, label]) => ({ label, index: text.search(pattern) }))
+      .filter((item) => item.index >= 0)
+      .sort((a, b) => a.index - b.index)
+      .map((item) => item.label);
+    if (reasoningOrder.length >= 3) {
+      styleNotes.push(`تسلسل الاستدلال المستخلص من ترتيب النموذج: ${[...new Set(reasoningOrder)].join(' ← ')}`);
     }
   }
 
@@ -322,5 +405,5 @@ export function getLawyerStyleContext( searchCriteria?: { courtType?: string; br
   const typeLine = requestedType
     ? `نوع المستند المطلوب حاليًا: ${requestedType}.`
     : 'نوع المستند المطلوب يحدده طلب المستخدم الحالي.';
-  return `[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\nالبيانات التالية وصف أسلوبي مجرد مستخلص محليًا من نماذج المحامي؛ لم يُرفق أي نص من المستندات الأصلية. استخدم الوصف لمحاكاة طريقة العرض والانتقال ونمط الجمل فقط.\n${profileBlocks.join('\n\n')}\n\n[حدود إلزامية]\n1) اكتب المستند الحالي من بدايته إلى نهايته اعتمادًا على وقائع هذا الطلب ومستنداته وتعليمات المستخدم الحالية فقط.\n2) الخزنة ليست مصدرًا لوقائع أو مستندات أو أسماء أو تواريخ أو أرقام أو طلبات أو دفوع أو نصوص قانونية. لا تنقل منها أي مضمون أو عبارة مميزة مرتبطة بقضية سابقة.\n3) لا تقتبس أو تعيد صياغة أي جزء من مستند محفوظ؛ لا يتم إرسال نصوص النماذج إلى المولد أصلًا.\n4) طبّق بنية نموذج من النوع نفسه فقط إذا كان ذلك النوع موجودًا في خزنة هذا الحساب. إذا لم يوجد، خذ السمات العامة للكتابة ولا تفرض بنية مستند مختلف.\n5) نوع المستند الجديد وتعليمات المستخدم الحالية هما الحاكمان؛ لا تحوّل صحيفة دعوى إلى مذكرة، أو إنذارًا إلى إعادة إعلان، أو أي نوع إلى نوع آخر.\n6) لا تضف اسم المحامي أو مكتبه أو ترويسة أو بيانات تعريفية إلا إذا كانت مقدمة صراحةً ضمن بيانات المستند الحالي أو موجودة بالفعل في المسودة الحالية الجاري تحريرها.\n7) اجعل البصمة واضحة في أسلوب العرض وتسلسل الفقرات والانتقالات وطول الجمل والروابط التعبيرية، لا في استنساخ مضمون المستندات القديمة.`;
+  return `[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\nالبيانات التالية وصف أسلوبي مجرد مستخلص محليًا من نماذج المحامي؛ لم يُرفق أي نص من المستندات الأصلية. طبّق الوصف فعلياً في الديباجة المحايدة، وترتيب الفقرات، وتسلسل عرض الواقعة والدليل والتعليل والتطبيق والنتيجة، وطول الجمل والروابط التعبيرية؛ ولا تستنسخ أي واقعة أو بيانات قديمة.\n${profileBlocks.join('\n\n')}\n\n[حدود إلزامية]\n1) اكتب المستند الحالي من بدايته إلى نهايته اعتمادًا على وقائع هذا الطلب ومستنداته وتعليمات المستخدم الحالية فقط.\n2) الخزنة ليست مصدرًا لوقائع أو مستندات أو أسماء أو تواريخ أو أرقام أو طلبات أو دفوع أو نصوص قانونية. لا تنقل منها أي مضمون أو عبارة مميزة مرتبطة بقضية سابقة.\n3) لا تقتبس أو تعيد صياغة أي جزء من مستند محفوظ؛ لا يتم إرسال نصوص النماذج إلى المولد أصلًا.\n4) طبّق بنية نموذج من النوع نفسه فقط إذا كان ذلك النوع موجودًا في خزنة هذا الحساب. إذا لم يوجد، خذ السمات العامة للكتابة ولا تفرض بنية مستند مختلف.\n5) نوع المستند الجديد وتعليمات المستخدم الحالية هما الحاكمان؛ لا تحوّل صحيفة دعوى إلى مذكرة، أو إنذارًا إلى إعادة إعلان، أو أي نوع إلى نوع آخر.\n6) لا تضف اسم المحامي أو مكتبه أو ترويسة أو بيانات تعريفية إلا إذا كانت مقدمة صراحةً ضمن بيانات المستند الحالي أو موجودة بالفعل في المسودة الحالية الجاري تحريرها.\n7) طبّق نمط الديباجة وتسلسل الاستدلال المستخلصين متى كانا متاحين، ثم طابق طول الجمل والروابط التعبيرية وأسلوب الانتقال. استبدل بيانات النموذج كلها ببيانات القضية الحالية، ولا تستنسخ أي واقعة أو مضمون قديم.`;
 }
