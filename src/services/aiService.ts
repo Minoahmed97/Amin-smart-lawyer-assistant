@@ -294,6 +294,12 @@ async function callDirectGeminiApi(_prompt: string, _systemInstruction = EGYPTIA
   throw new Error('تعذر الاتصال بالخادم المركزي للذكاء الاصطناعي.');
 }
 
+function requirePersonalVaultModel(vaultContext: string): void {
+  if (!vaultContext || vaultContext.includes('[لا توجد نماذج شخصية محفوظة') || vaultContext.includes('[لا يوجد نص صالح في النموذج الشخصي')) {
+    throw new Error('لا يمكن تنفيذ الصياغة بأسلوب المحامي لأن خزنة هذا الحساب لا تحتوي نموذجًا شخصيًا صالحًا. أضف مذكرة أو مستندًا من كتابتك إلى الخزنة ثم أعد المحاولة.');
+  }
+}
+
 export async function deconstructBrief( params: { opponentBriefText: string; courtType?: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
@@ -303,6 +309,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
     judicialWorkType: params.judicialWorkType?.trim() || 'تفنيد مستند أو مذكرة',
     factsOrSubject: params.opponentBriefText,
   }, params.userId);
+  requirePersonalVaultModel(lawyerVaultContext);
 
   const payload = {
     opponentBriefText: params.opponentBriefText,
@@ -335,6 +342,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
     judicialWorkType: effectiveWorkType,
     factsOrSubject: params.facts,
   }, params.userId);
+  requirePersonalVaultModel(lawyerVaultContext);
 
   try {
     const { userId: _userId, ...requestParams } = params;
@@ -365,7 +373,13 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
   }
 }
 
-export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string, styleCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string }, ): Promise<string> {
+export async function refineDraftText(
+  draftText: string,
+  enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck',
+  onChunk?: (text: string) => void,
+  userId?: string,
+  styleCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string },
+): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: styleCriteria?.courtType,
@@ -378,6 +392,7 @@ export async function refineDraftText( draftText: string, enhancementType: 'more
     const result = await requestSavedJob('refine', {
       draftText,
       enhancementType,
+      documentType: styleCriteria?.judicialWorkType || styleCriteria?.briefType || '',
       vaultContext: lawyerVaultContext,
     }, onChunk, userId);
     return cleanDirectResponse(result);
