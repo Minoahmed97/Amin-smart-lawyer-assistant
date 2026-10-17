@@ -290,7 +290,9 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: params.courtType,
-    judicialWorkType: params.judicialWorkType,
+    // In smart mode, use the personal vault's rebuttal/response examples as
+    // the style reference while leaving the AI free to choose the actual output type.
+    judicialWorkType: params.judicialWorkType?.trim() || 'تفنيد مستند أو مذكرة',
     factsOrSubject: params.opponentBriefText,
   }, params.userId);
 
@@ -355,9 +357,12 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
   }
 }
 
-export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string ): Promise<string> {
+export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string, styleCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string }, ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
+    courtType: styleCriteria?.courtType,
+    briefType: styleCriteria?.briefType,
+    judicialWorkType: styleCriteria?.judicialWorkType || styleCriteria?.briefType,
     factsOrSubject: draftText,
   }, userId);
 
