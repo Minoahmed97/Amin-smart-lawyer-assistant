@@ -16,6 +16,8 @@ const TASK_HANDLERS: Record<string, (req: any, res: any) => any> = {
 const JOB_TABLE = 'app_ai_generation_jobs';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
+// The provider deadline is 4:30; allow time for the worker to persist its terminal status before stale cleanup.
+const JOB_STALE_TIMEOUT_MS = 4 * 60 * 1000 + 55 * 1000;
 
 function safeDiagnosticMessage(value: unknown) {
   return String(value || 'unknown')
@@ -43,7 +45,8 @@ async function supabase(path: string, init: RequestInit = {}) {
     ...(init.headers as Record<string, string> || {}),
   };
   if (!key.startsWith('sb_')) headers.Authorization = `Bearer ${key}`;
-  return fetch(`${url}/rest/v1/${path}`, { ...init, headers });
+  const signal = init.signal || AbortSignal.timeout(10000);
+  return fetch(`${url}/rest/v1/${path}`, { ...init, headers, signal });
 }
 
 function safePayload(input: any, taskType: string) {
@@ -84,7 +87,9 @@ function safePayload(input: any, taskType: string) {
 }
 
 async function patchJob(id: string, userId: string, values: Record<string, unknown>) {
-  const res = await supabase(`${JOB_TABLE}?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}`, {
+  // Never let a late partial write or a caught exception overwrite a terminal
+  // result. PostgREST may return 204 even when this condition matches no row.
+  const res = await supabase(`${JOB_TABLE}?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}&status=not.in.(completed,failed)`, {
     method: 'PATCH',
     headers: { Prefer: 'return=minimal' },
     body: JSON.stringify({ ...values, updated_at: new Date().toISOString() }),
@@ -203,8 +208,13 @@ export default async function handler(req: any, res: any) {
       const requestBody = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
       const taskType = String(requestBody?.taskType || 'counter-brief');
       const payload = safePayload(requestBody?.payload || requestBody, taskType);
-      const cleanup = await supabase(`${JOB_TABLE}?created_at=lt.${encodeURIComponent(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())}`, { method: 'DELETE' });
-      if (!cleanup.ok) console.warn('Old AI job cleanup failed:', cleanup.status);
+      // Cleanup is best-effort and must not prevent a new task from being inserted.
+      try {
+        const cleanup = await supabase(`${JOB_TABLE}?created_at=lt.${encodeURIComponent(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())}`, { method: 'DELETE' });
+        if (!cleanup.ok) console.warn('Old AI job cleanup failed:', cleanup.status);
+      } catch (cleanupError: any) {
+        console.warn('Old AI job cleanup failed; continuing task creation:', safeDiagnosticMessage(cleanupError?.message || cleanupError));
+      }
 
       const requestedId = String(requestBody?.jobId || '').trim();
       const id = /^[0-9a-f-]{36}$/i.test(requestedId) ? requestedId : crypto.randomUUID();
@@ -251,11 +261,33 @@ export default async function handler(req: any, res: any) {
       const session = requireSession(req);
       const id = String(req?.query?.id || '').trim();
       if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
-      const result = await supabase(`${JOB_TABLE}?select=id,status,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`);
+      const jobPath = `${JOB_TABLE}?select=id,status,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
+      const result = await supabase(jobPath);
       if (!result.ok) return res.status(503).json({ error: 'تعذر استرجاع حالة مهمة الصياغة.' });
       const rows = await result.json();
-      const job = Array.isArray(rows) ? rows[0] : null;
+      let job = Array.isArray(rows) ? rows[0] : null;
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة لهذا الحساب.' });
+
+      const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
+      if ((job.status === 'queued' || job.status === 'running') && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
+        const staleError = 'توقفت المهمة بعد عدم وصول أي تحديث لمدة 4 دقائق ونصف. لم تُستكمل النتيجة؛ ابدأ طلبًا جديدًا بعد مراجعة الاتصال بالخدمة.';
+        try {
+          await patchJob(id, session.userId, {
+            status: 'failed',
+            error: staleError,
+            partial_result: job.partial_result || '',
+            payload: {},
+          });
+          // Re-read to respect a completion that raced with this stale check.
+          const refreshed = await supabase(jobPath);
+          if (!refreshed.ok) return res.status(503).json({ error: 'تعذر التحقق من الحالة النهائية للمهمة.' });
+          const refreshedRows = await refreshed.json();
+          job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
+        } catch (staleError: any) {
+          console.error('AI job stale-state update failed:', safeDiagnosticMessage(staleError?.message || staleError));
+          return res.status(503).json({ error: 'انتهت مهلة المهمة، لكن تعذر حفظ حالتها النهائية في قاعدة البيانات.' });
+        }
+      }
       return res.status(200).json({
         jobId: job.id,
         status: job.status,
