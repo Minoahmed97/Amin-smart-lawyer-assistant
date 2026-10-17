@@ -270,16 +270,12 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     const previousDraft = generatedBrief;
     setGeneratedBrief('');
     try {
-      const refineWorkType = formData.customJudicialWorkType?.trim()
-        || (formData.judicialWorkType === '__custom__' ? '' : formData.judicialWorkType)
-        || formData.briefType
-        || '';
       const refined = await refineDraftText(previousDraft, type, (chunk) => {
         setGeneratedBrief((current) => current + chunk);
       }, userId, {
         courtType: formData.courtType,
         briefType: formData.briefType,
-        judicialWorkType: refineWorkType,
+        judicialWorkType: formData.customJudicialWorkType || formData.judicialWorkType || formData.briefType,
       });
       if (refined) {
         setGeneratedBrief(refined);
