@@ -32,6 +32,14 @@ export function cleanDirectResponse(rawText: string): string {
   for (const pattern of introPatterns) {
     text = text.replace(pattern, '').trim();
   }
+  // The drafting view is a legal document editor, not a Markdown renderer.
+  // Remove accidental emphasis/heading markers such as **مذكرة ختامية**.
+  text = text
+    .replace(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/g, '$1')
+    .replace(/(^|\n)\s{0,3}#{1,6}\s+/g, '$1')
+    .replace(/\*\*/g, '')
+    .replace(/__([^_\n]+)__/g, '$1')
+    .trim();
   return text;
 }
 
