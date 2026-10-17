@@ -533,6 +533,23 @@ function buildSanitizedJudicialBlueprint(content: string, documentType: string):
     if (slotRows.length < 2) slotRows.push('[مدخل/بيان تمهيدي جديد من بيانات القضية الحالية]');
     else slotRows.push('[فقرة جديدة في الموضع المقابل من المرجع؛ يُعاد بناؤها من وقائع ودليل وتعليل القضية الحالية]');
   }
+  // Keep a small set of the lawyer's actual rhetorical phrasing. The previous
+  // blueprint reduced every substantive paragraph to a generic placeholder,
+  // which preserved headings but erased the author's real drafting voice.
+  // Select only formulaic/legal-transition paragraphs and exclude paragraphs
+  // that appear to contain party details, case identifiers, dates, or amounts.
+  const styleExemplars = sourceBlocks
+    .map((block) => block.replace(/\s+/g, ' ').trim())
+    .filter((block) => block.length >= 55 && block.length <= 700)
+    .filter((block) => /(?:وحيث إن|ولما كان|ولما كان الثابت|وإذ كان|ومؤدى ذلك|ولا ينال من ذلك|ومن ثم|الأمر الذي|مما يتعين معه|تأسيساً على|تطبيقاً لذلك|على هدي ما تقدم|ومن المقرر|استقر قضاء|جرى قضاء)/.test(block))
+    .filter((block) => !/(?:رقم الدعوى|رقم القضية|جلسة|بتاريخ|المستأنف|الطاعن|المدعي|المدعى عليه|مقدم من|مقدمة من|ضد\s|جنيه|دولار|\b20[0-9]{2}\b|[٠-٩]{2,}|[0-9]{2,})/i.test(block))
+    .map((block) => block
+      .replace(/(?:السيد|السيدة|الأستاذ|الأستاذة)\s*\/?.{2,45}?(?=،|؛|\s+(?:بصفته|بصفتها|ضد|عن|وحيث|ولما)|$)/g, '[بيانات شخصية محذوفة]')
+      .replace(/(?:المدعي|المدعية|المدعى عليه|المدعى عليها|المستأنف|المستأنف ضده|الطاعن|المطعون ضده)\s*\/?.{0,45}?(?=،|؛|\s+(?:وحيث|ولما|وإذ|ومن ثم)|$)/g, '[صفة طرف بالقضية الحالية]')
+      .slice(0, 520))
+    .filter((block, index, list) => list.indexOf(block) === index)
+    .slice(0, 5);
+
   const skeleton = [
     'قالب العمل المستخلص من النموذج المختار؛ هذه خريطة تعاقب الفقرات بعد استبدال النص الموضوعي القديم بمواضع جديدة:',
     ...(slotRows.length ? slotRows : ['[صدارة جديدة] ← [موضوع ووقائع القضية الحالية] ← [أسباب/دفوع مناسبة] ← [طلبات القضية الحالية]']),
@@ -544,9 +561,12 @@ function buildSanitizedJudicialBlueprint(content: string, documentType: string):
     'خريطة البنية المستخلصة من ترتيب النموذج الفعلي (وليست نص القضية القديمة):',
     ...(structure.length ? structure : ['لم تُستخرج عناوين صريحة؛ استخدم ترتيب الأقسام الذي تقتضيه طبيعة المهمة الجديدة ولا تخترع بنية خاصة.']),
     ...skeleton,
+    styleExemplars.length
+      ? `نماذج تعبيرية منقحة من صياغة المحامي (للاقتداء باللغة والتركيب والانتقال فقط، لا لنقل الوقائع أو الحجج الخاصة بالقضية القديمة):\n${styleExemplars.map((sample, index) => `${index + 1}. ${sample}`).join('\n')}`
+      : 'لم تتوفر فقرات تعبيرية آمنة كافية من المرجع؛ استخدم الانتقالات المرصودة والبنية دون اختلاق بصمة غير موجودة.',
     orderedConnectors.length ? `انتقالات أسلوبية ظهرت في المرجع: ${orderedConnectors.join('، ')}.` : '',
     `سمات الإيقاع والأسلوب: ${profile}`,
-    'لا يتضمن هذا المخطط أي اسم أو واقعة أو مستند أو طلب أو رقم أو تاريخ أو دفع موضوعي من القضية المرجعية.'
+    'النماذج التعبيرية أعلاه مرجع للأسلوب والتركيب فقط؛ لا تنقل منها أسماء أو وقائع أو مستندات أو طلبات أو أرقاماً أو تواريخ أو دفوعاً موضوعية إلى القضية الحالية.'
   ].filter(Boolean).join('\n');
 }
 
