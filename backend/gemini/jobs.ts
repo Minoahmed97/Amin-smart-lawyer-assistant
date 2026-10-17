@@ -78,7 +78,7 @@ function safePayload(input: any, taskType: string) {
     error.statusCode = 400;
     throw error;
   }
-  if (taskType === 'counter-brief' && !String(payload.vaultContext || '').includes('[بصمة أسلوب مستخلصة من خزنة الحساب]')) {
+  if (taskType === 'counter-brief' && !String(payload.vaultContext || '').includes('[بصمة أسلوب المحامي')) {
     const error: any = new Error('لم يتم العثور على نموذج شخصي من خزانة هذا الحساب. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف أو استعد نماذجك الشخصية أولاً.');
     error.statusCode = 400;
     throw error;
