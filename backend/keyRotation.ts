@@ -1,4 +1,4 @@
-Import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
