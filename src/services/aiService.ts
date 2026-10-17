@@ -72,7 +72,11 @@ async function requestSavedJob<T extends Record<string, any>>(
 ): Promise<string> {
   const key = jobStorageKey(type, userId);
   const storage = typeof localStorage !== 'undefined' ? localStorage : null;
-  const jobId = resumeId || storage?.getItem(key) || makeJobId();
+  // A manual run always gets a new id. Reusing an old localStorage id is only
+  // allowed when the caller explicitly invokes one of the resume functions.
+  // Keep the newly generated id before POST so a lost response can be recovered
+  // idempotently without charging for a second generation.
+  const jobId = resumeId || makeJobId();
   if (storage) storage.setItem(key, jobId);
 
   const headers = getRequestHeaders();
@@ -102,6 +106,9 @@ async function requestSavedJob<T extends Record<string, any>>(
   let lastText = '';
   let transientFailures = 0;
   const startedAt = Date.now();
+  const NO_PROGRESS_TIMEOUT_MS = 4 * 60 * 1000 + 30 * 1000;
+  let lastProgressAt = Date.now();
+  let lastUpdatedAt = '';
   while (Date.now() - startedAt < 1000 * 60 * 20) {
     try {
       const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
@@ -122,6 +129,11 @@ async function requestSavedJob<T extends Record<string, any>>(
       const data = await response.json();
       transientFailures = 0;
       const currentText = String(data?.partialResult || data?.result || '');
+      const updatedAt = String(data?.updatedAt || '');
+      if ((currentText.length > lastText.length) || (updatedAt && updatedAt !== lastUpdatedAt)) {
+        lastProgressAt = Date.now();
+      }
+      if (updatedAt) lastUpdatedAt = updatedAt;
       if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
@@ -142,10 +154,15 @@ async function requestSavedJob<T extends Record<string, any>>(
         failure.terminalJobError = true;
         throw failure;
       }
+      if (Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS) {
+        const failure: any = new Error('لم يصل أي تحديث للمهمة خلال 4 دقائق ونصف. توقفت متابعة الانتظار، واحتُفظ بمعرّفها لمحاولة استعادة حالتها دون بدء توليد جديد.');
+        failure.noProgressTimeout = true;
+        throw failure;
+      }
     } catch (err: any) {
       const statusCode = Number(err?.statusCode);
       const permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429;
-      if (err?.terminalJobError || permanentClientError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) {
+      if (err?.noProgressTimeout || err?.terminalJobError || permanentClientError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) {
         if (statusCode === 404 && storage) storage.removeItem(key);
         throw err;
       }
