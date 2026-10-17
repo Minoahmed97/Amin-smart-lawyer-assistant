@@ -324,7 +324,9 @@ export async function executeWithKeyRotation<T>(
   executionOptions?: KeyRotationExecutionOptions
 ): Promise<T> {
   if (executionOptions?.ocrMode && !executionOptions.deadlineAt) {
-    executionOptions = { ...executionOptions, deadlineAt: Date.now() + 75000 };
+    // api/index.ts allows up to 300 seconds on Vercel. Reserve 60 seconds for
+    // request parsing, key loading, and returning the OCR result to the client.
+    executionOptions = { ...executionOptions, deadlineAt: Date.now() + 240000 };
   }
   // OpenRouter is primary unless explicitly forced to use the Gemini fallback.
   if (!_forceGeminiFallback) {
@@ -401,15 +403,19 @@ export async function executeWithKeyRotation<T>(
       const currentKey = keys[currentKeyIndex];
 
       for (let m = 0; m < preferredModels.length; m++) {
-        if (executionOptions?.ocrMode && Date.now() >= Number(executionOptions.deadlineAt)) break geminiKeyLoop;
-        const model = preferredModels[m];
         const remainingMs = executionOptions?.ocrMode
-          ? Math.max(1000, Number(executionOptions.deadlineAt) - Date.now())
+          ? Number(executionOptions.deadlineAt) - Date.now()
           : undefined;
+        // The SDK requires a configured timeout of at least 10 seconds. Do not
+        // start another OCR attempt if the request has less than that remaining.
+        if (executionOptions?.ocrMode && (remainingMs === undefined || remainingMs < 10000)) {
+          break geminiKeyLoop;
+        }
+        const model = preferredModels[m];
+        // Give vision OCR more time than the former 18-second limit, while never
+        // extending an individual attempt beyond the remaining request deadline.
         const attemptTimeoutMs = executionOptions?.ocrMode && remainingMs !== undefined
-          // The Google GenAI SDK rejects manually configured deadlines below 10 seconds.
-          // Keep the OCR attempt within its usual cap while respecting the SDK minimum.
-          ? Math.max(10000, Math.min(18000, remainingMs))
+          ? Math.min(30000, remainingMs)
           : undefined;
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, attemptTimeoutMs));
         try {
