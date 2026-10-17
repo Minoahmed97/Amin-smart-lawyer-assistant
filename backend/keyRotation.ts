@@ -407,7 +407,9 @@ export async function executeWithKeyRotation<T>(
           ? Math.max(1000, Number(executionOptions.deadlineAt) - Date.now())
           : undefined;
         const attemptTimeoutMs = executionOptions?.ocrMode && remainingMs !== undefined
-          ? Math.min(18000, remainingMs)
+          // The Google GenAI SDK rejects manually configured deadlines below 10 seconds.
+          // Keep the OCR attempt within its usual cap while respecting the SDK minimum.
+          ? Math.max(10000, Math.min(18000, remainingMs))
           : undefined;
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, attemptTimeoutMs));
         try {
