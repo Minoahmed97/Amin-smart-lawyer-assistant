@@ -8,6 +8,9 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
+const ARABIC_LEGAL_OUTPUT_RULES = `قاعدة لغة الإخراج الملزمة لجميع مهام التوليد القانوني: اكتب كامل المستند أو التقرير الذي تنشئه بالعربية الفصحى القانونية. لا تُدرج كلمات أو جملًا إنجليزية عارضة، ولا عناوين أو تعليمات تنسيق أو أسماء خطوات بلغة أجنبية. إذا ظهر مصطلح أجنبي عادي، فعبّر عن معناه بالعربية. لا تُبقِ على اسم أجنبي أو اختصار أو اقتباس بلغة المصدر إلا إذا كان واردًا صراحةً في مستندات القضية الحالية وكان نقله لازمًا للدقة القانونية؛ ولا تستورد أي كلمة أجنبية من أمثلة التعليمات أو نماذج الخزنة. لا تترجم أسماء الأعلام والأسماء التجارية الرسمية أو المقتطفات التي يلزم نقلها حرفيًا. راجع النص النهائي بحثًا عن أي كلمة أجنبية غير لازمة قبل الإخراج، واستبدلها بتعبير عربي صحيح دون حذف معنى قانوني.`;
+const SHARED_LEGAL_SYSTEM_INSTRUCTION = `${EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION}\n\n${ARABIC_LEGAL_OUTPUT_RULES}`;
+
 export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
@@ -15,7 +18,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
   const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
-  const optimizedPrompt = `${prompt} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
+  const optimizedPrompt = `${prompt} ${ARABIC_LEGAL_OUTPUT_RULES} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة، وراجع قبل الإخراج أن لغة النص القانوني عربية مع الإبقاء فقط على الأسماء أو المصطلحات الأجنبية الضرورية في مستندات القضية الحالية. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   if (onChunk) {
     await executeWithKeyRotationStream(async (ai, _key, model) => {
@@ -36,7 +39,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             model,
             contents: nextPrompt,
             config: {
-              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+              systemInstruction: SHARED_LEGAL_SYSTEM_INSTRUCTION,
               temperature: 0.15,
               maxOutputTokens: 32768,
               thinkingConfig: { thinkingLevel: 'low' },
@@ -113,7 +116,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         model,
         contents: currentPrompt,
         config: {
-          systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+          systemInstruction: SHARED_LEGAL_SYSTEM_INSTRUCTION,
           temperature: 0.15,
           maxOutputTokens: 32768,
         },
