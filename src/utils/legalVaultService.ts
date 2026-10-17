@@ -373,37 +373,218 @@ function deriveStyleProfile(content: string, includeStructure: boolean): string 
   return styleNotes.join('\n- ');
 }
 
+function inferSafeModelType(model: LawModelItem): string {
+  // Mirror modelTypeLabels(): uploaded file title/filename first, then its
+  // opening heading. Do not let stale metadata override the actual document.
+  if (model.source === 'uploaded') {
+    const titleType = inferExplicitDocumentType(`${model.title || ''} ${model.fileName || ''}`);
+    if (titleType) return titleType;
+    const openingText = String(model.content || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 14).join(' ');
+    const headingType = inferExplicitDocumentType(openingText);
+    if (headingType) return headingType;
+  }
+  const explicitWorkType = inferExplicitDocumentType(String(model.judicialWorkType || ''));
+  if (explicitWorkType) return explicitWorkType;
+  const knownTypes = new Set([
+    'مذكرة', 'صحيفة دعوى', 'تفنيد مستندات', 'اعلان', 'اعلان قضائي',
+    'اعادة اعلان', 'انذار', 'طعن بالنقض', 'استئناف'
+  ]);
+  for (const label of [model.judicialWorkType, model.category]) {
+    const normalized = canonicalDocumentType(String(label || ''));
+    if (knownTypes.has(normalized)) return normalized;
+  }
+  return 'مستند قضائي محفوظ';
+}
+
+/** * Create a structural blueprint from a private vault model. The source document * itself is never sent to the model: this keeps case facts, party identities, * dates, case numbers, legal citations and old requests out of the new prompt. */
+function buildSanitizedJudicialBlueprint(content: string, documentType: string): string {
+  const raw = String(content || '').replace(/\r/g, '\n').trim();
+  if (!raw) return 'النموذج المرجعي لا يحتوي نصاً قابلاً لاستخلاص بنية منه.';
+
+  let lines = raw.split(/\n+/).map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (lines.length < 4) {
+    // Extraction from some Word/PDF files can flatten paragraphs into one line.
+    lines = raw
+      .replace(/\s+(?=(?:محكمة|لدى محكمة|مذكرة|صحيفة|الوقائع|أوجه الدفاع|الطلبات|بناء عليه|لهذه الأسباب|أولاً|ثانياً|ثالثاً|رابعاً)\b)/g, '\n')
+      .split(/\n+/).map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  }
+
+  const elements: Array<{ index: number; label: string }> = [];
+  const add = (index: number, label: string, allowRepeat = false) => {
+    if (allowRepeat || !elements.some((item) => item.label === label)) elements.push({ index, label });
+  }
+  const safeHeadings: Array<[RegExp, string]> = [
+    [/^(?:الموضوع|موضوع الطلب|بشأن موضوع)\s*[:：]?$/i, 'عنوان الموضوع'],
+    [/^(?:الوقائع|وقائع الدعوى|موجز الوقائع|تتحصل الوقائع)\s*[:：]?$/i, 'قسم عرض الوقائع'],
+    [/^(?:الدفاع|أوجه الدفاع|الدفوع|أسباب الدفاع)\s*[:：]?$/i, 'قسم أوجه الدفاع والدفوع'],
+    [/^(?:الأسباب|أسباب الطعن|أسباب الاستئناف)\s*[:：]?$/i, 'قسم الأسباب بحسب نوع المستند'],
+    [/^(?:الطلبات|الطلبات الختامية|الطلب الختامي)\s*[:：]?$/i, 'قسم الطلبات الختامية'],
+    [/^(?:بناء\s*عليه|لهذه\s*الأسباب|لذلك|لما\s*تقدم)\s*[:：]?$/i, 'صيغة الانتقال إلى الطلبات الختامية'],
+    [/^(?:الخاتمة|ختاماً|وتفضلوا بقبول|مع حفظ كافة الحقوق)\s*[:：]?$/i, 'الخاتمة أو التوقيع'],
+    [/^(?:المرفقات|حافظة المستندات|المستندات المقدمة)\s*[:：]?$/i, 'قسم المرفقات إذا كان من نوع العمل الحالي'],
+  ];
+  const orderRules: Array<[RegExp, string]> = [
+    [/^(?:محكمة|لدى محكمة|أمام محكمة|مجلس الدولة|محكمة النقض|الدائرة)/, 'افتتاح يحدد جهة القضاء أو المحكمة والدائرة'],
+    [/^(?:مذكرة|صحيفة|عريضة|إنذار|اعلان|إعلان|طعن|استئناف)/, 'عنوان يوضح نوع المستند المطلوب'],
+    [/^(?:مقدم|مقدمة|المقدم|المقدمة|المدعي|المدعية|المستأنف|الطاعن|الخصم|ضد|في الدعوى|رقم الدعوى|جلسة)/, 'بيان أطراف الدعوى وصفاتهم وبياناتها في الموضع نفسه من المرجع'],
+    [/^(?:يتشرف|نتشرف|أتشرف|نتقدم|مقدمة لسيادتكم|مقدم لسيادتكم|يعرض الآتي)/, 'مدخل افتتاحي رسمي موجز قبل صلب الموضوع'],
+  ];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const normalized = normalizeVaultText(line);
+    if (!normalized) continue;
+    if (i < 16) {
+      for (const [pattern, label] of orderRules) {
+        if (pattern.test(normalized)) { add(i, label); break; }
+      }
+    }
+
+    const exactHeading = safeHeadings.find(([pattern]) => pattern.test(normalized));
+    if (exactHeading) {
+      add(i, exactHeading[1]);
+      continue;
+    }
+
+    // Preserve the place/numbering of argument headings but never the old
+    // heading text, because it may state a defence that does not fit this case.
+    const numberedHeading = line.match(/^(أولاً|اولا|ثانياً|ثانيا|ثالثاً|ثالثا|رابعاً|رابعا|خامساً|خامسا|سادساً|سادسا|سابعاً|سابعا|ثامناً|ثامنا|[0-9٠-٩]+\s*[).ـ-])\s*[:：]?/);
+    if (numberedHeading) add(i, `عنوان فرعي مرقم (${numberedHeading[1]})؛ يُنشأ عنوانه من دفوع القضية الحالية`, true);
+    else if (/^(?:الدفع|السبب|وجه الدفاع|الوجه الأول|الوجه الثاني)\b/.test(normalized) && line.length <= 120) {
+      add(i, 'عنوان دفع أو سبب يُعاد بناؤه حصراً من وقائع القضية الحالية');
+    }
+  }
+
+  const connectorPhrases = [
+    'وحيث إن', 'ولما كان', 'ولما كان الثابت', 'وإذ كان ذلك',
+    'تأسيساً على', 'تطبيقاً لذلك', 'ومؤدى ذلك', 'ولا ينال من ذلك',
+    'ومن ثم', 'الأمر الذي', 'مما يتعين معه', 'بناء عليه', 'لهذه الأسباب'
+  ];
+  const orderedConnectors = connectorPhrases
+    .map((phrase) => ({ phrase, index: normalizeVaultText(raw).indexOf(normalizeVaultText(phrase)) }))
+    .filter((item) => item.index >= 0)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.phrase)
+    .filter((phrase, index, list) => list.indexOf(phrase) === index)
+    .slice(0, 8);
+
+  const structure = elements.sort((a, b) => a.index - b.index).map((item, index) => `${index + 1}. ${item.label}`);
+  const profile = deriveStyleProfile(raw, true);
+  // Reconstruct the document's paragraph rhythm as slots. Only safe generic
+  // headings and stock transition phrases survive; substantive paragraphs are
+  // replaced locally before any context is sent to the generator.
+  const blocks = raw.split(/\n\s*\n+/).map((block) => block.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const sourceBlocks = blocks.length >= 3 ? blocks : lines;
+  const transitionStarts = [
+    'ولما كان الثابت', 'وحيث إن', 'ولما كان', 'وإذ كان ذلك', 'تأسيساً على',
+    'تطبيقا لذلك', 'تطبيقاً لذلك', 'ومؤدى ذلك', 'ولا ينال من ذلك',
+    'ومن ثم', 'الأمر الذي', 'مما يتعين معه', 'بناء عليه', 'لهذه الأسباب', 'لذلك'
+  ];
+  const slotRows: string[] = [];
+  for (const block of sourceBlocks.slice(0, 24)) {
+    const normalizedBlock = normalizeVaultText(block);
+    if (!normalizedBlock) continue;
+    const safeHeading = safeHeadings.find(([pattern]) => pattern.test(normalizedBlock));
+    if (safeHeading) {
+      slotRows.push(`عنوان/قسم: ${safeHeading[1]}`);
+      continue;
+    }
+    const numberPrefix = block.match(/^(أولاً|اولا|ثانياً|ثانيا|ثالثاً|ثالثا|رابعاً|رابعا|خامساً|خامسا|سادساً|سادسا|سابعاً|سابعا|ثامناً|ثامنا|[0-9٠-٩]+\s*[).ـ-])/);
+    if (numberPrefix) {
+      slotRows.push(`عنوان دفع مرقم (${numberPrefix[1]}): [عنوان جديد يُستمد من القضية الحالية]`);
+      continue;
+    }
+    if (/^(?:محكمة|لدى محكمة|أمام محكمة|مجلس الدولة|الدائرة)/.test(normalizedBlock)) {
+      slotRows.push('[بيان المحكمة/الدائرة الجديدة في موضع الصدارة نفسه]');
+      continue;
+    }
+    if (/^(?:مذكرة|صحيفة|عريضة|إنذار|اعلان|إعلان|طعن|استئناف)/.test(normalizedBlock) && block.length <= 130) {
+      slotRows.push('[عنوان المستند الحالي الملائم للمهمة، في موضع العنوان المرجعي]');
+      continue;
+    }
+    if (/^(?:رقم الدعوى|في الدعوى|جلسة|الدعوى رقم)/.test(normalizedBlock)) {
+      slotRows.push('[بيانات رقم الدعوى/الجلسة الحالية فقط، إن وردت في المدخلات]');
+      continue;
+    }
+    if (/^(?:مقدم من|مقدمة من|المقدم من|المقدمة من|المدعي|المدعية|المستأنف|الطاعن)/.test(normalizedBlock)) {
+      slotRows.push('مقدم من: [اسم وصفة الموكل الحاليان، من بيانات القضية الحالية فقط]');
+      continue;
+    }
+    if (/^ضد/.test(normalizedBlock)) {
+      slotRows.push('ضد: [اسم وصفة الخصم الحاليان، من بيانات القضية الحالية فقط]');
+      continue;
+    }
+    if (/^(?:يتشرف|نتشرف|أتشرف|مقدمة لسيادتكم|مقدم لسيادتكم|يعرض الآتي|أما بعد)/.test(normalizedBlock)) {
+      if (/^(?:يتشرف|نتشرف|أتشرف)/.test(normalizedBlock)) slotRows.push('يتشرف [صاحب الصفة الحالية أو وكيله] بعرض الآتي: [مضمون جديد من وقائع القضية الحالية]');
+      else if (/^(?:مقدمة لسيادتكم|مقدم لسيادتكم)/.test(normalizedBlock)) slotRows.push('مقدمة لسيادتكم من [صفة الموكل الحالية] بشأن [موضوع القضية الحالية]');
+      else if (/^أما بعد/.test(normalizedBlock)) slotRows.push('أما بعد،');
+      else slotRows.push('[مدخل افتتاحي رسمي بصيغة المرجع، يُملأ بمعلومات القضية الحالية فقط]');
+      continue;
+    }
+    const transition = transitionStarts.find((phrase) => normalizedBlock.startsWith(normalizeVaultText(phrase)));
+    if (transition) {
+      slotRows.push(`${transition} [يُبنى التعليل على وقائع وأدلة القضية الحالية فقط]`);
+      continue;
+    }
+    if (/^(?:بناء عليه|لهذه الأسباب|لذلك|لما تقدم)/.test(normalizedBlock)) {
+      slotRows.push('[صيغة الانتقال إلى الطلبات الختامية في هذا الموضع]');
+      continue;
+    }
+    if (slotRows.length < 2) slotRows.push('[مدخل/بيان تمهيدي جديد من بيانات القضية الحالية]');
+    else slotRows.push('[فقرة جديدة في الموضع المقابل من المرجع؛ يُعاد بناؤها من وقائع ودليل وتعليل القضية الحالية]');
+  }
+  const skeleton = [
+    'قالب العمل المستخلص من النموذج المختار؛ هذه خريطة تعاقب الفقرات بعد استبدال النص الموضوعي القديم بمواضع جديدة:',
+    ...(slotRows.length ? slotRows : ['[صدارة جديدة] ← [موضوع ووقائع القضية الحالية] ← [أسباب/دفوع مناسبة] ← [طلبات القضية الحالية]']),
+    'اتبع ترتيب المواضع وعدد مجموعات الأقسام الظاهرة بقدر ملاءمتها للمهمة الحالية؛ لا تنسخ الجمل الموضوعية القديمة، ولا تكتفِ بوصف عام من نوع «استخدم عناوين مرقمة».',
+    'عند اختلاف نوع العمل الجديد عن النموذج، لا تنقل قسمًا غير مناسب؛ استخدم السمات العامة فقط.'
+  ];
+  return [
+    `نوع النموذج المرجعي المختار: ${documentType}.`,
+    'خريطة البنية المستخلصة من ترتيب النموذج الفعلي (وليست نص القضية القديمة):',
+    ...(structure.length ? structure : ['لم تُستخرج عناوين صريحة؛ استخدم ترتيب الأقسام الذي تقتضيه طبيعة المهمة الجديدة ولا تخترع بنية خاصة.']),
+    ...skeleton,
+    orderedConnectors.length ? `انتقالات أسلوبية ظهرت في المرجع: ${orderedConnectors.join('، ')}.` : '',
+    `سمات الإيقاع والأسلوب: ${profile}`,
+    'لا يتضمن هذا المخطط أي اسم أو واقعة أو مستند أو طلب أو رقم أو تاريخ أو دفع موضوعي من القضية المرجعية.'
+  ].filter(Boolean).join('\n');
+}
+
+function isGenericJudicialTask(value: string): boolean {
+  const text = normalizeVaultText(value);
+  if (!text) return true;
+  return /^(?:انشاء صيغه قانونيه|صيغه قانونيه|صياغه مستند|مهمه قانونيه اخري|مهمه قانونيه عامه|العمل القضائي|مهمه قانونيه)$/.test(text);
+}
+
 export function getLawyerStyleContext( searchCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; } | string, userId?: string ): string {
   let criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string } = {};
   if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
   else if (searchCriteria) criteria = searchCriteria;
 
   const similarModels = findSimilarModels(criteria, userId);
-  const requestedType = criteria.judicialWorkType || criteria.briefType || '';
+  const requestedType = String(criteria.judicialWorkType || criteria.briefType || '').trim();
+  const genericTask = isGenericJudicialTask(requestedType);
   const sameTypeModels = requestedType
     ? similarModels.filter((model) => modelMatchesRequestedType(model, requestedType))
     : [];
 
-  // Only exact/compatible document types may influence structure. If the vault
-  // has no model for this type, use general writing traits only—not another
-  // document's section order, argument, wording, or substantive text.
-  const selectedModels = (sameTypeModels.length ? sameTypeModels : similarModels).slice(0, 2);
-  const hasSameTypeModel = sameTypeModels.length > 0;
-  const profileBlocks = selectedModels.map((model, index) => {
-    const includeStructure = hasSameTypeModel && modelMatchesRequestedType(model, requestedType);
-    const documentType = (model.judicialWorkType || model.category || '').trim();
-    return `[مرجع أسلوبي شخصي ${index + 1}${documentType ? ` — النوع: ${documentType}` : ''}]\n- ${deriveStyleProfile(model.content || '', includeStructure)}`;
-  });
-
-  // Crucially, never send an old document, excerpt, title, party name, case
-  // number, date, request, defense, or legal citation to the drafting model.
-  // Only locally derived style attributes are sent.
-  if (!selectedModels.length) {
-    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تنشئ بصمة وهمية؛ استخدم فقط بيانات المستند الحالي.]`;
+  // Use one primary reference to avoid blending incompatible document layouts.
+  // Exact/compatible task type wins. For a generic/unspecified task only, the
+  // best-ranked personal model may provide a candidate skeleton; the generator
+  // must still select a document type appropriate to the new task.
+  const selectedModel = sameTypeModels[0] || (genericTask ? similarModels[0] : undefined);
+  const canUseStructure = Boolean(selectedModel && (sameTypeModels.length > 0 || genericTask));
+  if (!selectedModel) {
+    return `[خزانة المحامي والقوالب الأسلوبية — سياق إلزامي للمهمة الحالية]\n[بصمة أسلوب مستخلصة من خزنة الحساب]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. استخدم فقط بيانات المستند الحالي، ولا تخترع قالباً أو ديباجة أو بيانات أطراف.]`;
   }
 
+  const documentType = inferSafeModelType(selectedModel);
   const typeLine = requestedType
-    ? `نوع المستند المطلوب حاليًا: ${requestedType}.`
-    : 'نوع المستند المطلوب يحدده طلب المستخدم الحالي.';
-  return `[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\nالبيانات التالية وصف أسلوبي مجرد مستخلص محليًا من نماذج المحامي؛ لم يُرفق أي نص من المستندات الأصلية. طبّق الوصف فعلياً في الديباجة المحايدة، وترتيب الفقرات، وتسلسل عرض الواقعة والدليل والتعليل والتطبيق والنتيجة، وطول الجمل والروابط التعبيرية؛ ولا تستنسخ أي واقعة أو بيانات قديمة.\n${profileBlocks.join('\n\n')}\n\n[حدود إلزامية]\n1) اكتب المستند الحالي من بدايته إلى نهايته اعتمادًا على وقائع هذا الطلب ومستنداته وتعليمات المستخدم الحالية فقط.\n2) الخزنة ليست مصدرًا لوقائع أو مستندات أو أسماء أو تواريخ أو أرقام أو طلبات أو دفوع أو نصوص قانونية. لا تنقل منها أي مضمون أو عبارة مميزة مرتبطة بقضية سابقة.\n3) لا تقتبس أو تعيد صياغة أي جزء من مستند محفوظ؛ لا يتم إرسال نصوص النماذج إلى المولد أصلًا.\n4) طبّق بنية نموذج من النوع نفسه فقط إذا كان ذلك النوع موجودًا في خزنة هذا الحساب. إذا لم يوجد، خذ السمات العامة للكتابة ولا تفرض بنية مستند مختلف.\n5) نوع المستند الجديد وتعليمات المستخدم الحالية هما الحاكمان؛ لا تحوّل صحيفة دعوى إلى مذكرة، أو إنذارًا إلى إعادة إعلان، أو أي نوع إلى نوع آخر.\n6) لا تضف اسم المحامي أو مكتبه أو ترويسة أو بيانات تعريفية إلا إذا كانت مقدمة صراحةً ضمن بيانات المستند الحالي أو موجودة بالفعل في المسودة الحالية الجاري تحريرها.\n7) طبّق نمط الديباجة وتسلسل الاستدلال المستخلصين متى كانا متاحين، ثم طابق طول الجمل والروابط التعبيرية وأسلوب الانتقال. استبدل بيانات النموذج كلها ببيانات القضية الحالية، ولا تستنسخ أي واقعة أو مضمون قديم.`;
+    ? `نوع العمل المطلوب حاليًا: ${requestedType}.`
+    : 'لم يُحدد نوع العمل مسبقاً؛ استنتج نوع المستند من الطلب ووقائع القضية الحالية ولا تجعل نوع النموذج المرجعي يفرض نوعاً غير مناسب.';
+  const reference = canUseStructure
+    ? buildSanitizedJudicialBlueprint(selectedModel.content || '', documentType)
+    : `لم يوجد نموذج متوافق مع نوع العمل المطلوب. لا تفرض بنية النموذج الأقرب لأنه من نوع مختلف؛ استخدم سمات أسلوب المحامي العامة فقط: ${deriveStyleProfile(selectedModel.content || '', false)}`;
+
+  return `[خزانة المحامي والقوالب الأسلوبية — سياق إلزامي للمهمة الحالية]\n[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\n[المرجع الشخصي الرئيسي]\n${reference}\n\n[طريقة استعمال المرجع — إلزامية]\n1) إذا كان المرجع متوافقاً مع نوع العمل، استخدم خريطة ترتيب أقسامه فعلياً كهيكل عمل للمستند الجديد؛ لا تكتفِ بتقليد طول الجمل على نحو عام. حافظ على تسلسل الديباجة وعرض الموضوع/الوقائع والأسباب والطلبات بالترتيب المرصود حيث يلائم نوع المستند.\n2) أعد إنشاء كل فقرة وحجة من معلومات القضية الحالية ومستنداتها وطلبات المستخدم؛ لا تنقل أي واقعة أو اسم أو صفة أو تاريخ أو رقم قضية أو طلب أو دفع موضوعي أو حكم أو مادة قانونية من قضية المرجع.\n3) قدّم بيانات الأطراف من الحقول الحالية فقط. إذا لم يرد اسم أو رقم أو تاريخ، فلا تختلقه ولا تستخدم أسماء نموذج قديم ولا تترك حقولاً شكلية بعلامات نجوم؛ احذف البيان غير المتاح أو ضع تنبيهاً موجزاً فقط إذا كان ضرورياً.\n4) لا تكتب رموز تنسيق Markdown مثل ** أو ## ولا تعليمات تحريرية داخل النص النهائي. لا تُنشئ عنواناً مثل «مذكرة ختامية» إلا إذا كان هو نوع العمل المطلوب أو كان مناسباً بوضوح لمعلومات القضية الحالية.\n5) إذا لم يتوفر نموذج متوافق، خذ السمات العامة فقط ولا تنقل عناوين أو أقساماً خاصة بنوع مختلف.\n6) لا تستخدم هذا السياق في التكييف القانوني؛ فهو مخصص لصياغة المستندات والردود والتفنيد وتحسين المسودات فقط.`;
 }
