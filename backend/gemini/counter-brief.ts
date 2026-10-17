@@ -8,6 +8,13 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
+/** Continue only when the provider confirms that its output-token cap was reached. */
+function hitOutputTokenLimit(reason: unknown): boolean {
+  const normalized = String(reason || '').trim().toUpperCase();
+  // Gemini reports MAX_TOKENS; OpenRouter-compatible models report LENGTH.
+  return normalized === 'MAX_TOKENS' || normalized === 'MAX_OUTPUT_TOKENS' || normalized === 'LENGTH';
+}
+
 export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
@@ -92,7 +99,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             throw noTextError;
           }
 
-          if (completed || continuationCount >= 3) {
+          if (completed || continuationCount >= 3 || !hitOutputTokenLimit(finishReason)) {
             break;
           }
 
@@ -120,15 +127,16 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       });
 
       const rawText = typeof response.text === 'string' ? response.text : '';
+      const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
       const markerIndex = rawText.indexOf(completionMarker);
       const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
       fullText += visibleText;
 
-      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3) {
+      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3 || !hitOutputTokenLimit(finishReason)) {
         break;
       }
 
-      currentPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تكتمل] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل.`;
+      currentPrompt = `${optimizedPrompt} [استكمال بسبب بلوغ حد الإخراج فقط] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason}.`;
     }
 
     return fullText.trim();
