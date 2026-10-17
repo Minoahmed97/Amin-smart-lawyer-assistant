@@ -304,17 +304,20 @@ export function getLawyerStyleContext( searchCriteria?: { courtType?: string; br
   // Only exact/compatible document types may influence structure. If the vault
   // has no model for this type, use general writing traits only—not another
   // document's section order, argument, wording, or substantive text.
-  const selectedModels = (sameTypeModels.length ? sameTypeModels : similarModels).slice(0, 2);
+  // When the requested work type is known, use only matching personal models.
+  // This keeps a different document type from overriding the lawyer's structure.
+  const selectedModels = (requestedType ? sameTypeModels : similarModels).slice(0, 2);
   const hasSameTypeModel = sameTypeModels.length > 0;
   const profileBlocks = selectedModels.map((model, index) => {
+    const content = String(model.content || '').replace(/\r/g, '').trim();
     const includeStructure = hasSameTypeModel && modelMatchesRequestedType(model, requestedType);
     const documentType = (model.judicialWorkType || model.category || '').trim();
-    return `[مرجع أسلوبي شخصي ${index + 1}${documentType ? ` — النوع: ${documentType}` : ''}]\n- ${deriveStyleProfile(model.content || '', includeStructure)}`;
+    const excerpt = content.length > 3000
+      ? `${content.slice(0, 2200)}\n\n[مقتطف محذوف للاختصار]\n\n${content.slice(-700)}`
+      : content;
+    return `[مرجع أسلوبي شخصي ${index + 1}${documentType ? ` — النوع: ${documentType}` : ''}]\n- ${deriveStyleProfile(content, includeStructure)}\n[مقتطف محدود من النموذج للاستدلال على الترويسة والديباجة والتنسيق وتسلسل الأقسام؛ لا تعتمد مضمونه كوقائع للقضية الحالية]:\n${excerpt}`;
   });
 
-  // Crucially, never send an old document, excerpt, title, party name, case
-  // number, date, request, defense, or legal citation to the drafting model.
-  // Only locally derived style attributes are sent.
   if (!selectedModels.length) {
     return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تنشئ بصمة وهمية؛ استخدم فقط بيانات المستند الحالي.]`;
   }
@@ -322,5 +325,5 @@ export function getLawyerStyleContext( searchCriteria?: { courtType?: string; br
   const typeLine = requestedType
     ? `نوع المستند المطلوب حاليًا: ${requestedType}.`
     : 'نوع المستند المطلوب يحدده طلب المستخدم الحالي.';
-  return `[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\nالبيانات التالية وصف أسلوبي مجرد مستخلص محليًا من نماذج المحامي؛ لم يُرفق أي نص من المستندات الأصلية. استخدم الوصف لمحاكاة طريقة العرض والانتقال ونمط الجمل فقط.\n${profileBlocks.join('\n\n')}\n\n[حدود إلزامية]\n1) اكتب المستند الحالي من بدايته إلى نهايته اعتمادًا على وقائع هذا الطلب ومستنداته وتعليمات المستخدم الحالية فقط.\n2) الخزنة ليست مصدرًا لوقائع أو مستندات أو أسماء أو تواريخ أو أرقام أو طلبات أو دفوع أو نصوص قانونية. لا تنقل منها أي مضمون أو عبارة مميزة مرتبطة بقضية سابقة.\n3) لا تقتبس أو تعيد صياغة أي جزء من مستند محفوظ؛ لا يتم إرسال نصوص النماذج إلى المولد أصلًا.\n4) طبّق بنية نموذج من النوع نفسه فقط إذا كان ذلك النوع موجودًا في خزنة هذا الحساب. إذا لم يوجد، خذ السمات العامة للكتابة ولا تفرض بنية مستند مختلف.\n5) نوع المستند الجديد وتعليمات المستخدم الحالية هما الحاكمان؛ لا تحوّل صحيفة دعوى إلى مذكرة، أو إنذارًا إلى إعادة إعلان، أو أي نوع إلى نوع آخر.\n6) لا تضف اسم المحامي أو مكتبه أو ترويسة أو بيانات تعريفية إلا إذا كانت مقدمة صراحةً ضمن بيانات المستند الحالي أو موجودة بالفعل في المسودة الحالية الجاري تحريرها.\n7) اجعل البصمة واضحة في أسلوب العرض وتسلسل الفقرات والانتقالات وطول الجمل والروابط التعبيرية، لا في استنساخ مضمون المستندات القديمة.`;
+  return `[بصمة أسلوب مستخلصة من خزنة الحساب]\n[خزانة المحامي الشخصية — مرجع أسلوبي إلزامي للمهمة الحالية]\n${typeLine}\nاستخدم المقتطفات المحدودة للنماذج الشخصية المطابقة لنوع المستند، وطبّق فعلياً أسلوب المحامي في الديباجة والترويسة وترتيب الفقرات وعناوين الدفوع والانتقالات والعبارات الرابطة وطول الجمل والخاتمة. حافظ على اسم المكتب أو المحامي أو الترويسة الثابتة والتنسيق الظاهر في النموذج إذا كان واضحاً أنه عنصر هوية ثابت وليس بياناً خاصاً بالقضية القديمة. لا تنقل من النموذج أي وقائع أو أسماء أطراف أو أرقام قضايا أو تواريخ أو مستندات أو طلبات أو دفوع أو مواد أو أحكام أو أرقام طعون تخص قضية سابقة. أعد كتابة المحتوى بالكامل اعتماداً على القضية الحالية فقط. إذا لم يوجد نموذج من النوع نفسه، استخدم السمات العامة ولا تفرض ترتيب مستند مختلف. لا تخترع شعاراً أو هوية غير موجودة في النص المتاح؛ الصور والشعارات الرسومية لا يمكن استعادتها من نص النموذج وحده.\n${profileBlocks.join('\n\n')}`;
 }
