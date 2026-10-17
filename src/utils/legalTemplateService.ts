@@ -36,11 +36,8 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 export function classifyLegalDocument(fileName: string, text: string): Pick<LegalDocTemplate, 'category' | 'courtType' | 'workType'> {
-  const file = String(fileName || '').toLowerCase();
-  const opening = String(text || '').slice(0, 2200).toLowerCase();
-  const sample = `${fileName} ${String(text || '').slice(0, 12000)}`.toLowerCase();
+  const sample = `${fileName} ${text.slice(0, 12000)}`.toLowerCase();
   const has = (...terms: string[]) => terms.some((term) => sample.includes(term.toLowerCase()));
-  const hasOpening = (...terms: string[]) => terms.some((term) => opening.includes(term.toLowerCase()));
 
   let courtType = 'غير مصنف';
   if (has('مجلس الدولة', 'محكمة القضاء الإداري', 'المحكمة الإدارية العليا', 'هيئة مفوضي الدولة', 'قضاء إداري')) {
@@ -49,27 +46,18 @@ export function classifyLegalDocument(fileName: string, text: string): Pick<Lega
     courtType = 'القضاء العادي';
   }
 
-  // Classify by the document's explicit title/heading first. The words
-  // "المدعي" and "المدعى عليه" occur in memoranda too, so they must not
-  // override an actual heading such as "مذكرة بدفاع" or "مذكرة ختامية".
   let workType = 'مذكرة / مستند عام';
-  if (/(?:صحيفة|عريضة).{0,20}(?:دعوى|الدعوى|افتتاحية)|(?:دعوى|الدعوى).{0,20}(?:صحيفة|عريضة)/.test(file) ||
-      hasOpening('صحيفة دعوى', 'صحيفة افتتاح دعوى', 'عريضة افتتاحية', 'صحيفة افتتاحية')) {
-    workType = 'صحيفة دعوى';
-  } else if (hasOpening('مذكرة بدفاع', 'مذكرة دفاع', 'مذكرة ختامية', 'مذكرة جوابية', 'مذكرة تعقيب') ||
-      /مذكرة/.test(file) || /^\s*مذكرة/.test(opening)) {
-    workType = 'مذكرة بدفاع';
-  } else if (has('طعن بالنقض', 'أسباب الطعن بالنقض', 'محكمة النقض')) workType = 'طعن بالنقض';
+  if (has('طعن بالنقض', 'أسباب الطعن بالنقض', 'محكمة النقض')) workType = 'طعن بالنقض';
   else if (has('استئناف', 'محكمة الاستئناف')) workType = 'استئناف';
   else if (has('انضباط', 'مجلس تأديب', 'جزاء تأديبي')) workType = 'انضباط / تأديب';
   else if (has('إعلان على يد محضر', 'إعلان رسمي', 'إنذار رسمي')) workType = 'إعلان / إنذار';
   else if (has('صحيفة دعوى', 'المدعي', 'المدعى عليه')) workType = 'صحيفة دعوى';
+  else if (has('مذكرة بدفاع', 'مذكرة دفاع', 'الطلبات الختامية')) workType = 'مذكرة بدفاع';
 
   let category = courtType;
   if (workType.includes('طعن') || workType === 'استئناف') category = workType;
   else if (workType.includes('انضباط')) category = 'انضباط';
   else if (workType.includes('إعلان')) category = 'إعلانات';
-  else if (workType.includes('مذكرة')) category = 'مذكرات';
   return { category, courtType, workType };
 }
 
