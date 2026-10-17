@@ -287,7 +287,52 @@ function deriveStyleProfile(content: string, includeStructure: boolean): string 
     }
   }
 
+  // Preserve the lawyer's recognizable drafting fingerprint without sending
+  // the source document or case-specific material to the generation server.
+  const hasArabicIndicDigits = /[٠-٩]/.test(text);
+  const hasWesternDigits = /[0-9]/.test(text);
+  const usesSemicolons = /[؛;]/.test(text);
+  const usesArabicComma = /،/.test(text);
+  const usesParentheses = /[()（）]/.test(text);
+  styleNotes.push(`نمط الأرقام: ${hasArabicIndicDigits && hasWesternDigits ? 'يمزج الأرقام العربية والهندية والغربية بحسب السياق' : hasArabicIndicDigits ? 'يميل إلى الأرقام الهندية (٠١٢٣)' : hasWesternDigits ? 'يميل إلى الأرقام الغربية (0123)' : 'لا توجد أرقام كافية للرصد'}`);
+  styleNotes.push(`علامات الترقيم: ${[usesArabicComma ? 'الفاصلة العربية' : '', usesSemicolons ? 'الفاصلة المنقوطة' : '', usesParentheses ? 'الأقواس التفسيرية' : ''].filter(Boolean).join('، ') || 'ترقيم محدود أو غير كافٍ للرصد'}`);
+  const formalPhrases = [
+    'وحيث إن', 'وحيث أن', 'ولما كان', 'ولما كان الثابت', 'وحيث إنه',
+    'ومن جماع ما تقدم', 'وهدياً بما تقدم', 'الأمر الذي', 'مما مؤداه',
+    'وإذ كان ذلك', 'ولا ينال من ذلك', 'فضلاً عن', 'تأسيساً على ما تقدم',
+    'بناءً عليه', 'لذلك', 'لهذه الأسباب'
+  ];
+  const observedPhrases = formalPhrases
+    .map((phrase) => ({ phrase, count: countPhrase(text, phrase) }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8)
+    .map((item) => item.phrase);
+  if (observedPhrases.length) styleNotes.push(`تعبيرات قانونية مفضلة مرصودة في النماذج: ${observedPhrases.join('، ')}`);
+
   return styleNotes.join('\n- ');
+}
+
+function deriveOfficeIdentity(models: LawModelItem[]): string[] {
+  const excludedOfficeLabels = /(?:مكتب العمل|مكتب التوثيق|مكتب الشهر العقاري|مكتب الخبراء|مكتب التنفيذ|مكتب المحضرين|مكتب السجل التجاري|مكتب الضرائب|مكتب محكمة|مكتب النيابة|مكتب قلم|مكتب إدارة|مكتب اداره)/u;
+  const identities: string[] = [];
+  // Include only explicit office-name lines, never surrounding lines that may
+  // contain a client's name, court, case number, date, or case-specific facts.
+  for (const model of models) {
+    const lines = String(model.content || '').replace(/\r/g, '').split('\n');
+    for (const rawLine of lines) {
+      const line = rawLine.trim().replace(/^[•*ـ\-]+\s*/, '');
+      if (line.length < 8 || line.length > 100 || !/^مكتب\s+/u.test(line)) continue;
+      if (excludedOfficeLabels.test(line.replace(/[：:]$/, '').trim())) continue;
+      // A clearly named office line can be as simple as "مكتب فلان الفلاني";
+      // do not require the line to literally contain the word "محاماة".
+      const officeWords = line.split(/\s+/).filter(Boolean);
+      if (officeWords.length < 3) continue;
+      if (!identities.includes(line)) identities.push(line);
+      if (identities.length >= 2) return identities;
+    }
+  }
+  return identities;
 }
 
 export function getLawyerStyleContext( searchCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; } | string, userId?: string ): string {
@@ -312,15 +357,20 @@ export function getLawyerStyleContext( searchCriteria?: { courtType?: string; br
     return `[مرجع أسلوبي شخصي ${index + 1}${documentType ? ` — النوع: ${documentType}` : ''}]\n- ${deriveStyleProfile(model.content || '', includeStructure)}`;
   });
 
-  // Crucially, never send an old document, excerpt, title, party name, case
-  // number, date, request, defense, or legal citation to the drafting model.
-  // Only locally derived style attributes are sent.
-  if (!selectedModels.length) {
-    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تنشئ بصمة وهمية؛ استخدم فقط بيانات المستند الحالي.]`;
+  // Send only a locally extracted style profile plus an explicit office-name
+  // line, if the lawyer has actually saved one in this account's own vault.
+  // Full templates and case-specific text are never included in this context.
+  const allAccountModels = getAllLawModels(userId);
+  const officeIdentity = deriveOfficeIdentity(allAccountModels);
+  if (!selectedModels.length && !officeIdentity.length) {
+    return `[خزانة المحامي والقوالب الأسلوبية — سياق إلزامي للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تنشئ بصمة أو هوية مكتبية وهمية؛ استخدم فقط بيانات المستند الحالي.]`;
   }
 
   const typeLine = requestedType
     ? `نوع المستند المطلوب حاليًا: ${requestedType}.`
     : 'نوع المستند المطلوب يحدده طلب المستخدم الحالي.';
-  return `[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\nالبيانات التالية وصف أسلوبي مجرد مستخلص محليًا من نماذج المحامي؛ لم يُرفق أي نص من المستندات الأصلية. استخدم الوصف لمحاكاة طريقة العرض والانتقال ونمط الجمل فقط.\n${profileBlocks.join('\n\n')}\n\n[حدود إلزامية]\n1) اكتب المستند الحالي من بدايته إلى نهايته اعتمادًا على وقائع هذا الطلب ومستنداته وتعليمات المستخدم الحالية فقط.\n2) الخزنة ليست مصدرًا لوقائع أو مستندات أو أسماء أو تواريخ أو أرقام أو طلبات أو دفوع أو نصوص قانونية. لا تنقل منها أي مضمون أو عبارة مميزة مرتبطة بقضية سابقة.\n3) لا تقتبس أو تعيد صياغة أي جزء من مستند محفوظ؛ لا يتم إرسال نصوص النماذج إلى المولد أصلًا.\n4) طبّق بنية نموذج من النوع نفسه فقط إذا كان ذلك النوع موجودًا في خزنة هذا الحساب. إذا لم يوجد، خذ السمات العامة للكتابة ولا تفرض بنية مستند مختلف.\n5) نوع المستند الجديد وتعليمات المستخدم الحالية هما الحاكمان؛ لا تحوّل صحيفة دعوى إلى مذكرة، أو إنذارًا إلى إعادة إعلان، أو أي نوع إلى نوع آخر.\n6) لا تضف اسم المحامي أو مكتبه أو ترويسة أو بيانات تعريفية إلا إذا كانت مقدمة صراحةً ضمن بيانات المستند الحالي أو موجودة بالفعل في المسودة الحالية الجاري تحريرها.\n7) اجعل البصمة واضحة في أسلوب العرض وتسلسل الفقرات والانتقالات وطول الجمل والروابط التعبيرية، لا في استنساخ مضمون المستندات القديمة.`;
+  const identityBlock = officeIdentity.length
+    ? `[هوية المكتب المعتمدة — مسموح بإدراجها كما هي عند الحاجة إلى ترويسة أو توقيع]\n${officeIdentity.join('\n')}`
+    : '[هوية المكتب المعتمدة: لم يُعثر على سطر واضح لاسم المكتب في نماذج هذا الحساب؛ لا تخترع اسماً أو ترويسة.]';
+  return `[خزانة المحامي والقوالب الأسلوبية — سياق إلزامي للمهمة الحالية]\n${typeLine}\n[بصمة أسلوب المحامي]\nاستُخلصت السمات التالية محلياً من نماذج هذا الحساب؛ لم يُرسل نص النماذج الأصلية. طبّق السمات فعلياً في الصياغة، ولا تكتفِ بكتابة قانونية عامة.\n${profileBlocks.join('\n\n')}\n\n${identityBlock}\n\n[حدود إلزامية]\n1) اكتب المستند الحالي كاملاً اعتماداً على وقائع الطلب الحالي ومستنداته وبياناته فقط.\n2) لا تنقل من النماذج القديمة أي وقائع أو أسماء أطراف أو تواريخ أو أرقام قضايا أو مستندات أو طلبات أو دفوع أو مواد أو أحكام قانونية.\n3) لا تُرسل أو تقتبس نصوص النماذج الأصلية؛ سطر هوية المكتب المميز أعلاه هو الاستثناء الوحيد المسموح بنقله حرفياً، لأنه مخصص لهوية المكتب وليس لوقائع قضية.\n4) استخدم بنية نموذج من النوع نفسه فقط إذا كان النوع موجوداً في خزنة هذا الحساب؛ وإلا طبّق السمات العامة دون فرض هيكل مستند مختلف.\n5) نوع المستند الحالي ووقائعه وتعليمات المستخدم الحالية لها الأولوية، ولا تغيّر نوعه.\n6) إذا وُجدت هوية المكتب المعتمدة أعلاه وكانت مناسبة للمستند، فأدرجها في موضعها الطبيعي كترويسة أو توقيع بحسب نماذج المكتب؛ لا تكررها بلا داعٍ ولا تخترع بيانات تواصل أو عناوين.\n7) اجعل بصمة المحامي واضحة في ترتيب الأفكار، وتدرج الحجج، وطول الجمل، والروابط التعبيرية، وعناوين الأقسام، وعلامات الترقيم، ونمط الخاتمة، مع بقاء مضمون القضية الحالية مستقلاً تماماً عن القضايا السابقة.`;
 }
