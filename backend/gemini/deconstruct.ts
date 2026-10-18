@@ -1,4 +1,4 @@
-Import { generateDeepLegalResponse } from './counter-brief.ts';
+import { generateDeepLegalResponse } from './counter-brief.ts';
 
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
