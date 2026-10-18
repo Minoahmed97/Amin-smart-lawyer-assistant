@@ -290,37 +290,91 @@ function deriveStyleProfile(content: string, includeStructure: boolean): string 
   return styleNotes.join('\n- ');
 }
 
+function legalFamily(value: string): string {
+  const text = normalizeVaultText(value);
+  if (!text) return '';
+  if (/(مجلس الدوله|محكمه القضاء الاداري|المحكمه الاداريه العليا|القضاء الاداري|دعوي الغاء|دعوى الغاء|قرار اداري|موظف عام|تاديبي|تأديبي)/.test(text)) return 'مجلس الدولة والقضاء الإداري';
+  if (/(جنائي|جنايه|جنحه|نيابه عامه|عقوبه|حبس|متهم|مخدرات|سرقه|تزوير)/.test(text)) return 'جنائي';
+  if (/(اسره|احوال شخصيه|طلاق|خلع|نفقه|حضانة|حضانة|رؤيه|رؤية|ميراث)/.test(text)) return 'أحوال شخصية';
+  if (/(عمالي|عامل|عمال|فصل تعسفي|اجور|أجور|تأمينات اجتماعيه)/.test(text)) return 'عمالي';
+  if (/(تجاري|شركات|افلاس|إفلاس|شيك|تاجر)/.test(text)) return 'تجاري';
+  if (/(مدني|تعويض|مسؤوليه مدنيه|مسئوليه مدنيه|ملكيه|ملكية|صحه توقيع|صحة توقيع|فسخ عقد|مطالبه)/.test(text)) return 'مدني';
+  return '';
+}
+
+function documentFamily(value: string): string {
+  const text = canonicalDocumentType(value);
+  if (!text) return '';
+  if (text.includes('صحيفة دعوى') || text.includes('عريضة')) return 'عريضة أو صحيفة افتتاحية';
+  if (text.includes('مذكرة')) return 'مذكرة';
+  if (text.includes('تفنيد')) return 'رد أو تفنيد';
+  if (text.includes('انذار')) return 'إنذار';
+  if (text.includes('اعلان')) return 'إعلان';
+  return text;
+}
+
 export function getLawyerStyleContext( searchCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; } | string, userId?: string ): string {
   let criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string } = {};
   if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
   else if (searchCriteria) criteria = searchCriteria;
 
-  const similarModels = findSimilarModels(criteria, userId);
+  const models = getAllLawModels(userId);
   const requestedType = criteria.judicialWorkType || criteria.briefType || '';
-  const sameTypeModels = requestedType
-    ? similarModels.filter((model) => modelMatchesRequestedType(model, requestedType))
-    : [];
-
-  // Only exact/compatible document types may influence structure. If the vault
-  // has no model for this type, use general writing traits only—not another
-  // document's section order, argument, wording, or substantive text.
-  const selectedModels = (sameTypeModels.length ? sameTypeModels : similarModels).slice(0, 2);
-  const hasSameTypeModel = sameTypeModels.length > 0;
-  const profileBlocks = selectedModels.map((model, index) => {
-    const includeStructure = hasSameTypeModel && modelMatchesRequestedType(model, requestedType);
-    const documentType = (model.judicialWorkType || model.category || '').trim();
-    return `[مرجع أسلوبي شخصي ${index + 1}${documentType ? ` — النوع: ${documentType}` : ''}]\n- ${deriveStyleProfile(model.content || '', includeStructure)}`;
-  });
-
-  // Crucially, never send an old document, excerpt, title, party name, case
-  // number, date, request, defense, or legal citation to the drafting model.
-  // Only locally derived style attributes are sent.
-  if (!selectedModels.length) {
-    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تنشئ بصمة وهمية؛ استخدم فقط بيانات المستند الحالي.]`;
+  const requestedDocFamily = documentFamily(requestedType);
+  const requestedLegalFamily = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
+  if (!models.length) {
+    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تدّعِ استخدام أسلوب مرجعي؛ اكتب وفق المعلومات الحالية فقط.]`;
   }
 
-  const typeLine = requestedType
-    ? `نوع المستند المطلوب حاليًا: ${requestedType}.`
-    : 'نوع المستند المطلوب يحدده طلب المستخدم الحالي.';
-  return `[بصمة أسلوب مستخلصة من خزنة الحساب]\n${typeLine}\nالبيانات التالية وصف أسلوبي مجرد مستخلص محليًا من نماذج المحامي؛ لم يُرفق أي نص من المستندات الأصلية. استخدم الوصف لمحاكاة طريقة العرض والانتقال ونمط الجمل فقط.\n${profileBlocks.join('\n\n')}\n\n[حدود إلزامية]\n1) اكتب المستند الحالي من بدايته إلى نهايته اعتمادًا على وقائع هذا الطلب ومستنداته وتعليمات المستخدم الحالية فقط.\n2) الخزنة ليست مصدرًا لوقائع أو مستندات أو أسماء أو تواريخ أو أرقام أو طلبات أو دفوع أو نصوص قانونية. لا تنقل منها أي مضمون أو عبارة مميزة مرتبطة بقضية سابقة.\n3) لا تقتبس أو تعيد صياغة أي جزء من مستند محفوظ؛ لا يتم إرسال نصوص النماذج إلى المولد أصلًا.\n4) طبّق بنية نموذج من النوع نفسه فقط إذا كان ذلك النوع موجودًا في خزنة هذا الحساب. إذا لم يوجد، خذ السمات العامة للكتابة ولا تفرض بنية مستند مختلف.\n5) نوع المستند الجديد وتعليمات المستخدم الحالية هما الحاكمان؛ لا تحوّل صحيفة دعوى إلى مذكرة، أو إنذارًا إلى إعادة إعلان، أو أي نوع إلى نوع آخر.\n6) لا تضف اسم المحامي أو مكتبه أو ترويسة أو بيانات تعريفية إلا إذا كانت مقدمة صراحةً ضمن بيانات المستند الحالي أو موجودة بالفعل في المسودة الحالية الجاري تحريرها.\n7) اجعل البصمة واضحة في أسلوب العرض وتسلسل الفقرات والانتقالات وطول الجمل والروابط التعبيرية، لا في استنساخ مضمون المستندات القديمة.`;
+  // Rank references in the order the lawyer requested: document type first,
+  // legal/court family second, then related metadata. Never choose a model just
+  // because it exists; unrelated legal families receive a strong penalty.
+  const ranked = models.map((model, index) => {
+    const meta = `${model.judicialWorkType || ''} ${model.title || ''} ${model.category || ''} ${model.notes || ''}`;
+    const modelDocFamily = documentFamily(`${model.judicialWorkType || ''} ${model.title || ''} ${model.category || ''}`);
+    const modelLegalFamily = legalFamily(`${meta} ${model.content || ''}`.slice(0, 5000));
+    let score = (model.weight || 3) * 2;
+    if (requestedDocFamily && modelDocFamily === requestedDocFamily) score += 100;
+    else if (requestedDocFamily && modelDocFamily && modelDocFamily !== requestedDocFamily) score -= 8;
+    if (requestedLegalFamily && modelLegalFamily === requestedLegalFamily) score += 75;
+    else if (requestedLegalFamily && modelLegalFamily && modelLegalFamily !== requestedLegalFamily) score -= 55;
+    const normalizedCourt = normalizeVaultText(criteria.courtType || '');
+    const normalizedMeta = normalizeVaultText(meta);
+    if (normalizedCourt && normalizedMeta.includes(normalizedCourt)) score += 45;
+    const requestedTokens = normalizeVaultText(`${criteria.courtType || ''} ${requestedType}`).split(/\s+/).filter(t => t.length >= 3);
+    const modelTokens = new Set(normalizedMeta.split(/\s+/).filter(t => t.length >= 3));
+    if (requestedTokens.length) {
+      const overlap = requestedTokens.filter(t => modelTokens.has(t)).length / requestedTokens.length;
+      score += Math.round(overlap * 25);
+    }
+    return { model, score, index, modelDocFamily, modelLegalFamily };
+  }).sort((a, b) => b.score - a.score || a.index - b.index);
+
+  const best = ranked[0];
+  if (!best || !String(best.model.content || '').trim()) {
+    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا يوجد نموذج يحتوي على نص قابل للاستخدام في خزنة هذا الحساب. اكتب وفق المعلومات الحالية فقط.]`;
+  }
+
+  // Include the actual reference, not merely a statistical description of it.
+  // Keep the reference bounded so it does not overwhelm the case materials.
+  const selected = ranked.slice(0, 2).filter((item, index) => {
+    if (index === 0) return true;
+    const sameLegalFamily = !requestedLegalFamily || item.modelLegalFamily === requestedLegalFamily;
+    const sameDocFamily = !requestedDocFamily || item.modelDocFamily === requestedDocFamily;
+    return sameLegalFamily || sameDocFamily;
+  });
+  const remainingBudget = 21000;
+  let used = 0;
+  const referenceBlocks = selected.map((item, index) => {
+    const content = String(item.model.content || '').trim();
+    const allowance = Math.max(0, Math.min(index === 0 ? 12000 : 8000, remainingBudget - used));
+    const excerpt = content.slice(0, allowance);
+    used += excerpt.length;
+    const metadata = [item.model.title, item.model.judicialWorkType, item.model.category].filter(Boolean).join(' — ');
+    return `[النموذج المرجعي ${index + 1}${metadata ? `: ${metadata}` : ''}]\n${excerpt}${content.length > excerpt.length ? '\n[اقتُصر النص على جزء من النموذج بسبب حد السياق.]' : ''}`;
+  }).filter(Boolean);
+
+  const typeLine = requestedType ? `نوع المستند المطلوب: ${requestedType}.` : 'يُحدد نوع المستند من طلب المستخدم الحالي.';
+  const familyLine = requestedLegalFamily ? `الفرع القانوني الأقرب: ${requestedLegalFamily}.` : 'حدّد الفرع القانوني من وقائع وطلبات القضية الحالية.';
+  return `[بصمة أسلوب المحامي — مرجع فعلي من خزنة هذا الحساب]\n${typeLine}\n${familyLine}\nتم اختيار النموذج وفق أقرب نوع مستند وفرع قانوني وجهة قضاء متاحة. النصوص التالية مراجع أسلوب وبناء فعلية وليست وقائع للقضية الحالية.\n\n${referenceBlocks.join('\n\n')}\n\n[تعليمات استخدام المرجع]\n1) اقرأ النموذج المرجعي نفسه واستخلص منه طريقة المحامي الفعلية في الديباجة، والترويسة، وترتيب الأقسام، وعرض الوقائع، والانتقال إلى الدفوع، وطول الفقرات، والعبارات الانتقالية، وصياغة الطلبات والخاتمة. لا تكتفِ بوصف عام مثل طول الجمل.\n2) أنت مسؤول عن التحليل القانوني المستقل للقضية الجديدة: استخرج الدفوع والطلبات المناسبة من وقائعها ومستنداتها الحالية، ولا تستورد دفوع النموذج القديم لمجرد وجودها فيه.\n3) انقل عناصر هوية المكتب الثابتة والترويسة والتوقيع من المرجع عند وضوحها، مع تحديث أي بيانات مرتبطة بالقضية الحالية فقط إذا كانت معروفة. لا تخترع اسم مكتب أو محامٍ أو رقمًا أو تاريخًا.\n4) لا تنقل من المرجع أسماء أطراف القضية القديمة، أو وقائعها، أو تواريخها، أو أرقامها، أو مستنداتها، أو طلباتها الخاصة بها. إذا احتجت معلومة للقضية الجديدة ولم تكن موجودة في مدخلاتها، فلا تخترعها.\n5) إذا كان المرجع من النوع نفسه فاقتدِ ببنائه بدرجة قوية. وإذا كان من فرع قانوني قريب أو نوع غير مطابق، فاستفد من طريقة الكتابة والترويسة والبناء العام فقط، وعدّل هيكل المستند ليناسب نوع العمل القضائي المطلوب حاليًا.\n6) الأولوية: صحة التحليل القانوني للقضية الحالية، ثم محاكاة أسلوب المحامي وبنائه، دون نسخ مضمون القضية القديمة.\n7) إذا لم يوجد نموذج مطابق، لا ترفض الصياغة؛ استخدم أفضل نموذج قريب تم اختياره وفق نوع المستند والفرع القانوني وجهة القضاء.`;
 }
