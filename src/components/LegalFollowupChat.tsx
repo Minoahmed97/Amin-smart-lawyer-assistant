@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { getSessionToken } from '../services/authService.ts';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
 interface Props { taskType: 'deconstruct' | 'qualify'; userId?: string | null; originalContext: string; result: string }
@@ -33,9 +34,18 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
     setLoading(true);
     setError('');
     try {
+      // Use the same platform-session bearer token as the existing AI requests.
+      // The server validates this token in requireSession()/requireActiveSession().
+      const sessionToken = getSessionToken();
+      if (!sessionToken) {
+        throw new Error('تعذر العثور على جلسة الحساب الحالية. حدّث الصفحة، وإذا استمرت المشكلة سجّل الدخول مرة أخرى.');
+      }
       const response = await fetch('/api/gemini/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionToken}`,
+        },
         body: JSON.stringify({ taskType, originalContext, result, messages: nextMessages }),
       });
       const data = await response.json().catch(() => ({}));
@@ -44,6 +54,11 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
       if (!answer) throw new Error('لم تصل إجابة صالحة. حاول مرة أخرى.');
       setMessages((current) => [...current, { role: 'assistant', content: answer }]);
     } catch (err: any) {
+      // Remove the failed pending question so retrying cannot display it twice.
+      setMessages((current) => current.filter((message, index) =>
+        !(index === current.length - 1 && message.role === 'user' && message.content === question)
+      ));
+      setDraft(question);
       setError(err?.message || 'تعذر الاتصال بالمساعد القانوني.');
     } finally {
       setLoading(false);
