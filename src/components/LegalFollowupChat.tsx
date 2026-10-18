@@ -28,18 +28,17 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
     event.preventDefault();
     const question = draft.trim();
     if (!question || loading || !result.trim()) return;
+    const sessionToken = getSessionToken();
+    if (!sessionToken) {
+      setError('تعذر العثور على رمز جلسة الحساب في هذا المتصفح. حدّث الصفحة، وإذا استمرت المشكلة سجّل الدخول مرة أخرى.');
+      return;
+    }
     const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: question }];
     setMessages(nextMessages);
     setDraft('');
     setLoading(true);
     setError('');
     try {
-      // Use the same platform-session bearer token as the existing AI requests.
-      // The server validates this token in requireSession()/requireActiveSession().
-      const sessionToken = getSessionToken();
-      if (!sessionToken) {
-        throw new Error('تعذر العثور على جلسة الحساب الحالية. حدّث الصفحة، وإذا استمرت المشكلة سجّل الدخول مرة أخرى.');
-      }
       const response = await fetch('/api/gemini/chat', {
         method: 'POST',
         headers: {
@@ -49,17 +48,29 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         body: JSON.stringify({ taskType, originalContext, result, messages: nextMessages }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data?.error || 'تعذر إرسال السؤال حالياً.');
+      if (!response.ok) {
+        const retryAfter = Number(response.headers.get('Retry-After') || data?.retryAfter || 0);
+        const serverMessage = String(data?.error || '');
+        if (response.status === 429) {
+          throw new Error(serverMessage || `تم الوصول إلى مهلة الاستخدام. انتظر ${retryAfter || 30} ثانية ثم أعد الإرسال.`);
+        }
+        if (response.status >= 500) {
+          throw new Error(serverMessage || 'تعذر على خدمة الذكاء الاصطناعي إكمال الرد. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
+        }
+        throw new Error(serverMessage || 'تعذر إرسال السؤال حالياً.');
+      }
       const answer = String(data?.result || '').trim();
-      if (!answer) throw new Error('لم تصل إجابة صالحة. حاول مرة أخرى.');
+      if (!answer) throw new Error('لم تصل إجابة صالحة. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
       setMessages((current) => [...current, { role: 'assistant', content: answer }]);
     } catch (err: any) {
-      // Remove the failed pending question so retrying cannot display it twice.
-      setMessages((current) => current.filter((message, index) =>
-        !(index === current.length - 1 && message.role === 'user' && message.content === question)
-      ));
+      // Remove the failed pending question from the transcript so it is not shown
+      // as if it had been answered; restore it to the input for a deliberate retry.
+      setMessages((current) => {
+        const last = current[current.length - 1];
+        return last?.role === 'user' && last.content === question ? current.slice(0, -1) : current;
+      });
       setDraft(question);
-      setError(err?.message || 'تعذر الاتصال بالمساعد القانوني.');
+      setError(err?.message || 'تعذر الاتصال بالمساعد القانوني. تحقق من الاتصال ثم أعد المحاولة.');
     } finally {
       setLoading(false);
     }
