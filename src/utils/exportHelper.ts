@@ -52,58 +52,6 @@ function isGeneratedHeading(line: string): boolean {
   return !!trimmed && trimmed.length < 80 && /^(الموضوع|مذكرة|الوقائع|الدفاع|الدفوع|أولاً|ثانياً|ثالثاً|رابعاً|الطلبات|بناءً عليه|لذلك|أسباب الطعن|الطلبات الختامية|أمام محكمة)/.test(trimmed);
 }
 
-function isCaseSpecificText(text: string): boolean {
-  const value = (text || '').replace(/\s+/g, ' ').trim();
-  if (!value) return false;
-  return /رقم الدعوى|المدعي|المدعى عليه|الخصم|الوقائع|أسباب الطعن|الطلبات الختامية|بناء عليه|بناءً عليه|لذلك|مذكرة بدفاع|صحيفة دعوى|جلسة|موضوع الدعوى|الطاعن|المطعون ضده|المستأنف|المستأنف ضده|ضد\s/.test(value)
-    || value.length > 180;
-}
-
-function isStaticLetterheadText(text: string): boolean {
-  const value = (text || '').replace(/\s+/g, ' ').trim();
-  return !!value && !isCaseSpecificText(value)
-    && /مكتب|للمحاماة|المحامي|المحاماة|تليفون|هاتف|فاكس|استشارات قانونية|العنوان|طنطا|شارع|ميدان|بسم الله الرحمن الرحيم|إن الحكم إلا لله/i.test(value)
-    && value.length < 180;
-}
-
-function isLayoutTable(node: Element, ns: string): boolean {
-  if (node.localName !== 'tbl') return false;
-  const cells = Array.from(node.getElementsByTagNameNS(ns, 'tc'));
-  if (cells.length < 2) return false;
-  const allText = (node.textContent || '').replace(/\s+/g, ' ').trim();
-  return isCaseSpecificText(allText) && /مكتب|للمحاماة|المحامي|تليفون|هاتف|العنوان|طنطا|ميدان|شارع/.test(allText);
-}
-
-function makeParagraph(xmlDoc: XMLDocument, ns: string, rawLine: string, styleSource?: Element | null): Element {
-  const paragraph = xmlDoc.createElementNS(ns, 'w:p');
-  const sourcePPr = styleSource?.getElementsByTagNameNS(ns, 'pPr')[0];
-  if (sourcePPr) paragraph.appendChild(sourcePPr.cloneNode(true));
-  const run = xmlDoc.createElementNS(ns, 'w:r');
-  const sourceRPr = styleSource?.getElementsByTagNameNS(ns, 'rPr')[0];
-  if (sourceRPr) run.appendChild(sourceRPr.cloneNode(true));
-  const textNode = xmlDoc.createElementNS(ns, 'w:t');
-  textNode.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
-  textNode.textContent = rawLine;
-  run.appendChild(textNode);
-  paragraph.appendChild(run);
-  return paragraph;
-}
-
-function replaceCellContent(xmlDoc: XMLDocument, cell: Element, lines: string[], ns: string, headingTemplate: Element | null, bodyTemplate: Element | null): void {
-  const cellChildren = Array.from(cell.children);
-  const tcPr = cellChildren.find((child) => child.localName === 'tcPr') || null;
-  const directParagraphs = Array.from(cell.children).filter((child) => child.localName === 'p');
-  const paragraphs = directParagraphs.length ? directParagraphs : Array.from(cell.getElementsByTagNameNS(ns, 'p'));
-  const heading = paragraphs.find((p) => isHeadingLike(textOfParagraph(p), p)) || headingTemplate || paragraphs[0] || null;
-  const body = paragraphs.find((p) => !isHeadingLike(textOfParagraph(p), p)) || bodyTemplate || paragraphs[0] || heading;
-  while (cell.firstChild) cell.removeChild(cell.firstChild);
-  if (tcPr) cell.appendChild(tcPr);
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    cell.appendChild(makeParagraph(xmlDoc, ns, rawLine, isGeneratedHeading(line) ? heading : body));
-  }
-}
-
 function replaceDocxBodyXml(documentXml: string, content: string): string {
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(documentXml, 'application/xml');
@@ -111,87 +59,42 @@ function replaceDocxBodyXml(documentXml: string, content: string): string {
   const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const body = xmlDoc.getElementsByTagNameNS(ns, 'body')[0];
   if (!body) throw new Error('لم يتم العثور على متن المستند داخل قالب وورد.');
-
-  const originalChildren = Array.from(body.children);
-  const sectPr = originalChildren.find((child) => child.localName === 'sectPr') || null;
-  const contentLines = content.replace(/\r\n?/g, '\n').split('\n');
-  const allParagraphs = Array.from(body.getElementsByTagNameNS(ns, 'p'));
-  const headingTemplate = allParagraphs.find((p) => isHeadingLike(textOfParagraph(p), p)) || allParagraphs[0] || null;
-  const bodyTemplate = allParagraphs.find((p) => !isHeadingLike(textOfParagraph(p), p)) || allParagraphs[0] || headingTemplate;
-  const firstContentIndex = originalChildren.findIndex((child) => {
-    if (child === sectPr) return false;
-    const text = (child.textContent || '').replace(/\s+/g, ' ').trim();
-    return isCaseSpecificText(text);
-  });
-
-  // If the template uses a two-column/table layout for a side margin, keep the
-  // table and its section geometry. Replace the main text cell instead of deleting
-  // the table (which would destroy the side margin).
-  const layoutTable = originalChildren.find((child) => isLayoutTable(child, ns)) || null;
-  if (layoutTable) {
-    const cells = Array.from(layoutTable.children)
-      .filter((row) => row.localName === 'tr')
-      .flatMap((row) => Array.from(row.children).filter((cell) => cell.localName === 'tc'));
-    const mainCell = cells.slice().sort((a, b) => {
-      const aText = (a.textContent || '').replace(/\s+/g, ' ').trim();
-      const bText = (b.textContent || '').replace(/\s+/g, ' ').trim();
-      const aScore = (isCaseSpecificText(aText) ? 10000 : 0) + aText.length;
-      const bScore = (isCaseSpecificText(bText) ? 10000 : 0) + bText.length;
-      return bScore - aScore;
-    })[0];
-    if (mainCell) {
-      replaceCellContent(xmlDoc, mainCell, contentLines, ns, headingTemplate, bodyTemplate);
-      // Other cells are retained only when their text is static office/letterhead
-      // information. Case-specific text in a sidebar cell is removed.
-      for (const cell of cells) {
-        if (cell === mainCell) continue;
-        const directParagraphs = Array.from(cell.children).filter((child) => child.localName === 'p');
-        const staticParagraphs = (directParagraphs.length ? directParagraphs : Array.from(cell.getElementsByTagNameNS(ns, 'p')))
-          .filter((paragraph) => isStaticLetterheadText(textOfParagraph(paragraph)));
-        const tcPr = Array.from(cell.children).find((child) => child.localName === 'tcPr') || null;
-        while (cell.firstChild) cell.removeChild(cell.firstChild);
-        if (tcPr) cell.appendChild(tcPr);
-        for (const paragraph of staticParagraphs) cell.appendChild(paragraph.cloneNode(true));
-        if (!staticParagraphs.length) cell.appendChild(makeParagraph(xmlDoc, ns, '', bodyTemplate));
-      }
-      // Remove old case-specific body blocks but keep the selected layout table,
-      // static letterhead blocks, drawings, and section settings.
-      for (const child of originalChildren) {
-        if (child === layoutTable || child === sectPr) continue;
-        const text = (child.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!isStaticLetterheadText(text) && text.length > 0) child.remove();
-      }
-      if (sectPr && sectPr.parentNode === body) body.appendChild(sectPr);
-      const serialized = new XMLSerializer().serializeToString(xmlDoc);
-      if (!serialized || !serialized.includes('document')) throw new Error('تعذر إعادة إنشاء محتوى مستند وورد.');
-      return serialized;
-    }
-  }
-
-  // Standard paragraph-based template: preserve the original static letterhead
-  // and all non-case-specific layout objects, then insert only the new text.
-  const preservedBefore: Element[] = [];
-  const preservedAfter: Element[] = [];
-  const insertionIndex = firstContentIndex >= 0 ? firstContentIndex : Math.max(0, originalChildren.findIndex((child) => child === sectPr));
-  originalChildren.forEach((child, index) => {
-    if (child === sectPr) return;
-    const text = (child.textContent || '').replace(/\s+/g, ' ').trim();
-    const isStatic = isStaticLetterheadText(text) || (!text && (child.getElementsByTagNameNS(ns, 'drawing').length > 0 || child.getElementsByTagNameNS(ns, 'pict').length > 0));
-    if (isStatic) {
-      if (index < insertionIndex) preservedBefore.push(child.cloneNode(true) as Element);
-      else preservedAfter.push(child.cloneNode(true) as Element);
-    }
-  });
-
-  while (body.firstChild) body.removeChild(body.firstChild);
-  preservedBefore.forEach((child) => body.appendChild(child));
-  for (const rawLine of contentLines) {
-    const line = rawLine.trim();
-    body.appendChild(makeParagraph(xmlDoc, ns, rawLine, isGeneratedHeading(line) ? headingTemplate : bodyTemplate));
-  }
-  preservedAfter.forEach((child) => body.appendChild(child));
-  if (sectPr) body.appendChild(sectPr);
-
+  const direct = Array.from(body.children) as Element[];
+  const sectPr = direct.find((el) => el.localName === 'sectPr') || null;
+  const isCaseStart = (text: string) => /مذكرة\s+بدفاع|صحيفة\s+دعوى|أمام\s+محكمة|الوقائع|أسباب\s+الطعن|الموضوع\s*[:：]|المدعي\s*[:：]|المدعى\s+عليه/.test(text);
+  const getText = (el: Element) => Array.from(el.getElementsByTagNameNS(ns, 't')).map((n) => n.textContent || '').join('').replace(/\s+/g, ' ').trim();
+  const directParagraphs = direct.filter((el) => el.localName === 'p');
+  const firstCaseIndex = directParagraphs.findIndex((p) => isCaseStart(getText(p)));
+  // Keep the original letterhead and every layout element (tables, borders, section settings,
+  // headers/footers). Only replace the case-text paragraphs in the body, retaining paragraph/run styles.
+  let contentParagraphs = firstCaseIndex >= 0 ? directParagraphs.slice(firstCaseIndex) : directParagraphs.filter((p) => getText(p).length > 0);
+  if (!contentParagraphs.length) contentParagraphs = directParagraphs.slice(-1);
+  if (!contentParagraphs.length) throw new Error('القالب لا يحتوي على فقرات متن قابلة للاستبدال.');
+  const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  const createParagraph = (source: Element, rawLine: string) => {
+    const p = xmlDoc.createElementNS(ns, 'w:p');
+    const pPr = Array.from(source.children).find((el) => el.localName === 'pPr');
+    if (pPr) p.appendChild(pPr.cloneNode(true));
+    const sourceRun = Array.from(source.getElementsByTagNameNS(ns, 'r')).find((r) => r.getElementsByTagNameNS(ns, 't').length > 0);
+    const run = xmlDoc.createElementNS(ns, 'w:r');
+    const rPr = sourceRun ? Array.from(sourceRun.children).find((el) => el.localName === 'rPr') : null;
+    if (rPr) run.appendChild(rPr.cloneNode(true));
+    const t = xmlDoc.createElementNS(ns, 'w:t');
+    t.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
+    t.textContent = rawLine;
+    run.appendChild(t); p.appendChild(run); return p;
+  };
+  const headingSource = contentParagraphs.find((p) => /title|heading/i.test(p.getAttribute('style') || '') || /موضوع|مذكرة|الطلبات|الوقائع/.test(getText(p))) || contentParagraphs[0];
+  const bodySource = contentParagraphs.find((p) => p !== headingSource) || contentParagraphs[0];
+  const anchor = contentParagraphs[0];
+  const parent = anchor.parentNode;
+  if (!parent) throw new Error('تعذر تحديد موضع متن المستند في القالب.');
+  const newParagraphs = lines.map((line) => createParagraph((/^(الموضوع|مذكرة|الوقائع|الدفاع|الدفوع|أولاً|ثانياً|ثالثاً|رابعاً|الطلبات|بناءً عليه|لذلك|أسباب الطعن|أمام محكمة)/.test(line.trim()) ? headingSource : bodySource), line));
+  // Replace only the detected main-body paragraph range; don't clear w:body or rebuild the document.
+  const last = contentParagraphs[contentParagraphs.length - 1];
+  const next = last.nextSibling;
+  for (const p of contentParagraphs) p.remove();
+  for (const p of newParagraphs) parent.insertBefore(p, next && next.parentNode === parent ? next : sectPr);
   const serialized = new XMLSerializer().serializeToString(xmlDoc);
   if (!serialized || !serialized.includes('document')) throw new Error('تعذر إعادة إنشاء محتوى مستند وورد.');
   return serialized;
@@ -222,28 +125,28 @@ export async function exportLegalDocToWord(content: string, baseTitle = 'صيا�
         return;
       } else if (options.templateMode === 'auto') {
         const templates = await getLegalDocTemplates(userId);
-        const requestedWorkType = (options.workType || '').trim();
-        const genericWorkTypes = new Set(['', '__custom__', 'إنشاء صيغة قانونية', 'مهمة قانونية أخرى', 'صيغة قانونية', 'مستند قضائي عام']);
-        const inferredWorkType = genericWorkTypes.has(requestedWorkType)
-          ? classifyLegalDocument(cleanTitle, content).workType
-          : requestedWorkType;
+        const inferred = classifyLegalDocument(cleanTitle, `${content.slice(0, 12000)}\n${options.facts || ''}`);
         template = chooseBestLegalDocTemplate(templates, {
-          courtType: options.courtType,
-          workType: inferredWorkType,
-          facts: [options.facts || '', content].filter(Boolean).join('\n'),
+          courtType: options.courtType || inferred.courtType,
+          workType: options.workType || inferred.workType,
+          facts: `${content.slice(0, 12000)}\n${options.facts || ''}`,
         });
+        // In automatic mode, a saved template should not be silently ignored just because
+        // metadata scoring found no exact match (e.g. "مذكرة مدني" vs "مذكرة بدفاع").
+        if (!template && templates.length) template = templates[0];
       }
       if (template) {
         const blob = await makeTemplateDocxBlob(content, template.blob);
         downloadBlob(blob, `${cleanTitle}_${Date.now()}.docx`);
         return;
       }
-      if (options.templateMode === 'manual' && options.templateId) {
-        window.alert('تعذر العثور على القالب المختار. سيتم استخدام تنسيق وورد العام.');
-      }
+      window.alert(options.templateMode === 'manual'
+        ? 'تعذر العثور على القالب المختار أو لا يوجد قالب محفوظ صالح. لم يتم تنزيل مستند عام بدلًا منه.'
+        : 'لم يتم العثور على قالب Word محفوظ لهذا الحساب. احفظ قالبًا أولًا ثم أعد التصدير.');
+      return;
     } catch (error) {
       console.error('Template-based Word export failed:', error);
-      window.alert('تعذر تطبيق قالب وورد الأصلي. لم يتم تنزيل مستند بديل حتى لا تفقد التنسيق أو يظهر قالب مختلف. راجع ملف القالب وحاول مرة أخرى.');
+      window.alert('فشل تطبيق قالب Word الأصلي، لذلك أوقفنا التصدير بدلًا من تنزيل مستند عادي لا يطابق القالب.');
       return;
     }
   }
