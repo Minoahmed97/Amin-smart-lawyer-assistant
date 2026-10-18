@@ -5,6 +5,7 @@ import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
+import { LegalFollowupChat } from './LegalFollowupChat.tsx';
 import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 import {
   Compass,
@@ -580,6 +581,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
           </div>
         </div>
       </div>
+      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={getActiveLawyerUserId()} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} />}
     </div>
   );
 };
