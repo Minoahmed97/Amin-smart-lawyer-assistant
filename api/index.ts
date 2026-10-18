@@ -123,8 +123,8 @@ export default async function handler(req: any, res: any) {
       if (error?.retryAfter) res.setHeader('Retry-After', String(error.retryAfter));
       return res.status(error?.statusCode || 500).json({
         error: error?.statusCode && error.statusCode < 500
-          ? (error.message || '鬲毓匕乇 鬲賳賮賷匕 丕賱胤賱亘.')
-          : '丨丿孬 禺胤兀 丿丕禺賱賷 賮賷 丕賱禺丕丿賲.',
+          ? (error.message || 'عذراً، حدث خطأ أثناء تنفيذ الطلب.')
+          : 'حدث خطأ داخلي في الخادم.',
       });
     }
   }
