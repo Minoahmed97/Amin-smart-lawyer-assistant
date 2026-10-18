@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { chooseBestLegalDocTemplate, getLegalDocTemplate, getLegalDocTemplates, type LegalDocTemplate } from './legalTemplateService.ts';
+import { chooseBestLegalDocTemplate, classifyLegalDocument, getLegalDocTemplate, getLegalDocTemplates, type LegalDocTemplate } from './legalTemplateService.ts';
 
 export interface LegalWordExportOptions {
   userId?: string;
@@ -59,48 +59,44 @@ function replaceDocxBodyXml(documentXml: string, content: string): string {
   const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const body = xmlDoc.getElementsByTagNameNS(ns, 'body')[0];
   if (!body) throw new Error('لم يتم العثور على متن المستند داخل قالب وورد.');
-  const originalParagraphs = Array.from(body.getElementsByTagNameNS(ns, 'p'));
-  const nonEmpty = originalParagraphs.filter((p) => textOfParagraph(p));
-  const headingTemplate = nonEmpty.find((p) => isHeadingLike(textOfParagraph(p), p)) || nonEmpty[0];
-  const bodyTemplate = nonEmpty.find((p) => !isHeadingLike(textOfParagraph(p), p)) || nonEmpty[0] || originalParagraphs[0];
-  if (!bodyTemplate && !headingTemplate) throw new Error('القالب لا يحتوي على فقرة يمكن استخدامها للتنسيق.');
-
-  const directChildren = Array.from(body.children);
-  const sectPr = directChildren.find((child) => child.localName === 'sectPr') || null;
-  // Preserve a clearly identifiable leading lawyer letterhead that lives in the
-  // document body, but stop before case-specific matter is reached.
-  const frontMatter: Element[] = [];
-  for (const child of directChildren) {
-    if (child === sectPr) continue;
-    const childText = (child.textContent || '').replace(/\s+/g, ' ').trim();
-    if (/محكمة|رقم الدعوى|مذكرة بدفاع|المدعي|المدعى عليه|الوقائع|أسباب الطعن|الطلبات الختامية|جلسة/.test(childText)) break;
-    if (childText && /مكتب|للمحاماة|المحامي|المحاماة|تليفون|هاتف|استشارات قانونية/.test(childText)) {
-      frontMatter.push(child.cloneNode(true) as Element);
-      if (frontMatter.length >= 5) break;
-    }
-  }
-  while (body.firstChild) body.removeChild(body.firstChild);
-  frontMatter.forEach((element) => body.appendChild(element));
-  const paragraphs = content.replace(/\r\n?/g, '\n').split('\n');
-  for (const rawLine of paragraphs) {
-    const line = rawLine.trim();
-    const styleSource = (isGeneratedHeading(line) && headingTemplate) ? headingTemplate : bodyTemplate;
-    const paragraph = xmlDoc.createElementNS(ns, 'w:p');
-    const sourcePPr = styleSource?.getElementsByTagNameNS(ns, 'pPr')[0];
-    if (sourcePPr) paragraph.appendChild(sourcePPr.cloneNode(true));
+  const direct = Array.from(body.children) as Element[];
+  const sectPr = direct.find((el) => el.localName === 'sectPr') || null;
+  const isCaseStart = (text: string) => /مذكرة\s+بدفاع|صحيفة\s+دعوى|أمام\s+محكمة|الوقائع|أسباب\s+الطعن|الموضوع\s*[:：]|المدعي\s*[:：]|المدعى\s+عليه/.test(text);
+  const getText = (el: Element) => Array.from(el.getElementsByTagNameNS(ns, 't')).map((n) => n.textContent || '').join('').replace(/\s+/g, ' ').trim();
+  const directParagraphs = direct.filter((el) => el.localName === 'p');
+  const firstCaseIndex = directParagraphs.findIndex((p) => isCaseStart(getText(p)));
+  // Keep the original letterhead and every layout element (tables, borders, section settings,
+  // headers/footers). Only replace the case-text paragraphs in the body, retaining paragraph/run styles.
+  let contentParagraphs = firstCaseIndex >= 0 ? directParagraphs.slice(firstCaseIndex) : directParagraphs.filter((p) => getText(p).length > 0);
+  if (!contentParagraphs.length) contentParagraphs = directParagraphs.slice(-1);
+  if (!contentParagraphs.length) throw new Error('القالب لا يحتوي على فقرات متن قابلة للاستبدال.');
+  const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  const createParagraph = (source: Element, rawLine: string) => {
+    const p = xmlDoc.createElementNS(ns, 'w:p');
+    const pPr = Array.from(source.children).find((el) => el.localName === 'pPr');
+    if (pPr) p.appendChild(pPr.cloneNode(true));
+    const sourceRun = Array.from(source.getElementsByTagNameNS(ns, 'r')).find((r) => r.getElementsByTagNameNS(ns, 't').length > 0);
     const run = xmlDoc.createElementNS(ns, 'w:r');
-    const sourceRPr = styleSource?.getElementsByTagNameNS(ns, 'rPr')[0];
-    if (sourceRPr) run.appendChild(sourceRPr.cloneNode(true));
-    const textNode = xmlDoc.createElementNS(ns, 'w:t');
-    textNode.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
-    textNode.textContent = rawLine;
-    run.appendChild(textNode);
-    paragraph.appendChild(run);
-    body.appendChild(paragraph);
-  }
-  if (sectPr) body.appendChild(sectPr);
+    const rPr = sourceRun ? Array.from(sourceRun.children).find((el) => el.localName === 'rPr') : null;
+    if (rPr) run.appendChild(rPr.cloneNode(true));
+    const t = xmlDoc.createElementNS(ns, 'w:t');
+    t.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
+    t.textContent = rawLine;
+    run.appendChild(t); p.appendChild(run); return p;
+  };
+  const headingSource = contentParagraphs.find((p) => /title|heading/i.test(p.getAttribute('style') || '') || /موضوع|مذكرة|الطلبات|الوقائع/.test(getText(p))) || contentParagraphs[0];
+  const bodySource = contentParagraphs.find((p) => p !== headingSource) || contentParagraphs[0];
+  const anchor = contentParagraphs[0];
+  const parent = anchor.parentNode;
+  if (!parent) throw new Error('تعذر تحديد موضع متن المستند في القالب.');
+  const newParagraphs = lines.map((line) => createParagraph((/^(الموضوع|مذكرة|الوقائع|الدفاع|الدفوع|أولاً|ثانياً|ثالثاً|رابعاً|الطلبات|بناءً عليه|لذلك|أسباب الطعن|أمام محكمة)/.test(line.trim()) ? headingSource : bodySource), line));
+  // Replace only the detected main-body paragraph range; don't clear w:body or rebuild the document.
+  const last = contentParagraphs[contentParagraphs.length - 1];
+  const next = last.nextSibling;
+  for (const p of contentParagraphs) p.remove();
+  for (const p of newParagraphs) parent.insertBefore(p, next && next.parentNode === parent ? next : sectPr);
   const serialized = new XMLSerializer().serializeToString(xmlDoc);
-  if (!serialized || !serialized.includes('<w:document')) throw new Error('تعذر إعادة إنشاء محتوى مستند وورد.');
+  if (!serialized || !serialized.includes('document')) throw new Error('تعذر إعادة إنشاء محتوى مستند وورد.');
   return serialized;
 }
 
@@ -129,23 +125,29 @@ export async function exportLegalDocToWord(content: string, baseTitle = 'صيا�
         return;
       } else if (options.templateMode === 'auto') {
         const templates = await getLegalDocTemplates(userId);
+        const inferred = classifyLegalDocument(cleanTitle, `${content.slice(0, 12000)}\n${options.facts || ''}`);
         template = chooseBestLegalDocTemplate(templates, {
-          courtType: options.courtType,
-          workType: options.workType,
-          facts: options.facts,
+          courtType: options.courtType || inferred.courtType,
+          workType: options.workType || inferred.workType,
+          facts: `${content.slice(0, 12000)}\n${options.facts || ''}`,
         });
+        // In automatic mode, a saved template should not be silently ignored just because
+        // metadata scoring found no exact match (e.g. "مذكرة مدني" vs "مذكرة بدفاع").
+        if (!template && templates.length) template = templates[0];
       }
       if (template) {
         const blob = await makeTemplateDocxBlob(content, template.blob);
         downloadBlob(blob, `${cleanTitle}_${Date.now()}.docx`);
         return;
       }
-      if (options.templateMode === 'manual' && options.templateId) {
-        window.alert('تعذر العثور على القالب المختار. سيتم استخدام تنسيق وورد العام.');
-      }
+      window.alert(options.templateMode === 'manual'
+        ? 'تعذر العثور على القالب المختار أو لا يوجد قالب محفوظ صالح. لم يتم تنزيل مستند عام بدلًا منه.'
+        : 'لم يتم العثور على قالب Word محفوظ لهذا الحساب. احفظ قالبًا أولًا ثم أعد التصدير.');
+      return;
     } catch (error) {
       console.error('Template-based Word export failed:', error);
-      window.alert('تعذر تطبيق القالب الأصلي بالكامل. سيتم تنزيل نسخة وورد بالتنسيق العام بدلًا من إيقاف التصدير.');
+      window.alert('فشل تطبيق قالب Word الأصلي، لذلك أوقفنا التصدير بدلًا من تنزيل مستند عادي لا يطابق القالب.');
+      return;
     }
   }
   downloadBlob(makeGenericWordBlob(content), `${cleanTitle}_${Date.now()}.doc`);
