@@ -23,13 +23,22 @@ export default async function handler(req: any, res: any) {
     const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
     const prompt = `أنت أمين، مساعد قانوني مصري. هذه متابعة لمهمة ${taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : 'تكييف قانوني ونزاع'} أُنجزت بالفعل. أجب عن آخر سؤال مع الحفاظ على الاتساق مع السياق والنتيجة الأصلية وسجل الحوار. يجوز إدماج الوقائع الجديدة التي يذكرها المحامي، لكن ميّزها عن الوقائع السابقة ولا تخترع أسماء أو تواريخ أو نصوصاً أو أحكاماً. إذا طلب المستخدم تفسيراً فاشرحه بوضوح، وإذا طلب تعديل الاستنتاج فأعد تقييمه وفق المعطيات ولا تتمسك به لمجرد أنه ورد في النتيجة السابقة. لا تعرض سلسلة التفكير الداخلية؛ قدم الأسباب القانونية المفيدة والنتيجة العملية فقط.\n\n[سياق القضية الأصلي]\n${String(originalContext || '').slice(0, 100000)}\n\n[النتيجة الأصلية]\n${result}\n\n[سجل المحادثة بالترتيب]\n${history}\n\nأجب عن آخر رسالة من المحامي مباشرة وبالعربية القانونية الواضحة.`;
     const answer = await generateDeepLegalResponse(prompt);
-    if (!answer.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة صالحة.');
+    if (!answer.trim()) {
+      const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة. لم يتم إرسال رد؛ انتظر مهلة الاستخدام ثم أعد المحاولة.');
+      err.statusCode = 503;
+      throw err;
+    }
     const usage = await consumeOperation(req, 'gemini-operation');
-    return res.json({ result: answer, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
+    return res.status(200).json({ result: answer, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
     console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
     const code = Number(err?.statusCode || err?.status);
     const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 500;
-    return res.status(status).json({ error: err?.message || 'تعذر إتمام الدردشة القانونية.' });
+    const retryAfter = Number(err?.retryAfter || 0);
+    if (status === 429 && retryAfter > 0) res.setHeader('Retry-After', String(retryAfter));
+    return res.status(status).json({
+      error: err?.message || 'تعذر إتمام الدردشة القانونية. حاول مرة أخرى بعد قليل.',
+      ...(status === 429 && retryAfter > 0 ? { retryAfter } : {}),
+    });
   }
 }
