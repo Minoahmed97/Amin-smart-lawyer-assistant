@@ -81,30 +81,14 @@ export async function requireActiveSession(req: any) {
   return { session, user };
 }
 
-/** * Enforce a persistent, account-wide cooldown for all AI endpoints. * The Supabase RPC performs the check-and-set atomically across Vercel instances. */
+/**
+ * AI cooldown intentionally disabled at the platform level.
+ * Keep the active-session/account validation; remove only the 30-second
+ * cross-service waiting period. Other account, credit, and endpoint protections
+ * remain unchanged.
+ */
 export async function enforceAiCooldown(req: any) {
   const { session } = await requireActiveSession(req);
-  const response = await supabase('rpc/claim_platform_ai_cooldown', {
-    method: 'POST',
-    body: JSON.stringify({ p_user_id: session.userId, p_cooldown_seconds: 30 }),
-  });
-
-  if (!response.ok) {
-    // Fail closed: never call a paid AI provider if the central cooldown cannot be verified.
-    const err: any = new Error('تعذر التحقق من مهلة استخدام الذكاء الاصطناعي. يرجى المحاولة لاحقاً.');
-    err.statusCode = 503;
-    throw err;
-  }
-
-  const result = await response.json();
-  const row = Array.isArray(result) ? result[0] : result;
-  if (!row?.allowed) {
-    const retryAfter = Math.max(1, Number(row?.retry_after_seconds) || 30);
-    const err: any = new Error(`يرجى الانتظار ${retryAfter} ثانية قبل استخدام أي خدمة ذكاء اصطناعي أخرى.`);
-    err.statusCode = 429;
-    err.retryAfter = retryAfter;
-    throw err;
-  }
   return { session };
 }
 
