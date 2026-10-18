@@ -65,12 +65,42 @@ function replaceDocxBodyXml(documentXml: string, content: string): string {
   const getText = (el: Element) => Array.from(el.getElementsByTagNameNS(ns, 't')).map((n) => n.textContent || '').join('').replace(/\s+/g, ' ').trim();
   const directParagraphs = direct.filter((el) => el.localName === 'p');
   const firstCaseIndex = directParagraphs.findIndex((p) => isCaseStart(getText(p)));
+  const firstCaseBodyIndex = firstCaseIndex >= 0 ? direct.indexOf(directParagraphs[firstCaseIndex]) : -1;
   // Keep the original letterhead and every layout element (tables, borders, section settings,
   // headers/footers). Only replace the case-text paragraphs in the body, retaining paragraph/run styles.
   let contentParagraphs = firstCaseIndex >= 0 ? directParagraphs.slice(firstCaseIndex) : directParagraphs.filter((p) => getText(p).length > 0);
   if (!contentParagraphs.length) contentParagraphs = directParagraphs.slice(-1);
   if (!contentParagraphs.length) throw new Error('القالب لا يحتوي على فقرات متن قابلة للاستبدال.');
-  const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  let lines = content.replace(/\r\n?/g, '\n').split('\n');
+  // The template's letterhead remains in place. Remove duplicate opening lines
+  // from generated content, accounting for common Arabic spelling/formatting variants.
+  if (firstCaseBodyIndex > 0) {
+    const normalizeHeader = (value: string) => value
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/[أإآٱ]/g, 'ا')
+      .replace(/ى/g, 'ي')
+      .replace(/[ـ\s:：،,؛;|.\-–—]+/g, ' ')
+      .trim()
+      .toLowerCase();
+    // Include text inside tables as well as paragraphs; many lawyer letterheads
+    // are stored in a Word table rather than in ordinary body paragraphs.
+    const existingHeaderLines = direct
+      .slice(0, firstCaseBodyIndex)
+      .map((element) => normalizeHeader(getText(element)))
+      .filter((value) => value.length >= 3);
+    const repeatsTemplateHeader = (candidate: string) => existingHeaderLines.some((header) => {
+      if (candidate === header) return true;
+      const shorter = Math.min(candidate.length, header.length);
+      const longer = Math.max(candidate.length, header.length);
+      return shorter >= 12 && shorter / longer >= 0.72 &&
+        (candidate.startsWith(header) || header.startsWith(candidate));
+    });
+    while (lines.length) {
+      const candidate = normalizeHeader(lines[0]);
+      if (!candidate || repeatsTemplateHeader(candidate)) { lines.shift(); continue; }
+      break;
+    }
+  }
   const createParagraph = (source: Element, rawLine: string) => {
     const p = xmlDoc.createElementNS(ns, 'w:p');
     const pPr = Array.from(source.children).find((el) => el.localName === 'pPr');
