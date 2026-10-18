@@ -8,6 +8,7 @@ import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { StyleTemplate, DEFAULT_STYLE_TEMPLATES } from '../data/styleTemplates.ts';
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
+import { LegalFollowupChat } from './LegalFollowupChat.tsx';
 import {
   ShieldAlert,
   Loader2,
@@ -281,7 +282,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   const shareResult = async () => {
     const shareText = displayedContent();
     if (!shareText) return;
-    await shareLegalDoc(shareText, 'تقرير التفند والرد على المستندات', () => {
+    await shareLegalDoc(shareText, 'تقرير التفنيد والرد على المستندات', () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -539,7 +540,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     تقرير التفكيك والمذكرة المقابلة
                   </h3>
                   <span className="text-[11px] text-slate-400">
-                    استراتيجية الدفاع والمذكرة الجوابية الكاملة
+                    إستراتيجية الدفاع والمذكرة الجوابية الكاملة
                   </span>
                 </div>
               </div>
@@ -811,6 +812,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
           </div>
         </div>
       </div>
+      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisResult} />}
     </div>
   );
 };
