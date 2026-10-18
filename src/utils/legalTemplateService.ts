@@ -36,34 +36,28 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 export function classifyLegalDocument(fileName: string, text: string): Pick<LegalDocTemplate, 'category' | 'courtType' | 'workType'> {
-  const sample = `${fileName} ${text.slice(0, 16000)}`.toLowerCase().replace(/[ًٌٍَُِّْـ]/g, '');
+  const sample = `${fileName} ${text.slice(0, 12000)}`.toLowerCase();
   const has = (...terms: string[]) => terms.some((term) => sample.includes(term.toLowerCase()));
 
   let courtType = 'غير مصنف';
-  if (has('المحكمة الإدارية العليا', 'الإدارية العليا', 'محكمة القضاء الإداري', 'مجلس الدولة', 'هيئة مفوضي الدولة', 'قضاء إداري', 'محكمة تأديبية')) {
+  if (has('مجلس الدولة', 'محكمة القضاء الإداري', 'المحكمة الإدارية العليا', 'الإدارية العليا', 'هيئة مفوضي الدولة', 'قضاء إداري')) {
     courtType = 'مجلس الدولة';
-  } else if (has('محكمة النقض', 'محكمة الاستئناف', 'محكمة الأسرة', 'المحكمة الابتدائية', 'المحكمة الجزئية', 'القضاء العادي', 'مدني', 'جنائي', 'تجاري')) {
+  } else if (has('محكمة النقض', 'محكمة الاستئناف', 'محكمة الأسرة', 'المحكمة الابتدائية', 'المحكمة الجزئية', 'القضاء العادي')) {
     courtType = 'القضاء العادي';
   }
 
-  let workType = 'مستند قضائي عام';
-  if (has('طعن أمام المحكمة الإدارية العليا', 'الطعن بالإدارية العليا', 'الإدارية العليا')) workType = 'طعن بالإدارية العليا';
-  else if (has('طعن بالنقض', 'أسباب الطعن بالنقض', 'محكمة النقض')) workType = 'طعن بالنقض';
-  else if (has('استئناف', 'المستأنف', 'محكمة الاستئناف')) workType = 'استئناف';
-  else if (has('انضباط', 'مجلس تأديب', 'جزاء تأديبي', 'دعوى تأديبية')) workType = 'انضباط / تأديب';
-  else if (has('مذكرة بدفاع', 'مذكرة دفاع', 'مذكرة شارحة')) workType = 'مذكرة بدفاع';
-  else if (has('صحيفة دعوى', 'إقامة الدعوى', 'المدعي', 'المدعى عليه')) workType = 'صحيفة دعوى';
-  else if (has('إعلان على يد محضر', 'إعلان رسمي', 'إنذار رسمي', 'إنذار على يد محضر')) workType = 'إعلان / إنذار';
-  else if (has('طلب عارض', 'طلبات عارضة')) workType = 'طلب عارض';
-  else if (has('حافظة مستندات', 'بيان مستندات')) workType = 'حافظة مستندات';
+  let workType = 'مذكرة / مستند عام';
+  if (has('طعن بالنقض', 'أسباب الطعن بالنقض', 'محكمة النقض')) workType = 'طعن بالنقض';
+  else if (has('استئناف', 'محكمة الاستئناف')) workType = 'استئناف';
+  else if (has('انضباط', 'مجلس تأديب', 'جزاء تأديبي')) workType = 'انضباط / تأديب';
+  else if (has('إعلان على يد محضر', 'إعلان رسمي', 'إنذار رسمي')) workType = 'إعلان / إنذار';
+  else if (has('صحيفة دعوى', 'المدعي', 'المدعى عليه')) workType = 'صحيفة دعوى';
+  else if (has('مذكرة بدفاع', 'مذكرة دفاع', 'مذكرة مدني', 'مذكرة مدنية', 'مذكرة جنح', 'مذكرة جنائي', 'الطلبات الختامية')) workType = 'مذكرة بدفاع';
 
   let category = courtType;
-  if (workType.includes('الإدارية العليا')) category = 'طعن بالإدارية العليا';
-  else if (workType.includes('طعن بالنقض') || workType === 'استئناف') category = workType;
+  if (workType.includes('طعن') || workType === 'استئناف') category = workType;
   else if (workType.includes('انضباط')) category = 'انضباط';
   else if (workType.includes('إعلان')) category = 'إعلانات';
-  else if (workType === 'صحيفة دعوى') category = 'صحف الدعاوى';
-  else if (workType.includes('مذكرة')) category = 'مذكرات';
   return { category, courtType, workType };
 }
 
@@ -152,50 +146,26 @@ export function chooseBestLegalDocTemplate(
   const normalize = (value: string) => value.toLowerCase().replace(/[ًٌٍَُِّْـ]/g, '').replace(/[^\u0600-\u06FFa-z0-9\s]/gi, ' ').replace(/\s+/g, ' ').trim();
   const court = normalize(criteria.courtType || '');
   const work = normalize(criteria.workType || '');
-  const facts = normalize((criteria.facts || '').slice(0, 7000));
-  const tokens = new Set(facts.split(/\s+/).filter((x) => x.length > 3).slice(0, 180));
-  const groups: Array<{ keys: string[]; terms: string[] }> = [
-    { keys: ['طعن بالإدارية العليا', 'الإدارية العليا', 'الطعن بالإدارية العليا'], terms: ['طعن بالإدارية العليا', 'المحكمة الإدارية العليا', 'الإدارية العليا'] },
-    { keys: ['طعن بالنقض', 'النقض', 'أسباب الطعن بالنقض'], terms: ['طعن بالنقض', 'أسباب الطعن بالنقض', 'محكمة النقض'] },
-    { keys: ['استئناف', 'طعن أو استئناف'], terms: ['استئناف', 'المستأنف', 'المستأنف ضده'] },
-    { keys: ['انضباط', 'تأديب', 'انضباط / تأديب'], terms: ['انضباط', 'تأديب', 'مجلس تأديب', 'دعوى تأديبية'] },
-    { keys: ['صحيفة دعوى', 'دعوى', 'كتابة دعوى / صحيفة دعوى'], terms: ['صحيفة دعوى', 'دعوى', 'المدعي', 'المدعى عليه'] },
-    { keys: ['مذكرة', 'مذكرة بدفاع', 'مذكرة دفاع'], terms: ['مذكرة بدفاع', 'مذكرة دفاع', 'مذكرة شارحة'] },
-    { keys: ['تفنيد مستند أو مذكرة', 'الرد على مستند أو مذكرة', 'تفنيد', 'رد على مستند'], terms: ['تفنيد', 'الرد على المستند', 'الرد على مذكرة'] },
-    { keys: ['طلب قانوني', 'طلب عارض'], terms: ['طلب قانوني', 'طلب عارض', 'طلبات عارضة'] },
-    { keys: ['إنذار أو مكاتبة قانونية', 'إنذار', 'إعلان'], terms: ['إنذار رسمي', 'إعلان على يد محضر', 'إنذار على يد محضر'] },
-    { keys: ['حافظة مستندات'], terms: ['حافظة مستندات', 'بيان مستندات'] },
-    { keys: ['عقد أو اتفاقية', 'عقد'], terms: ['عقد', 'اتفاقية'] },
-  ];
-  const normalizedTemplate = (template: LegalDocTemplate) => normalize(`${template.title} ${template.fileName} ${template.category} ${template.courtType} ${template.workType}`);
-  const normalizedWork = work.replace(/^(?:إنشاء صيغة قانونية|صيغة قانونية|مستند قضائي عام|مهمة قانونية أخرى)$/, '').trim();
-  const activeGroup = groups.find((group) => group.keys.some((key) => normalizedWork === normalize(key) || normalizedWork.includes(normalize(key)) || normalize(key).includes(normalizedWork)));
+  const genericWorkTypes = new Set(['مذكرة', 'مذكرة بدفاع', 'مستند عام', 'انشاء صيغة قانونية', 'صيغة قانونية']);
+  const useWorkSignal = !!work && !genericWorkTypes.has(work);
+  const facts = normalize((criteria.facts || '').slice(0, 5000));
+  const tokens = new Set(facts.split(/\s+/).filter((x) => x.length > 3));
   const scored = templates.map((template) => {
-    const text = normalizedTemplate(template);
     let score = 0;
     const courtValue = normalize(template.courtType);
-    if (court && courtValue !== 'غير مصنف') {
-      if (courtValue === court || courtValue.includes(court) || court.includes(courtValue)) score += 100;
-      else if ((court.includes('الإدارية') || court.includes('الإداري') || court.includes('القضاء الإداري') || court.includes('مجلس الدولة') || court.includes('محكمة تأديبية')) && courtValue.includes('مجلس الدولة')) score += 80;
-      else if ((court.includes('العادي') || court.includes('مدني') || court.includes('جنائي') || court.includes('تجاري') || court.includes('استئناف') || court.includes('محكمة النقض') || court.includes('ابتدائية') || court.includes('جزئية') || court.includes('الأسرة')) && courtValue.includes('القضاء العادي')) score += 80;
-      else score -= 200;
-    }
-    if (activeGroup) {
-      const matched = activeGroup.terms.some((term) => text.includes(normalize(term)));
-      score += matched ? 140 : -100;
-    } else if (normalizedWork) {
-      if (text.includes(normalizedWork)) score += 100;
-      else {
-        const workTokens = normalizedWork.split(/\s+/).filter((x) => x.length > 2);
-        score += workTokens.filter((token) => text.includes(token)).length * 12;
-      }
-    }
+    const workValue = normalize(template.workType);
+    const category = normalize(template.category);
+    const title = normalize(template.title);
+    if (court && courtValue !== 'غير مصنف' && (courtValue.includes(court) || court.includes(courtValue))) score += 50;
+    if (useWorkSignal && (workValue.includes(work) || work.includes(workValue) || category.includes(work) || title.includes(work))) score += 35;
+    const memoRequest = /مذكر|دفاع/.test(work);
+    if (memoRequest && /مذكر|دفاع/.test(`${workValue} ${category} ${title} ${normalize(template.fileName)}`)) score += 30;
+    if (/مدن/.test(work) && /مدن/.test(`${workValue} ${category} ${title} ${normalize(template.fileName)}`)) score += 15;
+    if (/تأديب|انضباط/.test(work) && /تأديب|انضباط/.test(`${workValue} ${category} ${title} ${normalize(template.fileName)}`)) score += 25;
+    if (/إدارية عليا/.test(work) && /إدارية عليا|مجلس الدولة/.test(`${workValue} ${category} ${title} ${normalize(template.fileName)}`)) score += 25;
     if (tokens.size) {
-      let hits = 0;
-      for (const token of tokens) if (normalize(template.title).includes(token)) hits++;
-      score += Math.min(hits, 12) * 1.5;
+      for (const token of tokens) if (title.includes(token)) score += 1;
     }
-    // Avoid selecting a template that has no meaningful relation to the requested work.
     return { template, score };
   }).sort((a, b) => b.score - a.score || b.template.createdAt.localeCompare(a.template.createdAt));
   return scored[0] && scored[0].score > 0 ? scored[0].template : null;
