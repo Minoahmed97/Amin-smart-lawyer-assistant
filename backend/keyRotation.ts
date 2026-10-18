@@ -32,8 +32,8 @@ export const GEMINI_MODELS = [
 
 let activeKeyIndex = 0;
 const permanentlyInvalidKeys = new Set<string>();
-// Do not impose an application-level generation timeout. Long legal documents
-// are allowed to finish; Vercel's configured function duration remains the hard platform limit.
+// A caller may bound an attempt when it must leave time to rotate providers or
+// persist a terminal job state. Unbounded non-OCR requests retain their old behavior.
 function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
   const httpOptions: any = { headers: { 'User-Agent': 'aistudio-build' } };
   if (Number.isFinite(timeoutMs) && Number(timeoutMs) >= 1000) {
@@ -124,7 +124,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
   if (!isValidGeminiApiKey(cleanKey)) {
     return {
       success: false,
-      message: 'مفتاح Gemini غير صالح. انسخ المفتاح كاملًا من منصة Google AI Studio وأدخله كما هو.',
+      message: 'مفتاح Gemini غير صالح. انسخ المفتاح كاملاً من منصة Google AI Studio وأدخله كما هو.',
     };
   }
 
@@ -136,7 +136,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
   for (const model of GEMINI_MODELS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      lastFailure = 'انتهت المهلة المحددّة لفحص مفتاح Gemini.';
+      lastFailure = 'انتهت المهلة المحددة لفحص مفتاح Gemini.';
       break;
     }
 
@@ -159,7 +159,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
       if (response.ok && data?.name) {
         return {
           success: true,
-          message: `تم التحقق من المفتاح والوصول إلى بيانات النموذج ${model}. هذا الفحص لا يولد نصوصًا ولا يستهلك حصة توليد المحتوى.`,
+          message: `تم التحقق من المفتاح والوصول إلى بيانات النموذج ${model}. هذا الفحص لا يولد نصوصاً ولا يستهلك حصة توليد المحتوى.`,
         };
       }
 
@@ -169,7 +169,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
 
       const errorText = `${data?.error?.status || ''} ${apiMessage}`;
       if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/i.test(errorText)) {
-        return { success: false, message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغى (${status}). أنشئ مفتاحًا جديدًا.` };
+        return { success: false, message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغى (${status}). أنشئ مفتاحاً جديداً.` };
       }
 
       // Try the next configured model if this model is unavailable or access is restricted.
@@ -283,7 +283,7 @@ export function getKeysStatus() {
 
 /** Add guidance to let the model choose answer length based on the legal task, without a fixed word count. */
 function withAdaptiveAnswerLength(ai: any): any {
-  const instruction = 'اختر طول الإجابة وفقًا لطبيعة الطلب وتعقيده؛ لا تلتزم بعدد كلمات ثابت ولا تختصر لمجرد الاختصار. قدم إجابة قانونية مكتملة ومفصلة بالقدر اللازم، مع الوقائع والتحليل والأسانيد والخطوات العملية عند الحاجة. تجنب التكرار والحشو، ولا تختلق نصوهاً أو أحكاماً أو وقائع غير متحقق منها، وصرح بما يحتاج إلى تحقق. إذا طلب المستخدم الإيجاز صراحةً، التزم بطلبه.';
+  const instruction = 'اختر طول الإجابة وفقاً لطبيعة الطلب وتعقيده؛ لا تلتزم بعدد كلمات ثابت ولا تختصر لمجرد الاختصار. قدم إجابة قانونية مكتملة ومفصلة بالقدر اللازم، مع الوقائع والتحليل والأسانيد والخطوات العملية عند الحاجة. تجنب التكرار والحشو، ولا تختلق نصوصاً أو أحكاماً أو وقائع غير متحقق منها، وصرح بما يحتاج إلى تحقق. إذا طلب المستخدم الإيجاز صراحةً، التزم بطلبه.';
   const adaptOptions = (options: any) => {
     const { skipAdaptiveAnswerLength, ...apiOptions } = options || {};
     // OCR must preserve its literal-extraction prompt without unrelated legal-drafting instructions.
@@ -323,23 +323,44 @@ export async function executeWithKeyRotation<T>(
   _forceGeminiFallback = false,
   executionOptions?: KeyRotationExecutionOptions
 ): Promise<T> {
-  if (executionOptions?.ocrMode && !executionOptions.deadlineAt) {
-    // api/index.ts allows up to 300 seconds on Vercel. Reserve 60 seconds for
-    // request parsing, key loading, and returning the OCR result to the client.
-    executionOptions = { ...executionOptions, deadlineAt: Date.now() + 240000 };
+  if (!executionOptions?.deadlineAt) {
+    // Bound standalone requests too. OCR keeps its existing shorter deadline;
+    // other requests retain nearly all of Vercel's five-minute execution window.
+    executionOptions = { ...executionOptions, deadlineAt: Date.now() + (executionOptions?.ocrMode ? 240000 : 270000) };
   }
+  const deadlineAt = Number(executionOptions.deadlineAt);
+  const timeoutError = () => Object.assign(
+    new Error('انتهت المهلة المتاحة لتوليد النتيجة قبل اكتمالها. احتُفظ بالنص الجزئي إن وُجد.'),
+    { status: 504, statusCode: 504 },
+  );
   // OpenRouter is primary unless explicitly forced to use the Gemini fallback.
   if (!_forceGeminiFallback) {
     // Generic AI tasks keep their configured model rotation. OCR uses only the router first,
     // then tries Gemini on any failure instead of spending 4 sequential waits on free models.
     const models = executionOptions?.ocrMode ? ['openrouter/free'] : getOpenRouterModels();
     let lastError: any = null;
+    // Keep silent provider retries within a shared budget, preserving time for
+    // the server-side Gemini fallback rather than waiting once per model.
+    const openRouterDeadlineAt = Math.min(deadlineAt - 90000, Date.now() + 120000);
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
     }
     for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
+      const remainingMs = deadlineAt - Date.now();
+      const providerBudgetMs = openRouterDeadlineAt - Date.now();
+      if (remainingMs < 10000 || providerBudgetMs < 10000) {
+        if (remainingMs < 10000) lastError = timeoutError();
+        break;
+      }
+      const attemptTimeoutMs = Math.min(60000, remainingMs, providerBudgetMs);
       try {
-        return await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient()) as unknown as GoogleGenAI, 'openrouter', model);
+        const result = await action(
+          withAdaptiveAnswerLength(createOpenRouterCompatibleClient(attemptTimeoutMs, deadlineAt)) as unknown as GoogleGenAI,
+          'openrouter',
+          model,
+        );
+        if (Date.now() >= deadlineAt) throw timeoutError();
+        return result;
       } catch (error: any) {
         lastError = error;
         const status = Number(error?.status || error?.statusCode);
@@ -355,6 +376,7 @@ export async function executeWithKeyRotation<T>(
       }
     }
     if (executionOptions?.ocrMode || shouldFallbackFromOpenRouter(lastError)) {
+      if (deadlineAt - Date.now() < 10000) throw timeoutError();
       const providerMessage = String(lastError?.message || 'تعذر الاتصال عبر OpenRouter.').slice(0, 220);
       console.warn(executionOptions?.ocrMode
         ? 'OCR OpenRouter attempt failed; switching to bounded server-side Gemini fallback.'
@@ -365,18 +387,20 @@ export async function executeWithKeyRotation<T>(
       });
     }
     const status = Number(lastError?.status || lastError?.statusCode);
-    if (status === 402 || status === 429) throw new Error('تعذر الاتصال بنماذج OpenRouter المتاحة بسبب حدود الاستخدام أو نفاذ الرصيد أو الحصة. راجع الرصيد أو جرب لاحقًا، وتأكد من إعداد مفتاح Gemini الاحتياطي إن كنت تستخدمه.');
+    if (status === 402 || status === 429) throw new Error('تعذر الاتصال بنماذج OpenRouter المتاحة بسبب حدود الاستخدام أو نفاذ الرصيد أو الحصة. راجع الرصيد أو جرب لاحقاً، وتأكد من إعداد مفتاح Gemini الاحتياطي إن كنت تستخدمه.');
     throw lastError || new Error('تعذر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
   // Gemini fallback credentials are read server-side from Vercel environment variables
   // and the existing admin-managed Supabase key store.
+  const remainingBeforeKeyLoad = deadlineAt - Date.now();
+  if (remainingBeforeKeyLoad < 10000) throw timeoutError();
   let availableKeys: string[];
   try {
-    availableKeys = await getAvailableGeminiKeys(executionOptions?.ocrMode ? 8000 : undefined);
+    availableKeys = await getAvailableGeminiKeys(Math.min(8000, remainingBeforeKeyLoad - 2000));
   } catch (keyLoadError: any) {
     if (executionOptions?.ocrMode && executionOptions.previousProviderError) {
-      throw new Error(`فشل مسار OpenRouter أولًا (${executionOptions.previousProviderError})، وتعذر تحميل مفاتيح Gemini الاحتياطية من الخادم: ${String(keyLoadError?.message || 'حدث خطأ في الاتصال بالخادم المركزي').slice(0, 180)}`);
+      throw new Error(`فشل مسار OpenRouter أولاً (${executionOptions.previousProviderError})، وتعذر تحميل مفاتيح Gemini الاحتياطية من الخادم: ${String(keyLoadError?.message || 'حدث خطأ في الاتصال بالخادم المركزي').slice(0, 180)}`);
     }
     throw keyLoadError;
   }
@@ -403,23 +427,21 @@ export async function executeWithKeyRotation<T>(
       const currentKey = keys[currentKeyIndex];
 
       for (let m = 0; m < preferredModels.length; m++) {
-        const remainingMs = executionOptions?.ocrMode
-          ? Number(executionOptions.deadlineAt) - Date.now()
-          : undefined;
-        // The SDK requires a configured timeout of at least 10 seconds. Do not
-        // start another OCR attempt if the request has less than that remaining.
-        if (executionOptions?.ocrMode && (remainingMs === undefined || remainingMs < 10000)) {
+        const remainingMs = deadlineAt - Date.now();
+        // Stop starting attempts when there is no longer time to finish and
+        // persist a terminal result. OCR still uses its existing 30-second cap.
+        if (remainingMs < 10000) {
+          lastError = timeoutError();
           break geminiKeyLoop;
         }
         const model = preferredModels[m];
-        // Give vision OCR more time than the former 18-second limit, while never
-        // extending an individual attempt beyond the remaining request deadline.
-        const attemptTimeoutMs = executionOptions?.ocrMode && remainingMs !== undefined
+        const attemptTimeoutMs = executionOptions?.ocrMode
           ? Math.min(30000, remainingMs)
-          : undefined;
+          : remainingMs;
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, attemptTimeoutMs));
         try {
           const result = await action(ai, currentKey, model);
+          if (Date.now() >= deadlineAt) throw timeoutError();
           activeKeyIndex = currentKeyIndex;
           return result;
         } catch (err: any) {
@@ -455,37 +477,77 @@ export async function executeWithKeyRotation<T>(
       await new Promise((r) => setTimeout(r, 300));
     }
   }
+  if (Date.now() >= deadlineAt || String(lastError?.message || '').includes('انتهت المهلة المتاحة')) {
+    throw lastError || timeoutError();
+  }
   const finalKind = getGeminiErrorKind(lastError);
   if (executionOptions?.ocrMode && executionOptions.previousProviderError) {
     if (finalKind === 'quota') throw new Error('فشل استخراج النص عبر OpenRouter ثم تعذر استخدام Gemini بسبب بلوغ حدود الاستخدام. تحقق من الحصة المتاحة ثم أعد المحاولة.');
     if (finalKind === 'temporary') throw new Error('فشل استخراج النص عبر OpenRouter ثم انتهت المهلة أو تعذر الاتصال بـ Gemini. جرب صورة واحدة، وإذا تكرر الخطأ فراجع سجل /api/ocr على الخادم.');
-    throw new Error(`فشل استخراج النص: تعطل OpenRouter (${executionOptions.previousProviderError}) ثم تعذر Gemini (${String(lastError?.message || 'لم ترجع الخدمة نتيجة صالحة').slice(0, 180)}).`);
+    throw new Error(`فشل استخراج النص: تعطيل OpenRouter (${executionOptions.previousProviderError}) ثم تعذر Gemini (${String(lastError?.message || 'لم ترجع الخدمة نتيجة صالحة').slice(0, 180)}).`);
   }
-  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحًا متاحًا.');
-  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولّة مؤقتًا أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
+  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
+  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولّة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
   if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
 
-export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false ): Promise<void> {
+export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false, executionOptions?: KeyRotationExecutionOptions ): Promise<void> {
+  // api/index.ts sets a five-minute Vercel limit. Stop at 4:30 to leave 30 seconds
+  // for error handling and persisting the terminal job state.
+  if (!executionOptions?.deadlineAt) {
+    executionOptions = { ...executionOptions, deadlineAt: Date.now() + 270000 };
+  }
+  const deadlineAt = Number(executionOptions.deadlineAt);
+  const timeoutError = () => Object.assign(
+    new Error('انتهت المهلة المتاحة لتوليد المستند قبل اكتماله. احتُفظ بالنص الجزئي إن وُجد.'),
+    { status: 504, statusCode: 504 },
+  );
+
   if (!_forceGeminiFallback) {
     const models = getOpenRouterModels();
     let lastError: any = null;
+    // Limit silent OpenRouter/model retries as a group so the Gemini fallback
+    // still has useful time available before Vercel's hard function deadline.
+    const openRouterFirstTextDeadlineAt = Math.min(deadlineAt - 90000, Date.now() + 105000);
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
     }
     for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
       let emitted = false;
+      const remainingMs = deadlineAt - Date.now();
+      const firstTextBudgetMs = openRouterFirstTextDeadlineAt - Date.now();
+      if (remainingMs < 10000 || firstTextBudgetMs < 10000) {
+        if (remainingMs < 10000) lastError = timeoutError();
+        break;
+      }
+      // Bound the initial wait and total silent retries; once output starts,
+      // the adapter allows up to 90 seconds between actual text chunks.
+      const attemptTimeoutMs = Math.min(35000, remainingMs, firstTextBudgetMs);
       try {
-        const stream = await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient()) as unknown as GoogleGenAI, 'openrouter', model);
+        const stream = await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient(attemptTimeoutMs, deadlineAt)) as unknown as GoogleGenAI, 'openrouter', model);
         for await (const chunk of stream) {
+          if (Date.now() >= deadlineAt) throw timeoutError();
           const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
           if (chunkText) { emitted = true; onChunk(chunkText); }
+        }
+        if (!emitted) {
+          const emptyStreamError: any = new Error(`OpenRouter model ${model} انتهى دون إرجاع أول جزء من النص.`);
+          emptyStreamError.status = 503;
+          emptyStreamError.statusCode = 503;
+          throw emptyStreamError;
         }
         return;
       } catch (error: any) {
         lastError = error;
+        console.error('[OpenRouter stream] provider attempt failed', {
+          model,
+          emittedText: emitted,
+          status: Number(error?.status || error?.statusCode || error?.response?.status) || undefined,
+          code: typeof error?.code === 'string' ? error.code : undefined,
+          message: String(error?.message || 'Unknown OpenRouter stream error').slice(0, 300),
+        });
         // Never restart on another model after visible output, as that duplicates or corrupts legal text.
         if (emitted) throw error;
         const status = Number(error?.status || error?.statusCode);
@@ -501,15 +563,19 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     }
     if (shouldFallbackFromOpenRouter(lastError)) {
       console.warn('OpenRouter free route unavailable before stream output; retrying through server-side Gemini fallback.');
-      return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true);
+      if (deadlineAt - Date.now() < 10000) throw timeoutError();
+      return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
     }
+    if (deadlineAt - Date.now() < 10000 || Number(lastError?.status || lastError?.statusCode) === 504) throw lastError || timeoutError();
     const status = Number(lastError?.status || lastError?.statusCode);
-    if (status === 402 || status === 429) throw new Error('تعذر الاتصال بنماذج OpenRouter المتاحة بسبب حدود الاستخدام أو نفاذ الرصيد أو الحصة. راجع الرصيد أو جرب لاحقًا، وتأكد من إعداد مفتاح Gemini الاحتياطي إن كنت تستخدمه.');
+    if (status === 402 || status === 429) throw new Error('تعذر الاتصال بنماذج OpenRouter المتاحة بسبب حدود الاستخدام أو نفاذ الرصيد أو الحصة. راجع الرصيد أو جرب لاحقاً، وتأكد من إعداد مفتاح Gemini الاحتياطي إن كنت تستخدمه.');
     throw lastError || new Error('تعذر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
   // Preserve the legacy function signature for compatibility, but never use a client-provided key.
   // Streaming fallback also uses server-side environment and admin-managed keys.
-  const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
+  const remainingBeforeKeyLoad = deadlineAt - Date.now();
+  if (remainingBeforeKeyLoad < 10000) throw timeoutError();
+  const keys = (await getAvailableGeminiKeys(Math.min(8000, remainingBeforeKeyLoad - 2000))).filter((key) => !permanentlyInvalidKeys.has(key));
 
   if (keys.length === 0) {
     throw new Error('لم يتم العثور على مفتاح Gemini صالح في متغيرات البيئة أو لوحة إدارة المفاتيح.');
@@ -525,16 +591,22 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
     const startIdx = activeKeyIndex;
 
-    for (let offset = 0; offset < keys.length; offset++) {
+    geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey));
 
       for (let m = 0; m < preferredModels.length; m++) {
+        const remainingMs = deadlineAt - Date.now();
+        if (remainingMs < 10000) {
+          lastError = timeoutError();
+          break geminiKeyLoop;
+        }
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, remainingMs));
         let emittedAnyChunk = false;
         try {
           const stream = await action(ai, currentKey, preferredModels[m]);
           for await (const chunk of stream) {
+            if (Date.now() >= deadlineAt) throw timeoutError();
             const text = typeof chunk?.text === 'string' ? chunk.text : '';
             if (text) {
               emittedAnyChunk = true;
@@ -586,9 +658,10 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     }
   }
 
+  if (Date.now() >= deadlineAt || Number(lastError?.status || lastError?.statusCode) === 504) throw lastError || timeoutError();
   const finalKind = getGeminiErrorKind(lastError);
-  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحًا متاحًا.');
-  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولّة مؤقتًا أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
+  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
+  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولّة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
   if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
