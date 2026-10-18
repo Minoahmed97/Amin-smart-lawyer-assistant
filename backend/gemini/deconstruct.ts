@@ -1,11 +1,12 @@
-import { generateDeepLegalResponse } from './counter-brief';
+Import { generateDeepLegalResponse } from './counter-brief.ts';
+
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
-
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
+
 
   try {
     let body = req.body;
@@ -49,6 +50,9 @@ export default async function handler(req: any, res: any) {
       res.setHeader('X-Accel-Buffering', 'no');
       res.flushHeaders?.();
 
+      // Keep the Vercel stream alive while Gemini prepares its first token.
+      // Without this, a slow first token can surface in the browser as
+      // "Failed to fetch" even though the backend is still working.
       res.write(JSON.stringify({ type: 'start' }) + '\n');
       const heartbeat = setInterval(() => {
         if (!res.writableEnded) {
@@ -64,6 +68,8 @@ export default async function handler(req: any, res: any) {
         }
       };
       try {
+        // Forward actual model chunks as they arrive. The generator keeps
+        // handling continuation internally while the client sees live output.
         await generateDeepLegalResponse(prompt, writeChunk);
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
