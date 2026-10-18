@@ -64,6 +64,10 @@ function buildPayload(options: any, model: string, stream: boolean) {
         : 16384,
     )),
     stream,
+    ...(process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true' && Array.isArray(config.tools) && config.tools.some((tool: any) => tool?.googleSearch) ? {
+      tools: [{ type: 'openrouter:web_search', parameters: { engine: 'auto', max_results: 5, max_total_results: 10, max_uses: 2 } }],
+      max_tool_calls: 3,
+    } : {}),
   };
 }
 
