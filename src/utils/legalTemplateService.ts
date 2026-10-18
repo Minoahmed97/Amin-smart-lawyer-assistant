@@ -40,7 +40,7 @@ export function classifyLegalDocument(fileName: string, text: string): Pick<Lega
   const has = (...terms: string[]) => terms.some((term) => sample.includes(term.toLowerCase()));
 
   let courtType = 'غير مصنف';
-  if (has('مجلس الدولة', 'محكمة القضاء الإداري', 'المحكمة الإدارية العليا', 'هيئة مفوضي الدولة', 'قضاء إداري')) {
+  if (has('مجلس الدولة', 'محكمة القضاء الإداري', 'المحكمة الإدارية العليا', 'الإدارية العليا', 'هيئة مفوضي الدولة', 'قضاء إداري')) {
     courtType = 'مجلس الدولة';
   } else if (has('محكمة النقض', 'محكمة الاستئناف', 'محكمة الأسرة', 'المحكمة الابتدائية', 'المحكمة الجزئية', 'القضاء العادي')) {
     courtType = 'القضاء العادي';
@@ -52,7 +52,7 @@ export function classifyLegalDocument(fileName: string, text: string): Pick<Lega
   else if (has('انضباط', 'مجلس تأديب', 'جزاء تأديبي')) workType = 'انضباط / تأديب';
   else if (has('إعلان على يد محضر', 'إعلان رسمي', 'إنذار رسمي')) workType = 'إعلان / إنذار';
   else if (has('صحيفة دعوى', 'المدعي', 'المدعى عليه')) workType = 'صحيفة دعوى';
-  else if (has('مذكرة بدفاع', 'مذكرة دفاع', 'الطلبات الختامية')) workType = 'مذكرة بدفاع';
+  else if (has('مذكرة بدفاع', 'مذكرة دفاع', 'مذكرة مدني', 'مذكرة مدنية', 'مذكرة جنح', 'مذكرة جنائي', 'الطلبات الختامية')) workType = 'مذكرة بدفاع';
 
   let category = courtType;
   if (workType.includes('طعن') || workType === 'استئناف') category = workType;
@@ -158,6 +158,11 @@ export function chooseBestLegalDocTemplate(
     const title = normalize(template.title);
     if (court && courtValue !== 'غير مصنف' && (courtValue.includes(court) || court.includes(courtValue))) score += 50;
     if (useWorkSignal && (workValue.includes(work) || work.includes(workValue) || category.includes(work) || title.includes(work))) score += 35;
+    const memoRequest = /مذكر|دفاع/.test(work);
+    if (memoRequest && /مذكر|دفاع/.test(`${workValue} ${category} ${title} ${normalize(template.fileName)}`)) score += 30;
+    if (/مدن/.test(work) && /مدن/.test(`${workValue} ${category} ${title} ${normalize(template.fileName)}`)) score += 15;
+    if (/تأديب|انضباط/.test(work) && /تأديب|انضباط/.test(`${workValue} ${category} ${title} ${normalize(template.fileName)}`)) score += 25;
+    if (/إدارية عليا/.test(work) && /إدارية عليا|مجلس الدولة/.test(`${workValue} ${category} ${title} ${normalize(template.fileName)}`)) score += 25;
     if (tokens.size) {
       for (const token of tokens) if (title.includes(token)) score += 1;
     }
