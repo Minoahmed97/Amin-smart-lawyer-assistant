@@ -193,7 +193,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     } catch (err: any) {
       console.warn('Deconstruct error:', err);
       setDeconstructError(err?.message || 'تعذر استكمال تفكيك المذكرة.');
-    } fontally {
+    } finally {
       setIsLoading(false);
     }
   };
@@ -282,7 +282,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   const shareResult = async () => {
     const shareText = displayedContent();
     if (!shareText) return;
-    await shareLegalDoc(shareText, 'تقرير تفنيد والرد على المستندات', () => {
+    await shareLegalDoc(shareText, 'تقرير التفنيد والرد على المستندات', () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
