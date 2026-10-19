@@ -66,30 +66,11 @@ export default async function handler(req: any, res: any) {
         answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
       }
     }
-    // If the first response was chat-only despite an explicit edit request, make one
-    // focused recovery attempt that asks for the complete revised result.
-    if (requestsEdit && !updatedResult) {
-      try {
-        const recoveryPrompt = `نفّذ طلب المحامي التالي على النتيجة الحالية، وأعد النص الكامل النهائي المعدل فقط دون مقدمة أو شرح أو JSON. حافظ على كل جزء لم يطلب تغييره، ولا تخترع وقائع أو أسماء أو تواريخ. إذا كان الطلب لا يغيّر المستند فعلياً، أعد النتيجة الحالية كما هي.\n\n[المهمة] ${taskLabel}\n[طلب المحامي] ${latestUserMessage}\n[النتيجة الحالية كاملة]\n${result}`;
-        const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
-        let recoveredResult = recoveredRaw.replace(/^```(?:text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
-        try {
-          const start = recoveredResult.indexOf('{');
-          const end = recoveredResult.lastIndexOf('}');
-          if (start >= 0 && end > start) {
-            const parsedRecovery = JSON.parse(recoveredResult.slice(start, end + 1));
-            if (typeof parsedRecovery?.updatedResult === 'string' && parsedRecovery.updatedResult.trim()) recoveredResult = parsedRecovery.updatedResult.trim();
-            else if (typeof parsedRecovery?.result === 'string' && parsedRecovery.result.trim()) recoveredResult = parsedRecovery.result.trim();
-          }
-        } catch {}
-        const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
-        if (recoveredResult.length >= minimumDocumentLength) {
-          updatedResult = recoveredResult;
-          answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
-        }
-      } catch (recoveryError: any) {
-        console.warn('Legal chat result-update recovery failed:', recoveryError?.message || 'unknown error');
-      }
+    // Do not make a second model call to recover a failed document update.
+    // A second long request can cause the client fetch to time out. If the model
+    // did not return a usable update, report that clearly and let the user retry.
+    if (requestsEdit && !updatedResult && !answer.trim()) {
+      answer = 'لم أتمكن من تطبيق التعديل على النتيجة هذه المرة. لم تتغير النتيجة الأصلية؛ أعد إرسال طلب التعديل من فضلك.';
     }
     if (!answer.trim()) {
       const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة. لم يتم إرسال رد؛ انتظر مهلة الاستخدام ثم أعد المحاولة.');
