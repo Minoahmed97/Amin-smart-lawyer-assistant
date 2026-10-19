@@ -21,15 +21,26 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
     await enforceAiCooldown(req);
     const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
-    const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
-    // Detect explicit requests to modify the document, so a plain-text model response
-    // cannot be mistaken for a successful chat-only answer.
-    const requestsEdit = /(?:احذف|حذف|امسح|شيل|أضف|اضف|ضيف|إضافة|اضافة|عدّل|عدل|تعديل|غيّر|غير|استبدل|بدّل|بدل|أعد صياغ|اعد صياغ|أعد كتابة|اعد كتابة|صحّح|صحح|صححلي|اختصر|وسّع|وسع|رتّب|رتب|ضع|أدرج|ادرج|اكتب|اجعل|خلّي|خلي|خلّيها|خليها|أخلي|اخلي|خليلي|حط|حطه|حطها|انقل|قدّم|قدم|أخّر|اخر|أدخل|ادخل|remove|delete|add|rewrite|replace|edit|change|insert|move|update)\s*/i.test(latestUserMessage);
+    // Let the model classify intent semantically from context, not fixed keywords.
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
-    const prompt = `أنت أمين، مساعد قانوني مصري. هذه متابعة لمهمة ${taskLabel} أُنجزت بالفعل. أعد JSON صالحاً فقط بالشكل التالي: {\"reply\":\"رد موجز للمحامي\",\"updatedResult\":null}. إذا كان آخر طلب من المحامي مجرد سؤال أو طلب شرح أو مناقشة، اجعل updatedResult = null وأجب في reply. أما إذا طلب بوضوح تعديل النتيجة نفسها أو حذف/إضافة/استبدال فقرة أو إعادة صياغة أو تنفيذ ملاحظة داخل المستند، فيجب أن تنشئ النسخة الكاملة النهائية المعدلة من النتيجة في updatedResult، لا تضع تعليمات التعديل فقط، واجعل reply يؤكد باختصار أن النتيجة تم تحديثها. لا تضع المستند المعدل في reply؛ يجب أن يكون النص الكامل المعدل في updatedResult وحده. حافظ على الأجزاء التي لم يطلب تعديلها، ولا تغيّر الوقائع أو الأسماء أو التواريخ ولا تخترعها، واستخدم الوقائع الجديدة التي يقدمها المحامي فقط عند ملاءمتها. إذا طلب تعديل جزء محدد، لا تختصر المستند كله ولا تستبدله بملخص. لا تعرض سلسلة التفكير الداخلية.\n\n[سياق القضية الأصلي]\n${String(originalContext || '').slice(0, 100000)}\n\n[النتيجة الحالية التي يجب تعديلها عند الطلب]\n${result}\n\n[سجل المحادثة بالترتيب]\n${history}\n\nاكتب JSON فقط مع المفتاحين reply و updatedResult. updatedResult إما null أو النص الكامل للنتيجة المعدلة.`;
+    const prompt = `أنت أمين، مساعد قانوني مصري، وتعمل داخل محرر مستند قانوني. هذه متابعة لمهمة ${taskLabel} أُنجزت بالفعل. افهم مقصد المحامي من المعنى والسياق الكامل، لا من كلمات مفتاحية محفوظة. المحامي قد يكتب بالعامية المصرية أو بالفصحى أو بإملاء غير رسمي أو بطلب غير مباشر؛ تعامل مع جميع الصيغ باعتبارها طبيعية، واستنتج هل يريد مناقشة المستند أم تغيير المستند نفسه. أمثلة توضيحية وليست قائمة حصرية: «خلّي التاريخ يوم كذا»، «أنا عايزه يبقى كذا»، «الجلسة اتأجلت وبقت يوم كذا»، «بدّل اللي فوق»، «ممكن تصلح التاريخ؟» كلها قد تعني طلب تعديل إذا كان السياق يدل على ذلك. لا تعتمد على تطابق ألفاظ بعينها.
+
+أعد JSON صالحاً فقط بهذه المفاتيح الثلاثة: {\"intent\":\"edit|discussion|clarify\",\"reply\":\"رد موجز للمحامي\",\"updatedResult\":null}. إذا كان مقصد المحامي تغيير المستند أو تحديث واقعة فيه، فاختر intent = edit وأنشئ النص الكامل النهائي للمستند بعد تطبيق التغيير في updatedResult. لا تكتفِ بتأكيد أو شرح التغيير، ولا تضع المستند المعدل في reply. إذا كان سؤالاً أو طلب شرح دون طلب تغيير المستند، فاختر intent = discussion واجعل updatedResult = null. إذا لم تستطع تحديد التغيير المطلوب بأمان، فاختر intent = clarify واسأل سؤالاً محدداً ولا تدّعِ تنفيذ التعديل. لا تقل أبداً إن التعديل تم إذا لم تُرجع النسخة الكاملة المعدلة في updatedResult. حافظ على كل الأجزاء التي لم يطلب المحامي تعديلها، ولا تختصر المستند أو تحوله إلى ملخص. غيّر فقط ما يقتضيه الطلب، ولا تخترع أسماء أو وقائع أو تواريخ أو بيانات ناقصة. إذا قال المحامي إن واقعة تغيرت (مثل تأجيل الجلسة)، فطبّق التغيير على الموضع المناسب في المستند مع الحفاظ على بقية النص. لا تعرض سلسلة التفكير الداخلية.
+
+[سياق القضية الأصلي]
+${String(originalContext || '').slice(0, 100000)}
+
+[النتيجة الحالية التي يجب تعديلها عند الطلب]
+${result}
+
+[سجل المحادثة بالترتيب]
+${history}
+
+اكتب JSON فقط، واملأ intent و reply و updatedResult بدقة. updatedResult إما null أو النص الكامل للمستند بعد التعديل.`;
     const rawAnswer = await generateDeepLegalResponse(prompt);
     let answer = '';
     let updatedResult: string | null = null;
+    let intent: 'edit' | 'discussion' | 'clarify' | '' = '';
     try {
       const trimmedAnswer = rawAnswer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
       const jsonStart = trimmedAnswer.indexOf('{');
@@ -38,6 +49,7 @@ export default async function handler(req: any, res: any) {
       const parsed = JSON.parse(cleaned);
       answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
+      intent = ['edit', 'discussion', 'clarify'].includes(parsed?.intent) ? parsed.intent : '';
     } catch {
       // Models may return JSON with extra prose, code fences, or imperfect escaping.
       // Recover the reply field when possible instead of converting a usable response
@@ -55,35 +67,33 @@ export default async function handler(req: any, res: any) {
         } catch {}
       }
       if (!answer && !updatedResult) {
-        const looksLikeJsonEnvelope = /["'](?:reply|updatedResult)["']\s*:/i.test(plainAnswer) || /^\s*```json/i.test(rawAnswer || '');
+        const looksLikeJsonEnvelope = /[\"'](?:reply|updatedResult|intent)[\"']\s*:/i.test(plainAnswer) || /^\s*```json/i.test(rawAnswer || '');
         if (!looksLikeJsonEnvelope && plainAnswer) answer = plainAnswer;
-        else if (requestsEdit) answer = 'لم أتمكن من تأكيد تطبيق التعديل هذه المرة؛ لم تتغير النتيجة الأصلية. أعد إرسال طلب التعديل من فضلك.';
-        else answer = 'وصل رد غير مكتمل من خدمة الذكاء الاصطناعي. أعد إرسال السؤال من فضلك.';
-      }
-      if (requestsEdit && !updatedResult && answer && answer.length >= Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)))) {
-        updatedResult = answer;
-        answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
+        else answer = 'لم أتمكن من قراءة رد الذكاء الاصطناعي بصورة موثوقة. لم تتغير النتيجة الأصلية؛ أعد إرسال طلبك من فضلك.';
       }
     }
-    // If JSON is valid but the model mistakenly placed the full revised document in
-    // reply instead of updatedResult, recover it only when it is document-sized.
-    if (requestsEdit && !updatedResult && answer.trim()) {
-      const possibleDocument = answer.trim();
-      const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
-      if (possibleDocument.length >= minimumDocumentLength) {
-        updatedResult = possibleDocument;
-        answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
+    // A returned document is the source of truth: apply it regardless of which
+    // natural-language wording the user used. Never infer success from reply text.
+    if (updatedResult && updatedResult.trim()) {
+      updatedResult = updatedResult.trim();
+      if (updatedResult === result.trim()) {
+        updatedResult = null;
+        if (!answer.trim() || /تم\s+(?:تحديث|تعديل|تغيير|إضافة|حذف|استبدال)/i.test(answer)) {
+          answer = 'لم ينتج عن الطلب تغيير فعلي في المستند، لذلك لم أعتبره تعديلاً منفذاً. وضّح الجزء الذي تريد تغييره من فضلك.';
+        }
+      } else if (intent === 'edit' || !intent) {
+        if (!answer.trim() || /تم\s+(?:تحديث|تعديل|تغيير|إضافة|حذف|استبدال)/i.test(answer)) {
+          answer = 'تم تطبيق التعديل على النتيجة الأصلية المعروضة بالأعلى.';
+        }
       }
     }
-    // Do not make a second model call to recover a failed document update.
-    // A second long request can cause the client fetch to time out. If the model
-    // did not return a usable update, report that clearly and let the user retry.
-    if (requestsEdit && !updatedResult && !answer.trim()) {
-      answer = 'لم أتمكن من تطبيق التعديل على النتيجة هذه المرة. لم تتغير النتيجة الأصلية؛ أعد إرسال طلب التعديل من فضلك.';
+    // Model intent is semantic, not keyword-based. If it identified an edit but
+    // failed to return a revised document, never falsely report success.
+    if (intent === 'edit' && !updatedResult) {
+      answer = 'فهمت أنك تريد تعديل المستند، لكن لم أتمكن من إنشاء نسخة معدّلة موثوقة هذه المرة. لم تتغير النتيجة الأصلية؛ أعد إرسال طلبك أو حدّد الجزء المطلوب.';
     }
-    // Never claim an edit succeeded unless the server has an actual updated document.
-    if (requestsEdit && !updatedResult && /تم\s+(?:تحديث|تعديل|إضافة|حذف|استبدال)|تم تحديث النتيجة/i.test(answer)) {
-      answer = 'لم أتمكن من تأكيد تطبيق التعديل على المذكرة؛ لم تتغير النتيجة الأصلية. أعد صياغة طلب التعديل بوضوح ثم أرسله مرة أخرى.';
+    if (!updatedResult && /تم\s+(?:تحديث|تعديل|تغيير|إضافة|حذف|استبدال)|تم تطبيق التعديل/i.test(answer)) {
+      answer = 'لم أتمكن من تأكيد تطبيق التعديل على المستند، لذلك لم تتغير النتيجة الأصلية. وضّح طلبك أو أعد إرساله من فضلك.';
     }
     if (!answer.trim()) {
       const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة. لم يتم إرسال رد؛ انتظر مهلة الاستخدام ثم أعد المحاولة.');
