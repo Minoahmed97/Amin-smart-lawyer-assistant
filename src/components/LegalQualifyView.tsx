@@ -581,7 +581,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
           </div>
         </div>
       </div>
-      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={getActiveLawyerUserId()} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} />}
+      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={getActiveLawyerUserId()} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} onResultChange={(nextResult) => { setQualificationResult(nextResult); persistentStorage.setItem('judicial_qualify_result', nextResult); }} />}
     </div>
   );
 };
