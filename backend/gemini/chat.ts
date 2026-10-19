@@ -21,8 +21,12 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
     await enforceAiCooldown(req);
     const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
+    const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
+    // Detect explicit requests to modify the document, so a plain-text model response
+    // cannot be mistaken for a successful chat-only answer.
+    const requestsEdit = /(?:احذف|حذف|امسح|شيل|أضف|اضف|ضيف|إضافة|اضافة|عدّل|عدل|تعديل|غيّر|غير|استبدل|بدّل|بدل|أعد صياغ|اعد صياغ|أعد كتابة|اعد كتابة|صحّح|صحح|صححلي|اختصر|وسّع|وسع|رتّب|رتب|ضع|أدرج|ادرج|اكتب|اجعل|حط|حطه|حطها|انقل|قدّم|قدم|أخّر|اخر|أدخل|ادخل|remove|delete|add|rewrite|replace|edit|change|insert|move|update)\s*/i.test(latestUserMessage);
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
-    const prompt = `أنت أمين، مساعد قانوني مصري. هذه متابعة لمهمة ${taskLabel} أُنجزت بالفعل. أعد JSON صالحاً فقط بالشكل التالي: {\"reply\":\"رد موجز للمحامي\",\"updatedResult\":null}. إذا كان آخر طلب من المحامي مجرد سؤال أو طلب شرح أو مناقشة، اجعل updatedResult = null وأجب في reply. أما إذا طلب بوضوح تعديل النتيجة نفسها أو حذف/إضافة/استبدال فقرة أو إعادة صياغة أو تنفيذ ملاحظة داخل المستند، فيجب أن تنشئ النسخة الكاملة النهائية المعدلة من النتيجة في updatedResult، لا تضع تعليمات التعديل فقط، واجعل reply يؤكد باختصار أن النتيجة تم تحديثها. حافظ على الأجزاء التي لم يطلب تعديلها، ولا تغيّر الوقائع أو الأسماء أو التواريخ ولا تخترعها، واستخدم الوقائع الجديدة التي يقدمها المحامي فقط عند ملاءمتها. إذا طلب تعديل جزء محدد، لا تختصر المستند كله ولا تستبدله بملخص. لا تعرض سلسلة التفكير الداخلية.\n\n[سياق القضية الأصلي]\n${String(originalContext || '').slice(0, 100000)}\n\n[النتيجة الحالية التي يجب تعديلها عند الطلب]\n${result}\n\n[سجل المحادثة بالترتيب]\n${history}\n\nاكتب JSON فقط مع المفتاحين reply و updatedResult. updatedResult إما null أو النص الكامل للنتيجة المعدلة.`;
+    const prompt = `أنت أمين، مساعد قانوني مصري. هذه متابعة لمهمة ${taskLabel} أُنجزت بالفعل. أعد JSON صالحاً فقط بالشكل التالي: {\"reply\":\"رد موجز للمحامي\",\"updatedResult\":null}. إذا كان آخر طلب من المحامي مجرد سؤال أو طلب شرح أو مناقشة، اجعل updatedResult = null وأجب في reply. أما إذا طلب بوضوح تعديل النتيجة نفسها أو حذف/إضافة/استبدال فقرة أو إعادة صياغة أو تنفيذ ملاحظة داخل المستند، فيجب أن تنشئ النسخة الكاملة النهائية المعدلة من النتيجة في updatedResult، لا تضع تعليمات التعديل فقط، واجعل reply يؤكد باختصار أن النتيجة تم تحديثها. لا تضع المستند المعدل في reply؛ يجب أن يكون النص الكامل المعدل في updatedResult وحده. حافظ على الأجزاء التي لم يطلب تعديلها، ولا تغيّر الوقائع أو الأسماء أو التواريخ ولا تخترعها، واستخدم الوقائع الجديدة التي يقدمها المحامي فقط عند ملاءمتها. إذا طلب تعديل جزء محدد، لا تختصر المستند كله ولا تستبدله بملخص. لا تعرض سلسلة التفكير الداخلية.\n\n[سياق القضية الأصلي]\n${String(originalContext || '').slice(0, 100000)}\n\n[النتيجة الحالية التي يجب تعديلها عند الطلب]\n${result}\n\n[سجل المحادثة بالترتيب]\n${history}\n\nاكتب JSON فقط مع المفتاحين reply و updatedResult. updatedResult إما null أو النص الكامل للنتيجة المعدلة.`;
     const rawAnswer = await generateDeepLegalResponse(prompt);
     let answer = '';
     let updatedResult: string | null = null;
@@ -35,8 +39,51 @@ export default async function handler(req: any, res: any) {
       answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
     } catch {
-      // Graceful fallback if the model returns ordinary text instead of the requested JSON.
-      answer = rawAnswer.trim();
+      // Some model responses ignore the JSON contract. For an explicit edit request,
+      // treat a sufficiently document-sized plain-text response as the updated document.
+      const plainAnswer = rawAnswer.trim().replace(/^```(?:text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
+      const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
+      if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
+        updatedResult = plainAnswer;
+        answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
+      } else {
+        answer = plainAnswer;
+      }
+    }
+    // If JSON is valid but the model mistakenly placed the full revised document in
+    // reply instead of updatedResult, recover it only when it is document-sized.
+    if (requestsEdit && !updatedResult && answer.trim()) {
+      const possibleDocument = answer.trim();
+      const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
+      if (possibleDocument.length >= minimumDocumentLength) {
+        updatedResult = possibleDocument;
+        answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
+      }
+    }
+    // If the first response was chat-only despite an explicit edit request, make one
+    // focused recovery attempt that asks for the complete revised result.
+    if (requestsEdit && !updatedResult) {
+      try {
+        const recoveryPrompt = `نفّذ طلب المحامي التالي على النتيجة الحالية، وأعد النص الكامل النهائي المعدل فقط دون مقدمة أو شرح أو JSON. حافظ على كل جزء لم يطلب تغييره، ولا تخترع وقائع أو أسماء أو تواريخ. إذا كان الطلب لا يغيّر المستند فعلياً، أعد النتيجة الحالية كما هي.\n\n[المهمة] ${taskLabel}\n[طلب المحامي] ${latestUserMessage}\n[النتيجة الحالية كاملة]\n${result}`;
+        const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
+        let recoveredResult = recoveredRaw.replace(/^```(?:text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
+        try {
+          const start = recoveredResult.indexOf('{');
+          const end = recoveredResult.lastIndexOf('}');
+          if (start >= 0 && end > start) {
+            const parsedRecovery = JSON.parse(recoveredResult.slice(start, end + 1));
+            if (typeof parsedRecovery?.updatedResult === 'string' && parsedRecovery.updatedResult.trim()) recoveredResult = parsedRecovery.updatedResult.trim();
+            else if (typeof parsedRecovery?.result === 'string' && parsedRecovery.result.trim()) recoveredResult = parsedRecovery.result.trim();
+          }
+        } catch {}
+        const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
+        if (recoveredResult.length >= minimumDocumentLength) {
+          updatedResult = recoveredResult;
+          answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
+        }
+      } catch (recoveryError: any) {
+        console.warn('Legal chat result-update recovery failed:', recoveryError?.message || 'unknown error');
+      }
     }
     if (!answer.trim()) {
       const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة. لم يتم إرسال رد؛ انتظر مهلة الاستخدام ثم أعد المحاولة.');
