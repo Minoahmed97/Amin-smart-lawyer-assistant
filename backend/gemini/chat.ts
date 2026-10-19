@@ -39,21 +39,30 @@ export default async function handler(req: any, res: any) {
       answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
     } catch {
-      // If the model returned a broken JSON envelope, never mistake that technical
-      // wrapper for the legal document. Leave the answer empty so the plain-text
-      // recovery request below can return only the final document or a clean reply.
-      const plainAnswer = rawAnswer.trim().replace(/^```(?:text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
-      const looksLikeJsonEnvelope = /["'](?:reply|updatedResult)["']\s*:/i.test(plainAnswer) || /^\s*```json/i.test(rawAnswer);
-      if (looksLikeJsonEnvelope) {
-        answer = '';
-      } else {
-        const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
-        if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
-          updatedResult = plainAnswer;
-          answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
-        } else {
-          answer = plainAnswer;
-        }
+      // Models may return JSON with extra prose, code fences, or imperfect escaping.
+      // Recover the reply field when possible instead of converting a usable response
+      // into an empty answer and an artificial 503.
+      const plainAnswer = String(rawAnswer || '').trim().replace(/^```(?:json|text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
+      const replyMatch = plainAnswer.match(/["']reply["']\s*:\s*("(?:\\.|[^"\\])*")/i);
+      const updateMatch = plainAnswer.match(/["']updatedResult["']\s*:\s*("(?:\\.|[^"\\])*")/i);
+      if (replyMatch) {
+        try { answer = String(JSON.parse(replyMatch[1]) || '').trim(); } catch { answer = ''; }
+      }
+      if (updateMatch) {
+        try {
+          const recoveredUpdate = String(JSON.parse(updateMatch[1]) || '').trim();
+          if (recoveredUpdate) updatedResult = recoveredUpdate;
+        } catch {}
+      }
+      if (!answer && !updatedResult) {
+        const looksLikeJsonEnvelope = /["'](?:reply|updatedResult)["']\s*:/i.test(plainAnswer) || /^\s*```json/i.test(rawAnswer || '');
+        if (!looksLikeJsonEnvelope && plainAnswer) answer = plainAnswer;
+        else if (requestsEdit) answer = 'لم أتمكن من تأكيد تطبيق التعديل هذه المرة؛ لم تتغير النتيجة الأصلية. أعد إرسال طلب التعديل من فضلك.';
+        else answer = 'وصل رد غير مكتمل من خدمة الذكاء الاصطناعي. أعد إرسال السؤال من فضلك.';
+      }
+      if (requestsEdit && !updatedResult && answer && answer.length >= Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)))) {
+        updatedResult = answer;
+        answer = 'تم تحديث النتيجة الأصلية في المربع الموجود بالأعلى.';
       }
     }
     // If JSON is valid but the model mistakenly placed the full revised document in
