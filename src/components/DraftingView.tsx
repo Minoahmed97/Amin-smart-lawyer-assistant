@@ -37,6 +37,7 @@ import { exportLegalDocToWord } from '../utils/exportHelper.ts';
 import { getLegalDocTemplates, LegalDocTemplate } from '../utils/legalTemplateService.ts';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
+import { LegalFollowupChat } from './LegalFollowupChat.tsx';
 
 interface DraftingViewProps {
   initialFormData?: Partial<DraftingFormData>;
@@ -1057,6 +1058,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           </div>
         </div>
       </div>
+      {generatedBrief && <LegalFollowupChat taskType="draft" userId={userId} originalContext={JSON.stringify(formData)} result={generatedBrief} onResultChange={(nextResult) => { setGeneratedBrief(nextResult); persistentStorage.setItem('amin_judicial_draft_result', nextResult); }} />}
     </div>
   );
 };
