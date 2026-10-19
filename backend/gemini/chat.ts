@@ -31,21 +31,18 @@ export default async function handler(req: any, res: any) {
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
 
     const prompt = `أنت أمين، مساعد قانوني مصري. هذه متابعة لمهمة ${taskLabel}.
-المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات أو نصوص قبل/بعد JSON، بصيغة:
+المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة:
 {"reply":"رسالة قصيرة للمحامي","updatedResult":null}
 
-تعليمات صارمة للتعديل:
-1. إذا طلب المحامي تعديل عنصر محدد (مثل تغيير تاريخ الجلسة، أو تعديل رقم، أو إضافة كود/فقرة):
-   - قم بإنشاء النسخة المعدلة كاملة وضعها في "updatedResult".
-   - حذارِ من كتابة أي كلام شارح، أو إضافة عبارات مثل "تم تحديث النتيجة" أو صياغات JSON داخل النص في "updatedResult".
-   - حافظ على كل النص الأصلي حرفياً كما هو، وغير فقط العنصر المحدد المطلوبة تعديله. لا تُعد كتابة الترويسة أو البيانات الأخرى بصيغ جديدة.
-   - ضع في "reply" تأكيداً موجزاً جداً مثل: "تم تعديل التاريخ بنجاح."
-2. إذا كان الطلب مجرد استفسار أو شرح، اجعل "updatedResult": null وأجب في "reply".
+تعليمات الهيكلة والتنسيق الصارمة:
+1. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً داخل النص.
+2. عند التعديل، أعد المستند كاملاً داخل "updatedResult" دون كتابة أي كلام شارح أو أجزاء من JSON في داخله.
+3. حافظ على كل النصوص كما هي وغير فقط ما طلبه المحامي (مثل التاريخ أو الرقم).
 
 [سياق القضية الأصلي]
 ${String(originalContext || '').slice(0, 100000)}
 
-[النتيجة الحالية التي يجب تعديلها عند الطلب]
+[النتيجة الحالية]
 ${result}
 
 [سجل المحادثة]
@@ -57,14 +54,18 @@ ${history}
     let answer = '';
     let updatedResult: string | null = null;
 
-    // دالة لتنظيف النص من أجزاء الـ JSON المتسربة بالخطأ
-    const cleanRawDocument = (text: string) => {
+    // دالة خاصة بتنظيف النصوص القانونية ومعالجة رموز الأسطر الملتصقة n\
+    const sanitizeLegalText = (text: string) => {
+      if (!text) return '';
       return text
         .replace(/^```(?:json|text|markdown)?\s*/i, '')
         .replace(/\s*```$/, '')
         .replace(/^\{\s*"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
         .replace(/^"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
         .replace(/\"\}\s*$/, '')
+        // تحويل رموز n\ و \n النصية المفتعلة إلى أسطر حقيقية
+        .replace(/(?:\\n|n\\)+/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
         .trim();
     };
 
@@ -78,7 +79,7 @@ ${history}
       answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
     } catch {
-      const plainAnswer = cleanRawDocument(rawAnswer);
+      const plainAnswer = sanitizeLegalText(rawAnswer);
       const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
       if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
         updatedResult = plainAnswer;
@@ -88,21 +89,24 @@ ${history}
       }
     }
 
-    // تنظيف updatedResult من أي زوائد في حال وجود تسريب نصي من JSON
+    // تطبيق التنظيف على النتيجة المعدلة وعلى الرد
     if (updatedResult) {
-      updatedResult = cleanRawDocument(updatedResult);
+      updatedResult = sanitizeLegalText(updatedResult);
+    }
+    if (answer) {
+      answer = sanitizeLegalText(answer);
     }
 
     if (requestsEdit && !updatedResult) {
       try {
-        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي فقط. أعد النص الكامل النهائي المعدل فقط بدون أي شرح، وبدون JSON، وبدون مقدمات. حافظ على كل الأجزاء الأخرى كما هي تماماً.
+        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي فقط. أعد النص الكامل النهائي المعدل فقط. لا تكتب رموز "n\\" أو "\\n" كأحرف نصية بل استخدم الأسطر الحقيقية.
 
 [طلب المحامي] ${latestUserMessage}
 [النتيجة الحالية]
 ${result}`;
 
         const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
-        let recoveredResult = cleanRawDocument(recoveredRaw);
+        let recoveredResult = sanitizeLegalText(recoveredRaw);
         
         const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
         if (recoveredResult.length >= minimumDocumentLength) {
