@@ -8,7 +8,7 @@ export default async function handler(req: any, res: any) {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch {} }
     const { taskType, originalContext, result, messages } = body || {};
-    if (!['deconstruct', 'qualify'].includes(taskType)) return res.status(400).json({ error: 'نوع المهمة غير صالح للدردشة القانونية.' });
+    if (!['deconstruct', 'qualify', 'draft'].includes(taskType)) return res.status(400).json({ error: 'نوع المهمة غير صالح للدردشة القانونية.' });
     if (typeof result !== 'string' || !result.trim()) return res.status(400).json({ error: 'لا توجد نتيجة أصلية لمناقشتها.' });
     if (!Array.isArray(messages) || !messages.length || messages.length > 40) return res.status(400).json({ error: 'سجل المحادثة غير صالح.' });
     limitBodyString(originalContext, 100000, 'سياق القضية');
@@ -21,15 +21,30 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
     await enforceAiCooldown(req);
     const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
-    const prompt = `أنت أمين، مساعد قانوني مصري. هذه متابعة لمهمة ${taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : 'تكييف قانوني ونزاع'} أُنجزت بالفعل. أجب عن آخر سؤال مع الحفاظ على الاتساق مع السياق والنتيجة الأصلية وسجل الحوار. يجوز إدماج الوقائع الجديدة التي يذكرها المحامي، لكن ميّزها عن الوقائع السابقة ولا تخترع أسماء أو تواريخ أو نصوصاً أو أحكاماً. إذا طلب المستخدم تفسيراً فاشرحه بوضوح، وإذا طلب تعديل الاستنتاج فأعد تقييمه وفق المعطيات ولا تتمسك به لمجرد أنه ورد في النتيجة السابقة. لا تعرض سلسلة التفكير الداخلية؛ قدم الأسباب القانونية المفيدة والنتيجة العملية فقط.\n\n[سياق القضية الأصلي]\n${String(originalContext || '').slice(0, 100000)}\n\n[النتيجة الأصلية]\n${result}\n\n[سجل المحادثة بالترتيب]\n${history}\n\nأجب عن آخر رسالة من المحامي مباشرة وبالعربية القانونية الواضحة.`;
-    const answer = await generateDeepLegalResponse(prompt);
+    const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
+    const prompt = `أنت أمين، مساعد قانوني مصري. هذه متابعة لمهمة ${taskLabel} أُنجزت بالفعل. أعد JSON صالحاً فقط بالشكل التالي: {\"reply\":\"رد موجز للمحامي\",\"updatedResult\":null}. إذا كان آخر طلب من المحامي مجرد سؤال أو طلب شرح أو مناقشة، اجعل updatedResult = null وأجب في reply. أما إذا طلب بوضوح تعديل النتيجة نفسها أو حذف/إضافة/استبدال فقرة أو إعادة صياغة أو تنفيذ ملاحظة داخل المستند، فيجب أن تنشئ النسخة الكاملة النهائية المعدلة من النتيجة في updatedResult، لا تضع تعليمات التعديل فقط، واجعل reply يؤكد باختصار أن النتيجة تم تحديثها. حافظ على الأجزاء التي لم يطلب تعديلها، ولا تغيّر الوقائع أو الأسماء أو التواريخ ولا تخترعها، واستخدم الوقائع الجديدة التي يقدمها المحامي فقط عند ملاءمتها. إذا طلب تعديل جزء محدد، لا تختصر المستند كله ولا تستبدله بملخص. لا تعرض سلسلة التفكير الداخلية.\n\n[سياق القضية الأصلي]\n${String(originalContext || '').slice(0, 100000)}\n\n[النتيجة الحالية التي يجب تعديلها عند الطلب]\n${result}\n\n[سجل المحادثة بالترتيب]\n${history}\n\nاكتب JSON فقط مع المفتاحين reply و updatedResult. updatedResult إما null أو النص الكامل للنتيجة المعدلة.`;
+    const rawAnswer = await generateDeepLegalResponse(prompt);
+    let answer = '';
+    let updatedResult: string | null = null;
+    try {
+      const trimmedAnswer = rawAnswer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+      const jsonStart = trimmedAnswer.indexOf('{');
+      const jsonEnd = trimmedAnswer.lastIndexOf('}');
+      const cleaned = jsonStart >= 0 && jsonEnd > jsonStart ? trimmedAnswer.slice(jsonStart, jsonEnd + 1) : trimmedAnswer;
+      const parsed = JSON.parse(cleaned);
+      answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
+      updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
+    } catch {
+      // Graceful fallback if the model returns ordinary text instead of the requested JSON.
+      answer = rawAnswer.trim();
+    }
     if (!answer.trim()) {
       const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة. لم يتم إرسال رد؛ انتظر مهلة الاستخدام ثم أعد المحاولة.');
       err.statusCode = 503;
       throw err;
     }
     const usage = await consumeOperation(req, 'gemini-operation');
-    return res.status(200).json({ result: answer, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
+    return res.status(200).json({ result: answer, updatedResult, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
     console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
     const code = Number(err?.statusCode || err?.status);
