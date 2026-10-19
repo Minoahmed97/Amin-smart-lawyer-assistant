@@ -23,77 +23,104 @@ export default async function handler(req: any, res: any) {
     const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
     // Let the model classify intent semantically from context, not fixed keywords.
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
-    const prompt = `أنت أمين، مساعد قانوني مصري، وتعمل داخل محرر مستند قانوني. هذه متابعة لمهمة ${taskLabel} أُنجزت بالفعل. افهم مقصد المحامي من المعنى والسياق الكامل، لا من كلمات مفتاحية محفوظة. المحامي قد يكتب بالعامية المصرية أو بالفصحى أو بإملاء غير رسمي أو بطلب غير مباشر؛ تعامل مع جميع الصيغ باعتبارها طبيعية، واستنتج هل يريد مناقشة المستند أم تغيير المستند نفسه. أمثلة توضيحية وليست قائمة حصرية: «خلّي التاريخ يوم كذا»، «أنا عايزه يبقى كذا»، «الجلسة اتأجلت وبقت يوم كذا»، «بدّل اللي فوق»، «ممكن تصلح التاريخ؟» كلها قد تعني طلب تعديل إذا كان السياق يدل على ذلك. لا تعتمد على تطابق ألفاظ بعينها.
+    // Delimited plain-text sections are more reliable than asking the model to
+    // JSON-escape an entire long legal document. JSON parsing remains as a fallback.
+    const prompt = `أنت أمين، مساعد قانوني مصري تعمل داخل محرر مستند قانوني لمهمة ${taskLabel}. افهم مقصد المحامي من المعنى والسياق الكامل، لا من قائمة كلمات أو تطابق حرفي. قد يكتب بالعامية المصرية أو الفصحى أو بإملاء غير رسمي أو بصياغة غير مباشرة. استنتج من الرسالة الأخيرة وسجل الحوار هل يريد مناقشة المستند أم تغيير المستند نفسه.
 
-أعد JSON صالحاً فقط بهذه المفاتيح الثلاثة: {\"intent\":\"edit|discussion|clarify\",\"reply\":\"رد موجز للمحامي\",\"updatedResult\":null}. إذا كان مقصد المحامي تغيير المستند أو تحديث واقعة فيه، فاختر intent = edit وأنشئ النص الكامل النهائي للمستند بعد تطبيق التغيير في updatedResult. لا تكتفِ بتأكيد أو شرح التغيير، ولا تضع المستند المعدل في reply. إذا كان سؤالاً أو طلب شرح دون طلب تغيير المستند، فاختر intent = discussion واجعل updatedResult = null. إذا لم تستطع تحديد التغيير المطلوب بأمان، فاختر intent = clarify واسأل سؤالاً محدداً ولا تدّعِ تنفيذ التعديل. لا تقل أبداً إن التعديل تم إذا لم تُرجع النسخة الكاملة المعدلة في updatedResult. حافظ على كل الأجزاء التي لم يطلب المحامي تعديلها، ولا تختصر المستند أو تحوله إلى ملخص. غيّر فقط ما يقتضيه الطلب، ولا تخترع أسماء أو وقائع أو تواريخ أو بيانات ناقصة. إذا قال المحامي إن واقعة تغيرت (مثل تأجيل الجلسة)، فطبّق التغيير على الموضع المناسب في المستند مع الحفاظ على بقية النص. لا تعرض سلسلة التفكير الداخلية.
+إذا كان مقصد المحامي أن يتغير المستند أو تتغير واقعة أو فقرة فيه، فصنّف النية edit وطبّق التغيير على النص الكامل الحالي، حتى لو صيغ الطلب كتحديث معلومة أو إخبار بتغير واقعة. أعد المستند الكامل بعد التعديل، لا ملخصاً ولا وصفاً لما ستفعله. حافظ على كل ما لم يطلب تغييره، ولا تخترع أسماء أو وقائع أو تواريخ أو بيانات. إذا كان المقصود سؤالاً أو شرحاً فقط، فصنّفه discussion ولا تغيّر المستند. إذا كان التعديل المقصود غير واضح فعلاً أو يحتمل أكثر من معنى مؤثر، فصنّفه clarify واسأل سؤالاً واحداً محدداً. لا تقل إن التعديل تم إلا إذا أعدت المستند الكامل المعدّل.
+
+أخرج الأقسام التالية حرفياً وبالترتيب. قيمة النية يجب أن تكون كلمة إنجليزية واحدة فقط من هذه القيم الثلاث: edit أو discussion أو clarify. لا تكتب الخيارات الثلاثة معاً، ولا تكتب كلمة «أو» في خانة النية. أمثلة: عند طلب تعديل اكتب edit فقط؛ عند الاستفسار اكتب discussion فقط؛ وعند غموض جوهري اكتب clarify فقط. لا تستخدم JSON ولا تضف شرحاً خارج الأقسام. لا تضع علامات الأقسام داخل نص المستند نفسه:
+[[AMIN_INTENT_START]]
+edit
+[[AMIN_INTENT_END]]
+[[AMIN_REPLY_START]]
+رد موجز للمحامي. عند نجاح التعديل، اكتب تأكيداً قصيراً فقط؛ لا تضع نص المستند هنا.
+[[AMIN_REPLY_END]]
+[[AMIN_UPDATED_RESULT_START]]
+عند edit: النص الكامل النهائي للمستند بعد التعديل. عند discussion أو clarify: اكتب null فقط.
+[[AMIN_UPDATED_RESULT_END]]
 
 [سياق القضية الأصلي]
 ${String(originalContext || '').slice(0, 100000)}
 
-[النتيجة الحالية التي يجب تعديلها عند الطلب]
+[النص الكامل الحالي للمستند]
 ${result}
 
-[سجل المحادثة بالترتيب]
+[سجل المحادثة بالترتيب؛ الرسالة الأخيرة هي طلب المحامي الحالي]
 ${history}
 
-اكتب JSON فقط، واملأ intent و reply و updatedResult بدقة. updatedResult إما null أو النص الكامل للمستند بعد التعديل.`;
+نفّذ الطلب في ضوء الرسالة الأخيرة والسياق السابق. لا تعتبر مجرد إخطار بتغير واقعة سؤالاً نظرياً إذا كان السياق يدل على أن المطلوب تحديث المستند. لا تغيّر أي بيانات غير مرتبطة بالطلب.`;
     const rawAnswer = await generateDeepLegalResponse(prompt);
     let answer = '';
     let updatedResult: string | null = null;
     let intent: 'edit' | 'discussion' | 'clarify' | '' = '';
-    try {
-      const trimmedAnswer = rawAnswer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-      const jsonStart = trimmedAnswer.indexOf('{');
-      const jsonEnd = trimmedAnswer.lastIndexOf('}');
-      const cleaned = jsonStart >= 0 && jsonEnd > jsonStart ? trimmedAnswer.slice(jsonStart, jsonEnd + 1) : trimmedAnswer;
-      const parsed = JSON.parse(cleaned);
-      answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
-      updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
-      intent = ['edit', 'discussion', 'clarify'].includes(parsed?.intent) ? parsed.intent : '';
-    } catch {
-      // Models may return JSON with extra prose, code fences, or imperfect escaping.
-      // Recover the reply field when possible instead of converting a usable response
-      // into an empty answer and an artificial 503.
-      const plainAnswer = String(rawAnswer || '').trim().replace(/^```(?:json|text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
-      const replyMatch = plainAnswer.match(/["']reply["']\s*:\s*("(?:\\.|[^"\\])*")/i);
-      const updateMatch = plainAnswer.match(/["']updatedResult["']\s*:\s*("(?:\\.|[^"\\])*")/i);
-      if (replyMatch) {
-        try { answer = String(JSON.parse(replyMatch[1]) || '').trim(); } catch { answer = ''; }
-      }
-      if (updateMatch) {
-        try {
-          const recoveredUpdate = String(JSON.parse(updateMatch[1]) || '').trim();
-          if (recoveredUpdate) updatedResult = recoveredUpdate;
-        } catch {}
-      }
-      if (!answer && !updatedResult) {
-        const looksLikeJsonEnvelope = /[\"'](?:reply|updatedResult|intent)[\"']\s*:/i.test(plainAnswer) || /^\s*```json/i.test(rawAnswer || '');
-        if (!looksLikeJsonEnvelope && plainAnswer) answer = plainAnswer;
-        else answer = 'لم أتمكن من قراءة رد الذكاء الاصطناعي بصورة موثوقة. لم تتغير النتيجة الأصلية؛ أعد إرسال طلبك من فضلك.';
+
+    // Preferred format: resilient section markers keep the long legal text out of
+    // JSON string escaping, so Arabic text and paragraphs can be recovered intact.
+    const taggedIntent = rawAnswer.match(/\[\[AMIN_INTENT_START\]\]\s*(edit|discussion|clarify)\s*\[\[AMIN_INTENT_END\]\]/i);
+    const taggedReply = rawAnswer.match(/\[\[AMIN_REPLY_START\]\]([\s\S]*?)\[\[AMIN_REPLY_END\]\]/i);
+    const taggedResult = rawAnswer.match(/\[\[AMIN_UPDATED_RESULT_START\]\]([\s\S]*?)\[\[AMIN_UPDATED_RESULT_END\]\]/i);
+
+    if (taggedIntent && taggedReply && taggedResult) {
+      intent = taggedIntent[1].toLowerCase() as 'edit' | 'discussion' | 'clarify';
+      answer = taggedReply[1].trim();
+      const documentText = taggedResult[1].trim();
+      updatedResult = documentText && documentText.toLowerCase() !== 'null' ? documentText : null;
+    } else {
+      // Backward-compatible fallback if the model returns JSON instead of markers.
+      try {
+        const trimmedAnswer = rawAnswer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+        const jsonStart = trimmedAnswer.indexOf('{');
+        const jsonEnd = trimmedAnswer.lastIndexOf('}');
+        const cleaned = jsonStart >= 0 && jsonEnd > jsonStart ? trimmedAnswer.slice(jsonStart, jsonEnd + 1) : trimmedAnswer;
+        const parsed = JSON.parse(cleaned);
+        answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
+        updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
+        intent = ['edit', 'discussion', 'clarify'].includes(parsed?.intent) ? parsed.intent : '';
+      } catch {
+        // Try to recover explicit JSON string fields if a provider broke JSON escaping.
+        const plainAnswer = String(rawAnswer || '').trim().replace(/^```(?:json|text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
+        const replyMatch = plainAnswer.match(/["']reply["']\s*:\s*("(?:\\.|[^"\\])*")/i);
+        const updateMatch = plainAnswer.match(/["']updatedResult["']\s*:\s*("(?:\\.|[^"\\])*")/i);
+        const intentMatch = plainAnswer.match(/["']intent["']\s*:\s*["'](edit|discussion|clarify)["']/i);
+        if (intentMatch) intent = intentMatch[1].toLowerCase() as 'edit' | 'discussion' | 'clarify';
+        if (replyMatch) {
+          try { answer = String(JSON.parse(replyMatch[1]) || '').trim(); } catch { answer = ''; }
+        }
+        if (updateMatch) {
+          try {
+            const recoveredUpdate = String(JSON.parse(updateMatch[1]) || '').trim();
+            if (recoveredUpdate) updatedResult = recoveredUpdate;
+          } catch {}
+        }
+        if (!answer && !updatedResult) {
+          const looksStructured = /["'](?:reply|updatedResult|intent)["']\s*:/i.test(plainAnswer) || /^\s*```json/i.test(rawAnswer || '');
+          if (!looksStructured && plainAnswer) answer = plainAnswer;
+          else answer = 'لم أتمكن من قراءة الرد بصورة موثوقة. لم تتغير النتيجة الأصلية؛ أعد إرسال طلبك من فضلك.';
+        }
       }
     }
-    // A returned document is the source of truth: apply it regardless of which
-    // natural-language wording the user used. Never infer success from reply text.
+    // Never apply a document if the model classified the turn as discussion/clarification.
+    if (intent && intent !== 'edit') updatedResult = null;
+
+    // A returned full document is the only evidence that an edit was actually produced.
     if (updatedResult && updatedResult.trim()) {
       updatedResult = updatedResult.trim();
       if (updatedResult === result.trim()) {
         updatedResult = null;
-        if (!answer.trim() || /تم\s+(?:تحديث|تعديل|تغيير|إضافة|حذف|استبدال)/i.test(answer)) {
-          answer = 'لم ينتج عن الطلب تغيير فعلي في المستند، لذلك لم أعتبره تعديلاً منفذاً. وضّح الجزء الذي تريد تغييره من فضلك.';
-        }
-      } else if (intent === 'edit' || !intent) {
-        if (!answer.trim() || /تم\s+(?:تحديث|تعديل|تغيير|إضافة|حذف|استبدال)/i.test(answer)) {
-          answer = 'تم تطبيق التعديل على النتيجة الأصلية المعروضة بالأعلى.';
-        }
+        answer = 'لم ينتج عن الطلب تغيير فعلي في نص المستند، لذلك لم أعتبره تعديلاً منفذاً. حدّد التغيير المطلوب أو وضّح البيانات الجديدة.';
+      } else {
+        // Normalize the assistant text so the UI never relies on a free-form claim.
+        answer = 'تم تطبيق التعديل على النتيجة الأصلية المعروضة بالأعلى.';
       }
     }
-    // Model intent is semantic, not keyword-based. If it identified an edit but
-    // failed to return a revised document, never falsely report success.
+
+    // A semantic edit request without a complete new document is not success.
     if (intent === 'edit' && !updatedResult) {
-      answer = 'فهمت أنك تريد تعديل المستند، لكن لم أتمكن من إنشاء نسخة معدّلة موثوقة هذه المرة. لم تتغير النتيجة الأصلية؛ أعد إرسال طلبك أو حدّد الجزء المطلوب.';
+      answer = 'فهمت أنك تريد تعديل المستند، لكن لم تصلني نسخة كاملة موثوقة بعد التعديل. لم تتغير النتيجة الأصلية؛ أعد إرسال الطلب مرة أخرى من فضلك.';
     }
     if (!updatedResult && /تم\s+(?:تحديث|تعديل|تغيير|إضافة|حذف|استبدال)|تم تطبيق التعديل/i.test(answer)) {
-      answer = 'لم أتمكن من تأكيد تطبيق التعديل على المستند، لذلك لم تتغير النتيجة الأصلية. وضّح طلبك أو أعد إرساله من فضلك.';
+      answer = 'لم أتمكن من تأكيد تطبيق التعديل على المستند، لذلك لم تتغير النتيجة الأصلية. أعد إرسال الطلب أو وضّح المطلوب من فضلك.';
     }
     if (!answer.trim()) {
       const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة. لم يتم إرسال رد؛ انتظر مهلة الاستخدام ثم أعد المحاولة.');
