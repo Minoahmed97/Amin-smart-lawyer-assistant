@@ -24,7 +24,7 @@ export default async function handler(req: any, res: any) {
     const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
     // Detect explicit requests to modify the document, so a plain-text model response
     // cannot be mistaken for a successful chat-only answer.
-    const requestsEdit = /(?:احذف|حذف|امسح|شيل|أضف|اضف|ضيف|إضافة|اضافة|عدّل|عدل|تعديل|غيّر|غير|استبدل|بدّل|بدل|أعد صياغ|اعد صياغ|أعد كتابة|اعد كتابة|صحّح|صحح|صححلي|اختصر|وسّع|وسع|رتّب|رتب|ضع|أدرج|ادرج|اكتب|اجعل|حط|حطه|حطها|انقل|قدّم|قدم|أخّر|اخر|أدخل|ادخل|remove|delete|add|rewrite|replace|edit|change|insert|move|update)\s*/i.test(latestUserMessage);
+    const requestsEdit = /(?:احذف|حذف|امسح|شيل|أضف|اضف|ضيف|إضافة|اضافة|عدّل|عدل|تعديل|غيّر|غير|استبدل|بدّل|بدل|أعد صياغ|اعد صياغ|أعد كتابة|اعد كتابة|صحّح|صحح|صححلي|اختصر|وسّع|وسع|رتّب|رتب|ضع|أدرج|ادرج|اكتب|اجعل|خلّي|خلي|خلّيها|خليها|أخلي|اخلي|خليلي|حط|حطه|حطها|انقل|قدّم|قدم|أخّر|اخر|أدخل|ادخل|remove|delete|add|rewrite|replace|edit|change|insert|move|update)\s*/i.test(latestUserMessage);
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
     const prompt = `أنت أمين، مساعد قانوني مصري. هذه متابعة لمهمة ${taskLabel} أُنجزت بالفعل. أعد JSON صالحاً فقط بالشكل التالي: {\"reply\":\"رد موجز للمحامي\",\"updatedResult\":null}. إذا كان آخر طلب من المحامي مجرد سؤال أو طلب شرح أو مناقشة، اجعل updatedResult = null وأجب في reply. أما إذا طلب بوضوح تعديل النتيجة نفسها أو حذف/إضافة/استبدال فقرة أو إعادة صياغة أو تنفيذ ملاحظة داخل المستند، فيجب أن تنشئ النسخة الكاملة النهائية المعدلة من النتيجة في updatedResult، لا تضع تعليمات التعديل فقط، واجعل reply يؤكد باختصار أن النتيجة تم تحديثها. لا تضع المستند المعدل في reply؛ يجب أن يكون النص الكامل المعدل في updatedResult وحده. حافظ على الأجزاء التي لم يطلب تعديلها، ولا تغيّر الوقائع أو الأسماء أو التواريخ ولا تخترعها، واستخدم الوقائع الجديدة التي يقدمها المحامي فقط عند ملاءمتها. إذا طلب تعديل جزء محدد، لا تختصر المستند كله ولا تستبدله بملخص. لا تعرض سلسلة التفكير الداخلية.\n\n[سياق القضية الأصلي]\n${String(originalContext || '').slice(0, 100000)}\n\n[النتيجة الحالية التي يجب تعديلها عند الطلب]\n${result}\n\n[سجل المحادثة بالترتيب]\n${history}\n\nاكتب JSON فقط مع المفتاحين reply و updatedResult. updatedResult إما null أو النص الكامل للنتيجة المعدلة.`;
     const rawAnswer = await generateDeepLegalResponse(prompt);
@@ -80,6 +80,10 @@ export default async function handler(req: any, res: any) {
     // did not return a usable update, report that clearly and let the user retry.
     if (requestsEdit && !updatedResult && !answer.trim()) {
       answer = 'لم أتمكن من تطبيق التعديل على النتيجة هذه المرة. لم تتغير النتيجة الأصلية؛ أعد إرسال طلب التعديل من فضلك.';
+    }
+    // Never claim an edit succeeded unless the server has an actual updated document.
+    if (requestsEdit && !updatedResult && /تم\s+(?:تحديث|تعديل|إضافة|حذف|استبدال)|تم تحديث النتيجة/i.test(answer)) {
+      answer = 'لم أتمكن من تأكيد تطبيق التعديل على المذكرة؛ لم تتغير النتيجة الأصلية. أعد صياغة طلب التعديل بوضوح ثم أرسله مرة أخرى.';
     }
     if (!answer.trim()) {
       const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة. لم يتم إرسال رد؛ انتظر مهلة الاستخدام ثم أعد المحاولة.');
