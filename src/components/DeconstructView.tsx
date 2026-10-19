@@ -310,7 +310,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-300 mt-1">
-                الصق المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيقوم المساعد بتفنيد محتواه واستخراج نقاط الضعف وإعداد الرد القانوني المناسب.
+                الصح المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيقوم المساعد بتفنيد محتواه واستخراج نقاط ضعف وإعداد الرد القانوني المناسب.
               </p>
             </div>
           </div>
@@ -540,7 +540,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     تقرير التفكيك والمذكرة المقابلة
                   </h3>
                   <span className="text-[11px] text-slate-400">
-                    إستراتيجية الدفاع والمذكرة الجوابية الكاملة
+                    إستراتيجية الدفاع والمذكرة الجوابية الكامله
                   </span>
                 </div>
               </div>
@@ -558,10 +558,10 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                    title="تصديق بصيغة وورد (.doc)"
+                    title="تصدير بصيغة وورد (.doc)"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصديق وورد (.doc)</span>
+                    <span>تصدير وورد (.doc)</span>
                   </button>
                   <button
                     onClick={handlePrint}
@@ -793,10 +793,10 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                   <button
                     onClick={exportToWord}
                     className="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer"
-                    title="تصديق وورد"
+                    title="تصدير وورد"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>تصديق وورد</span>
+                    <span>تصدير وورد</span>
                   </button>
                   <button
                     onClick={handlePrint}
@@ -812,7 +812,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
           </div>
         </div>
       </div>
-      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisResult} />}
+      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisResult} onResultChange={(nextResult) => { setAnalysisResult(nextResult); persistentStorage.setItem('judicial_deconstruct_result', nextResult); }} />}
     </div>
   );
 };
