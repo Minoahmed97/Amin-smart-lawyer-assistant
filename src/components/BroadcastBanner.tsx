@@ -74,34 +74,34 @@ export const BroadcastBanner: React.FC<BroadcastBannerProps> = ({ onOpenSubscrib
 
   return (
     <div
-      className={`mx-3 sm:mx-6 lg:mx-8 my-2.5 p-3 sm:p-3.5 rounded-xl border shadow-lg flex items-center justify-between gap-3 animate-in slide-in-from-top-2 duration-300 ${getTypeStyles()}`}
+      className={`mx-3 sm:mx-6 lg:mx-8 my-2.5 p-3 sm:p-3.5 rounded-xl border shadow-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-in slide-in-from-top-2 duration-300 ${getTypeStyles()}`}
     >
-      <div className="flex items-center gap-2.5 min-w-0">
+      <div className="flex items-start gap-2.5 min-w-0 w-full sm:flex-1">
         <div className="p-1.5 rounded-lg bg-black/20 flex-shrink-0">
           {getIcon()}
         </div>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start sm:items-center gap-x-2 gap-y-1 flex-wrap">
             <span className="font-bold text-xs sm:text-sm text-white">
               {broadcast.title}
             </span>
-            <span className="text-[10px] opacity-75 font-mono">
+            <span className="text-[10px] opacity-75 font-mono whitespace-nowrap">
               ({broadcast.updatedAt})
             </span>
           </div>
-          <p className="text-xs sm:text-xs leading-relaxed opacity-90 truncate sm:whitespace-normal">
+          <p className="mt-1 text-xs leading-relaxed opacity-90 whitespace-normal break-words [overflow-wrap:anywhere]">
             {broadcast.message}
           </p>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="flex items-center justify-between sm:justify-start gap-2 w-full sm:w-auto sm:flex-shrink-0">
         {broadcast.actionText && (
           <button
             onClick={handleActionClick}
-            className="px-3 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white font-bold text-xs border border-white/20 transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap active:scale-95"
+            className="px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white font-bold text-xs border border-white/20 transition-all flex items-center justify-center gap-1 cursor-pointer whitespace-normal text-center active:scale-95"
           >
-            <span>{broadcast.actionText}</span>
+            <span className="break-words">{broadcast.actionText}</span>
             <ArrowLeft className="w-3 h-3" />
           </button>
         )}
