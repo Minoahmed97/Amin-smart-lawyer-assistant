@@ -177,7 +177,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
       if (status === 429) {
         return {
           success: false,
-          message: `رُفض طلب فحص بيانات النموذج بسبب حد طلبات واجهة البرمجة (${status}). لم يتم توليد أي نص ولم تُستهلك حصة توليد المحتوى.`,
+          message: `رفض طلب فحص بيانات النموذج بسبب حد طلبات واجهة البرمجة (${status}). لم يتم توليد أي نص ولم تُستهلك حصة توليد المحتوى.`,
         };
       }
     } catch (err: any) {
@@ -330,7 +330,7 @@ export async function executeWithKeyRotation<T>(
   }
   const deadlineAt = Number(executionOptions.deadlineAt);
   const timeoutError = () => Object.assign(
-    new Error('انتهت المهلة المتاحة لتوليد النتيجة قبل اكتمالها. احتُفظ بالنص الجزئي إن وُجد.'),
+    new Error('انتهت المهلة المتاحة لتوليد النتيجة قبل اكتمالها. احتفظ بالنص الجزئي إن وجد.'),
     { status: 504, statusCode: 504 },
   );
   // OpenRouter is primary unless explicitly forced to use the Gemini fallback.
@@ -436,7 +436,7 @@ export async function executeWithKeyRotation<T>(
         }
         const model = preferredModels[m];
         const attemptTimeoutMs = executionOptions?.ocrMode
-          ? Math.min(30000, remainingMs)
+          ? Math.min(45000, remainingMs)
           : remainingMs;
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, attemptTimeoutMs));
         try {
@@ -477,18 +477,18 @@ export async function executeWithKeyRotation<T>(
       await new Promise((r) => setTimeout(r, 300));
     }
   }
-  if (Date.now() >= deadlineAt || String(lastError?.message || '').includes('انتهت المهلة المتاحة')) {
+  if (Date.now() >= deadlineAt || String(lastError?.message || '').includes('انتهت المهلة')) {
     throw lastError || timeoutError();
   }
   const finalKind = getGeminiErrorKind(lastError);
   if (executionOptions?.ocrMode && executionOptions.previousProviderError) {
     if (finalKind === 'quota') throw new Error('فشل استخراج النص عبر OpenRouter ثم تعذر استخدام Gemini بسبب بلوغ حدود الاستخدام. تحقق من الحصة المتاحة ثم أعد المحاولة.');
-    if (finalKind === 'temporary') throw new Error('فشل استخراج النص عبر OpenRouter ثم انتهت المهلة أو تعذر الاتصال بـ Gemini. جرب صورة واحدة، وإذا تكرر الخطأ فراجع سجل /api/ocr على الخادم.');
-    throw new Error(`فشل استخراج النص: تعطيل OpenRouter (${executionOptions.previousProviderError}) ثم تعذر Gemini (${String(lastError?.message || 'لم ترجع الخدمة نتيجة صالحة').slice(0, 180)}).`);
+    if (finalKind === 'temporary') throw new Error('فشل استخراج النص عبر OpenRouter ثم انتهت مهلة Gemini أو تعذر الاتصال به بعد محاولات التبديل. أعد محاولة رفع المستند، وإذا تكرر الخطأ فرجع سجل /api/ocr على الخادم.');
+    throw new Error(`فشل استخراج النص: تعطل OpenRouter (${executionOptions.previousProviderError}) ثم تعذر Gemini (${String(lastError?.message || 'لم ترجع الخدمة نتيجة صالحة').slice(0, 180)}).`);
   }
   if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
-  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولّة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
-  if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدث المفاتيح من لوحة الإدارة.');
+  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
+  if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
@@ -501,7 +501,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
   const deadlineAt = Number(executionOptions.deadlineAt);
   const timeoutError = () => Object.assign(
-    new Error('انتهت المهلة المتاحة لتوليد المستند قبل اكتماله. احتُفظ بالنص الجزئي إن وُجد.'),
+    new Error('انتهت المهلة المتاحة لتوليد المستند قبل اكتماله. احتفظ بالنص الجزئي إن وجد.'),
     { status: 504, statusCode: 504 },
   );
 
@@ -533,7 +533,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           if (chunkText) { emitted = true; onChunk(chunkText); }
         }
         if (!emitted) {
-          const emptyStreamError: any = new Error(`OpenRouter model ${model} انتهى دون إرجاع أول جزء من النص.`);
+          const emptyStreamError: any = new Error(`OpenRouter model ${model} انتهى بدون إرجاع أول جزء من النص.`);
           emptyStreamError.status = 503;
           emptyStreamError.statusCode = 503;
           throw emptyStreamError;
@@ -661,8 +661,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   if (Date.now() >= deadlineAt || Number(lastError?.status || lastError?.statusCode) === 504) throw lastError || timeoutError();
   const finalKind = getGeminiErrorKind(lastError);
   if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
-  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولّة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
-  if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدث المفاتيح من لوحة الإدارة.');
+  if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
+  if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
