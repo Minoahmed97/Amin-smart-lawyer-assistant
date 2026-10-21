@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { rateLimit, getRegistrationGuardKey } from './security.ts';
+import { rateLimit, getClientIp, getRegistrationGuardKey } from './security.ts';
 
 type Json = Record<string, any>;
 
@@ -82,13 +82,63 @@ export async function requireActiveSession(req: any) {
 }
 
 /**
- * AI cooldown intentionally disabled at the platform level.
- * Keep the active-session/account validation; remove only the 30-second
- * cross-service waiting period. Other account, credit, and endpoint protections
- * remain unchanged.
+ * Additive persistent protection against switching between AI endpoints to
+ * evade aggregate usage limits. Existing per-endpoint rateLimit calls,
+ * session checks, credit checks and operation accounting remain in place.
+ * The configured account bypasses these NEW aggregate limits only.
  */
-export async function enforceAiCooldown(req: any) {
-  const { session } = await requireActiveSession(req);
+async function consumePersistentRateLimit(scope: string, identity: string, limit: number, windowMs: number, req?: any) {
+  const safeScope = String(scope || '').slice(0, 120);
+  const windowSeconds = Math.max(1, Math.ceil(windowMs / 1000));
+  const subjectHash = crypto.createHmac('sha256', sessionSecret()).update(`${safeScope}|${identity}`).digest('hex');
+  const response = await supabase('rpc/consume_platform_rate_limit', {
+    method: 'POST',
+    body: JSON.stringify({
+      p_scope: safeScope,
+      p_subject_hash: subjectHash,
+      p_limit: Math.max(1, Math.floor(limit)),
+      p_window_seconds: windowSeconds,
+    }),
+  });
+
+  if (!response.ok) {
+    const details = await response.text().catch(() => '');
+    // If the migration has not been installed, keep the existing local limiter
+    // rather than blocking all existing service calls during rollout.
+    if (/PGRST202|Could not find the function|schema cache|consume_platform_rate_limit/i.test(details)) {
+      // Existing endpoint/admin rate limits remain active at their original call sites.
+      return;
+    }
+    const error: any = new Error('تعذر التحقق من حدود الاستخدام الآمنة. حاول مرة أخرى لاحقاً.');
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const decision = await response.json();
+  if (decision?.allowed === false) {
+    const retryAfter = Math.max(1, Number(decision?.retryAfter || 1));
+    const error: any = new Error('وصل الحساب إلى حد الاستخدام المؤقت لخدمات الذكاء الاصطناعي. يرجى الانتظار ثم المحاولة مجدداً.');
+    error.statusCode = 429;
+    error.retryAfter = retryAfter;
+    throw error;
+  }
+}
+
+function isAiRateLimitExempt(session: { userId: string }): boolean {
+  const exemptId = (process.env.AI_RATE_LIMIT_EXEMPT_USER_ID || '').trim();
+  return Boolean(exemptId && session.userId === exemptId);
+}
+
+/**
+ * The old 30-second cooldown stays disabled. Existing per-endpoint limits and
+ * all original account/credit checks remain intact; only aggregate limits are added.
+ */
+export async function enforceAiCooldown(req: any, validatedSession?: { userId: string }) {
+  const session = validatedSession || (await requireActiveSession(req)).session;
+  if (!isAiRateLimitExempt(session)) {
+    await consumePersistentRateLimit('ai-global-10m', session.userId, 5, 10 * 60 * 1000, req);
+    await consumePersistentRateLimit('ai-global-24h', session.userId, 50, 24 * 60 * 60 * 1000, req);
+  }
   return { session };
 }
 
@@ -118,11 +168,12 @@ function constantTimeStringEqual(candidate: string, expected: string): boolean {
   return sameHash && candidateBytes.length === expectedBytes.length;
 }
 
-export function loginAdmin(pin: string, req?: any) {
+export async function loginAdmin(pin: string, req?: any) {
   const configured = (process.env.PLATFORM_ADMIN_PIN || '').trim();
   const candidate = typeof pin === 'string' ? pin.trim() : '';
   const valid = Boolean(configured) && constantTimeStringEqual(candidate, configured);
   if (req) {
+    await consumePersistentRateLimit('admin-login', getClientIp(req), 8, 15 * 60 * 1000, req);
     rateLimit(req, 'admin-login', 8, 15 * 60 * 1000, { failure: !valid });
   }
   if (!valid) { const err: any = new Error('رمز المرور الإداري غير صحيح.'); err.statusCode = 401; throw err; }
