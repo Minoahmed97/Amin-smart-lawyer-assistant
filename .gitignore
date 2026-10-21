@@ -1,0 +1,18 @@
+# Environment secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Private key/config files
+.keys_config.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Dependencies and generated build output
+node_modules/
+dist/
+.vercel/
