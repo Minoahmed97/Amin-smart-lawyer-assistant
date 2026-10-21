@@ -128,7 +128,7 @@ export function resolveMimeType(file: File): string {
 /** 
  * استخراج النصوص عبر خادم OCR الموجه من خلال خدمة التدوير الآلي لمفاتيح الذكاء الاصطناعي. 
  */
-export async function extractTextViaServerOCR(base64Data: string, mimeType: string, fileName: string): Promise<string> {
+async function extractTextViaServerOCROnce(base64Data: string, mimeType: string, fileName: string): Promise<string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -219,6 +219,27 @@ export async function extractTextViaServerOCR(base64Data: string, mimeType: stri
   const data = await response.json().catch(() => ({}));
   if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
   throw new Error(data?.error || 'خدمة استخراج النص لم ترجع نصاً صالحاً.');
+}
+
+
+/**
+ * إعادة محاولة محدودة لاستخراج OCR عند تأكيد أن الخادم أعاد خطأ مؤقتاً من Gemini.
+ * لا نعيد المحاولة عند انقطاع اتصال غامض، لتجنب تكرار عملية قد تكون نجحت واحتسبت بالفعل.
+ */
+export async function extractTextViaServerOCR(base64Data: string, mimeType: string, fileName: string): Promise<string> {
+  try {
+    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName);
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    const isTransientProviderFailure =
+      /\b(?:503|504)\b|DEADLINE_EXCEEDED|temporar(?:y|ily)|unavailable|high demand|مشغول.{0,20}مؤقت|انتهت المهلة المتاحة|تعذر الاتصال بنماذج|تعذر الاتصال بـ Gemini/i.test(message);
+
+    if (!isTransientProviderFailure) throw error;
+
+    // محاولة إضافية واحدة فقط؛ يظل الرفع متعدد الملفات كما هو دون تغيير.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName);
+  }
 }
 
 export async function extractTextFromDocx(file: File): Promise<string> {
