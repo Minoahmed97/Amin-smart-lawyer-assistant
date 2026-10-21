@@ -27,7 +27,7 @@ export default async function handler(req: any, res: any) {
     if (typeof body?.password === 'string') limitBodyString(body.password, 256, 'كلمة المرور');
     if (typeof body?.pin === 'string') limitBodyString(body.pin, 128, 'رمز الإدارة');
     if (req.method === 'POST' && route === 'admin-login') {
-      return res.json(loginAdmin(body?.pin || '', req));
+      return res.json(await loginAdmin(body?.pin || '', req));
     }
     if (req.method === 'POST' && route === 'register') {
       return res.json(await registerAccount(body?.username || '', body?.password || '', body?.displayName || '', body?.deviceFingerprint || '', req));
