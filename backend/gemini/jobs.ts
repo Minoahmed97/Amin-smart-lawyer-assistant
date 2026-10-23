@@ -1,19 +1,24 @@
 import { waitUntil } from '@vercel/functions';
 import crypto from 'node:crypto';
+import webpush from 'web-push';
 import { requireActiveSession, requireSession } from '../auth.ts';
 import counterBriefHandler from './counter-brief.ts';
 import deconstructHandler from './deconstruct.ts';
 import qualifyHandler from './qualify.ts';
 import refineHandler from './refine.ts';
+import ocrHandler from '../ocr.ts';
+import { validateBase64Payload, limitBodyString } from '../security.ts';
 
 const TASK_HANDLERS: Record<string, (req: any, res: any) => any> = {
   'counter-brief': counterBriefHandler,
   deconstruct: deconstructHandler,
   qualify: qualifyHandler,
   refine: refineHandler,
+  ocr: ocrHandler,
 };
 
 const JOB_TABLE = 'app_ai_generation_jobs';
+const PUSH_TABLE = 'app_push_subscriptions';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
 // The provider deadline is 4:30; allow time for the worker to persist its terminal status before stale cleanup.
@@ -49,6 +54,61 @@ async function supabase(path: string, init: RequestInit = {}) {
   return fetch(`${url}/rest/v1/${path}`, { ...init, headers, signal });
 }
 
+
+function configureWebPush() {
+  const publicKey = (process.env.VAPID_PUBLIC_KEY || '').trim();
+  const privateKey = (process.env.VAPID_PRIVATE_KEY || '').trim();
+  const subject = (process.env.VAPID_SUBJECT || '').trim();
+  if (!publicKey || !privateKey || !subject) return false;
+  webpush.setVapidDetails(subject, publicKey, privateKey);
+  return true;
+}
+
+async function savePushSubscription(userId: string, subscription: any) {
+  const endpoint = String(subscription?.endpoint || '').trim();
+  const p256dh = String(subscription?.keys?.p256dh || '').trim();
+  const auth = String(subscription?.keys?.auth || '').trim();
+  if (!/^https:\/\//i.test(endpoint) || !p256dh || !auth || endpoint.length > 3000) {
+    const error: any = new Error('بيانات الاشتراك في الإشعارات غير صالحة.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const response = await supabase(`${PUSH_TABLE}?on_conflict=endpoint`, {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ user_id: userId, endpoint, subscription: { endpoint, keys: { p256dh, auth } }, updated_at: new Date().toISOString() }),
+  });
+  if (!response.ok) throw new Error('تعذر حفظ اشتراك الإشعارات في قاعدة البيانات. نفّذ ترحيل الإشعارات أولاً.');
+}
+
+async function sendCompletionPush(userId: string, jobId: string, taskType: string, status: 'completed' | 'failed') {
+  try {
+    if (!configureWebPush()) return;
+    const response = await supabase(`${PUSH_TABLE}?select=id,endpoint,subscription&user_id=eq.${encodeURIComponent(userId)}`);
+    if (!response.ok) throw new Error(`Push subscription lookup failed (${response.status})`);
+    const subscriptions = await response.json();
+    const taskNames: Record<string, string> = {
+      'counter-brief': 'توليد المذكرة', deconstruct: 'تحليل المستند', qualify: 'التكييف القانوني', refine: 'مراجعة الصياغة', ocr: 'استخراج النص من الملف',
+    };
+    const title = status === 'completed' ? 'اكتملت المهمة القانونية' : 'تعذّر إكمال المهمة القانونية';
+    const body = `${taskNames[taskType] || 'المهمة'} ${status === 'completed' ? 'جاهزة؛ افتح التطبيق لعرض النتيجة.' : 'لم تكتمل؛ افتح التطبيق لمعرفة التفاصيل.'}`;
+    await Promise.all((Array.isArray(subscriptions) ? subscriptions : []).map(async (row: any) => {
+      try {
+        await webpush.sendNotification(row.subscription, JSON.stringify({ title, body, url: `/?jobId=${encodeURIComponent(jobId)}` }), { TTL: 60 * 60 * 24 });
+      } catch (error: any) {
+        if (error?.statusCode === 404 || error?.statusCode === 410) {
+          await supabase(`${PUSH_TABLE}?id=eq.${encodeURIComponent(row.id)}`, { method: 'DELETE' }).catch(() => undefined);
+        } else {
+          console.warn('Completion push delivery failed:', error?.statusCode || 'unknown');
+        }
+      }
+    }));
+  } catch (error: any) {
+    // Push is best-effort and must never turn a completed job into a failed job.
+    console.warn('Completion push notification skipped:', safeDiagnosticMessage(error?.message || error));
+  }
+}
+
 function safePayload(input: any, taskType: string) {
   if (!TASK_HANDLERS[taskType]) {
     const error: any = new Error('نوع مهمة الذكاء الاصطناعي غير صالح.');
@@ -61,6 +121,39 @@ function safePayload(input: any, taskType: string) {
       payload[key] = String(value);
     }
   }
+
+  if (taskType === 'ocr') {
+    payload.base64Data = validateBase64Payload(payload.base64Data, 20 * 1024 * 1024);
+    limitBodyString(payload.fileName, 255, 'اسم الملف');
+    const fileName = String(payload.fileName || '').trim();
+    const mimeType = String(payload.mimeType || '').toLowerCase();
+    const allowedMimeTypes = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'image/jpeg', 'image/png', 'image/webp', 'image/bmp',
+    ];
+    if (!fileName || !/\.(pdf|doc|docx|jpe?g|png|webp|bmp)$/i.test(fileName)) {
+      const error: any = new Error('اسم الملف أو صيغته غير مدعومين.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (mimeType && !allowedMimeTypes.includes(mimeType)) {
+      const error: any = new Error('نوع الملف غير مدعوم.');
+      error.statusCode = 400;
+      throw error;
+    }
+    const recoveryScope = String(payload.recoveryScope || 'general');
+    if (!['general', 'drafting', 'deconstruct', 'qualify', 'vault'].includes(recoveryScope)) {
+      const error: any = new Error('مسار استعادة مهمة OCR غير صالح.');
+      error.statusCode = 400;
+      throw error;
+    }
+    payload.fileName = fileName;
+    payload.recoveryScope = recoveryScope;
+    return payload;
+  }
+
   const combinedLength = Object.values(payload).reduce((sum, value) => sum + value.length, 0);
   if (combinedLength > MAX_FACTS + MAX_CONTEXT) {
     const error: any = new Error('حجم بيانات المهمة أكبر من الحد المسموح.');
@@ -94,7 +187,7 @@ async function patchJob(id: string, userId: string, values: Record<string, unkno
     headers: { Prefer: 'return=minimal' },
     body: JSON.stringify({ ...values, updated_at: new Date().toISOString() }),
   });
-  if (!res.ok) throw new Error(`تعذر تحديث مهمة الصياغة (${res.status}).`);
+  if (!res.ok) throw new Error(`تعذر تحديث حالة المهمة (${res.status}).`);
 }
 
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
@@ -102,6 +195,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   let pendingWrite = Promise.resolve();
   let persistedLength = 0;
   let streamError = '';
+  let handlerJson: any = null;
 
   const fakeRes: any = {
     statusCode: 200,
@@ -112,6 +206,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     status(code: number) { this.statusCode = code; return this; },
     json(body: any) {
       this.headersSent = true;
+      handlerJson = body;
       if (body?.error) streamError = String(body.error);
       this.end();
       return this;
@@ -154,9 +249,13 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     };
     await TASK_HANDLERS[taskType](fakeReq, fakeRes);
     await pendingWrite;
+    if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
+      fullText = handlerJson.text.trim();
+    }
 
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
-      const error = streamError || `تعذر إكمال الصياغة (HTTP ${fakeRes.statusCode}).`;
+      const taskLabel = taskType === 'ocr' ? 'استخراج النص' : 'الصياغة';
+      const error = streamError || `تعذر إكمال ${taskLabel} (HTTP ${fakeRes.statusCode}).`;
       const failureKind = fakeRes.statusCode >= 400
         ? 'http_status'
         : /لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة/i.test(error)
@@ -172,17 +271,19 @@ async function processJob(jobId: string, userId: string, token: string, taskType
         outputChars: fullText.length,
         error: safeDiagnosticMessage(error),
       });
-      await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
+      await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: taskType === 'ocr' ? { recoveryScope: payload.recoveryScope || 'general' } : {} });
+      await sendCompletionPush(userId, jobId, taskType, 'failed');
       return;
     }
     await patchJob(jobId, userId, {
       status: 'completed',
       result: fullText,
       partial_result: fullText,
-      payload: {},
+      payload: taskType === 'ocr' ? { recoveryScope: payload.recoveryScope || 'general' } : {},
       error: null,
       completed_at: new Date().toISOString(),
     });
+    await sendCompletionPush(userId, jobId, taskType, 'completed');
   } catch (err: any) {
     await pendingWrite.catch(() => undefined);
     const message = String(err?.message || 'تعذر إكمال الصياغة.').slice(0, 1000);
@@ -194,7 +295,8 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       outputChars: fullText.length,
     });
     try {
-      await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
+      await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: taskType === 'ocr' ? { recoveryScope: payload.recoveryScope || 'general' } : {} });
+      await sendCompletionPush(userId, jobId, taskType, 'failed');
     } catch (persistError: any) {
       console.error('AI job failure status could not be persisted:', persistError?.message || 'unknown');
     }
@@ -204,13 +306,18 @@ async function processJob(jobId: string, userId: string, token: string, taskType
 export default async function handler(req: any, res: any) {
   try {
     if (req.method === 'POST') {
-      const { session } = await requireActiveSession(req);
       const requestBody = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
+      if (requestBody?.action === 'subscribe-push') {
+        const { session } = requireSession(req);
+        await savePushSubscription(session.userId, requestBody.subscription);
+        return res.status(200).json({ subscribed: true });
+      }
+      const { session } = await requireActiveSession(req);
       const taskType = String(requestBody?.taskType || 'counter-brief');
       const payload = safePayload(requestBody?.payload || requestBody, taskType);
       // Cleanup is best-effort and must not prevent a new task from being inserted.
       try {
-        const cleanup = await supabase(`${JOB_TABLE}?created_at=lt.${encodeURIComponent(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())}`, { method: 'DELETE' });
+        const cleanup = await supabase(`${JOB_TABLE}?task_type=neq.ocr&status=in.(completed,failed)&created_at=lt.${encodeURIComponent(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())}`, { method: 'DELETE' });
         if (!cleanup.ok) console.warn('Old AI job cleanup failed:', cleanup.status);
       } catch (cleanupError: any) {
         console.warn('Old AI job cleanup failed; continuing task creation:', safeDiagnosticMessage(cleanupError?.message || cleanupError));
@@ -221,6 +328,7 @@ export default async function handler(req: any, res: any) {
       const insert = await supabase(JOB_TABLE, {
         method: 'POST',
         headers: { Prefer: 'return=minimal' },
+        signal: AbortSignal.timeout(taskType === 'ocr' ? 60_000 : 10_000),
         body: JSON.stringify({
           id,
           user_id: session.userId,
@@ -270,7 +378,7 @@ export default async function handler(req: any, res: any) {
 
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if ((job.status === 'queued' || job.status === 'running') && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
-        const staleError = 'توقفت المهمة بعد عدم وصول أي تحديث لمدة 4 دقائق ونصف. لم تُستكمل النتيجة؛ ابدأ طلبًا جديدًا بعد مراجعة الاتصال بالخدمة.';
+        const staleError = 'توقفت المعالجة بعد عدم وصول أي تحديث لمدة 4 دقائق ونصف. لم تُستكمل النتيجة؛ راجع اتصال الخدمة ثم استعد المهمة أو ابدأ طلبًا جديدًا.';
         try {
           await patchJob(id, session.userId, {
             status: 'failed',
