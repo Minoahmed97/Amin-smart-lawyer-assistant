@@ -134,7 +134,7 @@ export async function fetchServerCloudOCRGeminiKeys(timeoutMs?: number): Promise
   }
   try {
     const timeout = Number(timeoutMs);
-    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?select=api_key,is_active&order=created_at.asc,id.asc`, {
+    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?select=api_key,is_active,last_success_at&order=last_success_at.desc.nullslast,created_at.asc,id.asc`, {
       method: 'GET',
       headers: {
         apikey: supabaseKey,
@@ -155,6 +155,38 @@ export async function fetchServerCloudOCRGeminiKeys(timeoutMs?: number): Promise
   } catch (err) {
     console.error('Server: Error fetching dedicated OCR Gemini keys:', err);
     throw new Error(err instanceof Error ? err.message : 'تعذر قراءة مفاتيح الصور والمستندات من Supabase.');
+  }
+}
+
+
+/** Persist the last OCR key that successfully completed a request so other Vercel instances
+ * prioritize the same known-good key on the next OCR call/retry. Failure to update priority
+ * must never turn a successful OCR extraction into a failed user operation. */
+export async function markServerCloudOCRGeminiKeySuccessful(geminiKey: string): Promise<void> {
+  const { supabaseUrl, supabaseKey } = getSupabaseServerConfig();
+  const cleanKey = sanitizeGeminiKey(geminiKey);
+  if (!supabaseUrl || !supabaseKey || !isValidKeyFormat(cleanKey)) return;
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?api_key=eq.${encodeURIComponent(cleanKey)}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: supabaseKey,
+        ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ last_success_at: new Date().toISOString() }),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // Keep this warm instance's cache aligned immediately; other instances will refresh
+    // within the existing 30-second cache window.
+    if (cachedServerCloudOCRKeys.includes(cleanKey)) {
+      cachedServerCloudOCRKeys = [cleanKey, ...cachedServerCloudOCRKeys.filter((key) => key !== cleanKey)];
+      cachedServerCloudOCRKeysAt = Date.now();
+    }
+  } catch (err) {
+    console.warn('Could not persist the preferred OCR key; extraction itself remains successful:', err);
   }
 }
 
