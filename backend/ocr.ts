@@ -2,7 +2,7 @@ import mammoth from 'mammoth';
 import { executeWithDedicatedOCRKeyRotation, checkDedicatedOCRGeminiReadiness, GEMINI_MODELS } from './keyRotation.ts';
 
 import { requireActiveSession, consumeOperation } from './auth.ts';
-import { rateLimit, validateBase64Payload, limitBodyString } from './security.ts';
+import { validateBase64Payload, limitBodyString } from './security.ts';
 export const config = {
   api: {
     bodyParser: {
@@ -14,7 +14,6 @@ export const config = {
 export default async function handler(req: any, res: any) {
   if (req.method === 'GET') {
     try {
-      rateLimit(req, 'ocr-readiness', 12, 10 * 60 * 1000);
       await requireActiveSession(req);
       const readiness = await checkDedicatedOCRGeminiReadiness(9000);
       return res.status(readiness.ready ? 200 : 503).json(readiness);
@@ -30,7 +29,6 @@ export default async function handler(req: any, res: any) {
 
 
   try {
-    rateLimit(req, 'ocr', 12, 10 * 60 * 1000);
     await requireActiveSession(req);
     let body = req.body;
     if (typeof body === 'string') {
