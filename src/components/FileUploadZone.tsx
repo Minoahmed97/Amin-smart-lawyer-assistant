@@ -7,7 +7,7 @@ import {
   CheckCircle2,
   AlertTriangle,
 } from 'lucide-react';
-import { extractTextFromAnyFile } from '../utils/fileExtractor.ts';
+import { checkServerOCRReadiness, extractTextFromAnyFile } from '../utils/fileExtractor.ts';
 
 interface FileUploadZoneProps {
   onTextExtracted: (text: string, fileName: string, fileType?: string, sourceFile?: File) => void;
@@ -57,9 +57,29 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
     setSuccessInfo(null);
     setWarnings(extraWarning ? [extraWarning] : []);
 
+    // Images and PDFs always require the dedicated server OCR route. Check its own keys/models
+    // before starting the batch; local TXT/DOCX extraction remains available without OCR keys.
+    const hasServerOCRFiles = filesToProcess.some((file) => {
+      const name = file.name.toLowerCase();
+      return name.endsWith('.pdf') || /\.(jpe?g|png|webp|bmp)$/i.test(name) || file.type.startsWith('image/');
+    });
+    if (hasServerOCRFiles) {
+      try {
+        await checkServerOCRReadiness();
+      } catch (error: any) {
+        setIsProcessing(false);
+        onProcessingChange?.(false);
+        setBatchProgress(null);
+        setErrorMsg(error?.message || 'مجموعة مفاتيح الصور والمستندات (OCR) غير جاهزة.');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+    }
+
     let totalChars = 0;
     const processedNames: string[] = [];
     const failedNames: string[] = [];
+    let hasStartedServerOCR = false;
 
     for (let i = 0; i < filesToProcess.length; i++) {
       const file = filesToProcess[i];
@@ -69,14 +89,21 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         currentFileName: file.name,
       });
 
+      const lowerFileName = file.name.toLowerCase();
+      const isDirectOCRFile = lowerFileName.endsWith('.pdf') || /\.(jpe?g|png|webp|bmp)$/i.test(lowerFileName) || file.type.startsWith('image/');
+      if (isDirectOCRFile && hasStartedServerOCR) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+      }
       try {
         const result = await extractTextFromAnyFile(file);
+        if (isDirectOCRFile) hasStartedServerOCR = true;
         if (result && result.text) {
           totalChars += result.characterCount;
           processedNames.push(file.name);
           onTextExtracted(result.text, result.fileName, result.fileType, file);
         }
       } catch (err: any) {
+        if (isDirectOCRFile) hasStartedServerOCR = true;
         console.warn(`Extraction error for ${file.name}:`, err);
         const rawMsg = err?.message || '';
         let cleanReason = rawMsg;

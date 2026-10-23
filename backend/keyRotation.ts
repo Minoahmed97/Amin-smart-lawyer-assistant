@@ -3,7 +3,7 @@ import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
 import { createOpenRouterCompatibleClient, getOpenRouterModels } from './openrouterAdapter.ts';
-import { fetchServerCloudGeminiKeys } from './supabaseSync.ts';
+import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys } from './supabaseSync.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
   if (!key || typeof key !== 'string') return false;
@@ -194,6 +194,119 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
     success: false,
     message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاح.',
   };
+}
+
+
+let dedicatedOCRActiveKeyIndex = 0;
+
+/**
+ * Fast readiness check for the isolated OCR pool. It checks model access without generating content.
+ * No general Gemini key, OpenRouter credential, or Vercel Gemini environment variable is consulted.
+ */
+export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): Promise<{ ready: boolean; keyCount: number; checkedKeys: number; message: string }> {
+  let keys: string[];
+  try {
+    keys = await fetchServerCloudOCRGeminiKeys(Math.min(5000, totalTimeoutMs));
+  } catch (error: any) {
+    return { ready: false, keyCount: 0, checkedKeys: 0, message: error?.message || 'تعذر قراءة مجموعة مفاتيح الصور والمستندات.' };
+  }
+  if (!keys.length) {
+    return {
+      ready: false,
+      keyCount: 0,
+      checkedKeys: 0,
+      message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخازنة (OCR). أضف مفتاحاً من لوحة إدارة المنصة؛ لن تُستخدم المفاتيح العامة كبديل.',
+    };
+  }
+
+  const deadlineAt = Date.now() + Math.max(1000, totalTimeoutMs);
+  let checkedKeys = 0;
+  let lastFailure = '';
+  for (const key of keys) {
+    const remaining = deadlineAt - Date.now();
+    if (remaining < 700) break;
+    checkedKeys++;
+    const result = await testGeminiKey(key, Math.min(2200, remaining));
+    if (result.success) {
+      return { ready: true, keyCount: keys.length, checkedKeys, message: `مجموعة OCR جاهزة: تم التحقق من وصول نموذج Gemini عبر أحد مفاتيح الصور والمستندات (${keys.length} مفتاح مسجل).` };
+    }
+    lastFailure = result.message || 'لم ينجح فحص الوصول إلى نموذج Gemini.';
+    if (Date.now() >= deadlineAt) break;
+  }
+  return {
+    ready: false,
+    keyCount: keys.length,
+    checkedKeys,
+    message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج في الفحص السريع. افحص المفتاح من لوحة الإدارة قبل رفع الدفعة. آخر نتيجة: ${lastFailure || 'انتهت مهلة الفحص.'}`,
+  };
+}
+
+/** OCR-only rotation: no OpenRouter, environment Gemini keys, or general legal-AI keys are fallback candidates. */
+export async function executeWithDedicatedOCRKeyRotation<T>(
+  action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
+  preferredModels: string[] = GEMINI_MODELS,
+  timeoutMs = 240000,
+): Promise<T> {
+  const deadlineAt = Date.now() + Math.max(15000, timeoutMs);
+  let keys: string[];
+  try {
+    keys = await fetchServerCloudOCRGeminiKeys(Math.min(8000, Math.max(1000, deadlineAt - Date.now() - 2000)));
+  } catch (error: any) {
+    throw new Error(`تعذر تحميل مفاتيح الصور والمستندات من التخزين المركزي: ${String(error?.message || 'خطأ في Supabase').slice(0, 180)}`);
+  }
+  if (!keys.length) {
+    throw new Error('لا توجد مفاتيح مخصصة للصور والمستندات والخازنة (OCR). أضف مفتاحاً من لوحة إدارة المنصة؛ المفاتيح العامة للصياغة القانونية لا تستخدم هنا.');
+  }
+
+  if (dedicatedOCRActiveKeyIndex >= keys.length) dedicatedOCRActiveKeyIndex = 0;
+  const startIndex = dedicatedOCRActiveKeyIndex;
+  let lastError: any = null;
+
+  ocrKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
+    const keyIndex = (startIndex + offset) % keys.length;
+    const key = keys[keyIndex];
+    for (let modelIndex = 0; modelIndex < preferredModels.length; modelIndex++) {
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs < 10000) break ocrKeyLoop;
+      const model = preferredModels[modelIndex];
+      try {
+        const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(45000, remainingMs)));
+        const result = await action(ai, key, model);
+        if (Date.now() >= deadlineAt) throw Object.assign(new Error('انتهت مهلة استخراج النص عبر مجموعة OCR.'), { status: 504, statusCode: 504 });
+        dedicatedOCRActiveKeyIndex = keyIndex;
+        return result;
+      } catch (error: any) {
+        lastError = error;
+        const status = Number(error?.status || error?.statusCode || error?.response?.status);
+        const message = String(error?.message || '').toLowerCase();
+        const kind = getGeminiErrorKind(error);
+        console.error('[Dedicated OCR key rotation] attempt failed', {
+          model,
+          keyIndex: keyIndex + 1,
+          status: status || undefined,
+          message: String(error?.message || 'Unknown OCR error').slice(0, 220),
+        });
+        if ((kind === 'temporary' || status === 404 || status === 400 || /model.*not found|unsupported model|no longer available/.test(message)) && modelIndex < preferredModels.length - 1) {
+          continue;
+        }
+        // Quota, revoked keys and other request errors move only within the OCR key pool.
+        break;
+      }
+    }
+  }
+
+  const status = Number(lastError?.status || lastError?.statusCode || lastError?.response?.status);
+  const message = String(lastError?.message || '').toLowerCase();
+  if (Date.now() >= deadlineAt || status === 504 || /deadline_exceeded|timed out|timeout/.test(message)) {
+    throw new Error('انتهت مهلة مجموعة OCR قبل اكتمال استخراج النص. قلل حجم الملف أو أعد المحاولة لاحقاً.');
+  }
+  if (status === 429 || /resource_exhausted|quota exceeded|rate.?limit|too many requests/.test(message)) {
+    throw new Error('نفدت الحصة أو حدود الطلبات في مفاتيح مجموعة الصور والمستندات (OCR). حدّث هذه المجموعة أو انتظر تجدد الحصة؛ لن يتم استخدام المفاتيح العامة.');
+  }
+  if (status === 401 || /api key not valid|invalid api key|api_key_invalid|credential.*invalid/.test(message)) {
+    throw new Error('فشلت مفاتيح مجموعة OCR بسبب اعتماد غير صالح. افحص مفاتيح الصور والمستندات من لوحة الإدارة واستبدل المفتاح غير الصالح.');
+  }
+  throw new Error(`فشلت جميع محاولات مفاتيح مجموعة الصور والمستندات (OCR).${lastError?.message ? ` آخر خطأ: ${String(lastError.message).slice(0, 180)}` : ' افحص المفتاح والنماذج من لوحة الإدارة.'}`);
 }
 
 export function getVercelGeminiKeys(_ignoredClientFallbackKey?: string): string[] {
@@ -400,7 +513,7 @@ export async function executeWithKeyRotation<T>(
     availableKeys = await getAvailableGeminiKeys(Math.min(8000, remainingBeforeKeyLoad - 2000));
   } catch (keyLoadError: any) {
     if (executionOptions?.ocrMode && executionOptions.previousProviderError) {
-      throw new Error(`فشل مسار OpenRouter أولاً (${executionOptions.previousProviderError})، وتعذر تحميل مفاتيح Gemini الاحتياطية من الخادم: ${String(keyLoadError?.message || 'حدث خطأ في الاتصال بالخادم المركزي').slice(0, 180)}`);
+      throw new Error(`فشل مسار OpenRouter أولاً (${executionOptions.previousProviderError}), وتعذر تحميل مفاتيح Gemini الاحتياطية من الخادم: ${String(keyLoadError?.message || 'حدث خطأ في الاتصال بالخادم المركزي').slice(0, 180)}`);
     }
     throw keyLoadError;
   }
@@ -408,7 +521,7 @@ export async function executeWithKeyRotation<T>(
 
   if (keys.length === 0) {
     if (executionOptions?.ocrMode && executionOptions.previousProviderError) {
-      throw new Error(`تعذر استخراج النص عبر OpenRouter (${executionOptions.previousProviderError})، ولا يوجد مفتاح Gemini احتياطي صالح في إعدادات الخادم.`);
+      throw new Error(`تعذر استخراج النص عبر OpenRouter (${executionOptions.previousProviderError}), ولا يوجد مفتاح Gemini احتياطي صالح في إعدادات الخادم.`);
     }
     throw new Error('لم يتم العثور على مفتاح Gemini صالح في متغيرات البيئة أو لوحة إدارة المفاتيح.');
   }
@@ -486,7 +599,7 @@ export async function executeWithKeyRotation<T>(
     if (finalKind === 'temporary') throw new Error('فشل استخراج النص عبر OpenRouter ثم انتهت مهلة Gemini أو تعذر الاتصال به بعد محاولات التبديل. أعد محاولة رفع المستند، وإذا تكرر الخطأ فرجع سجل /api/ocr على الخادم.');
     throw new Error(`فشل استخراج النص: تعطل OpenRouter (${executionOptions.previousProviderError}) ثم تعذر Gemini (${String(lastError?.message || 'لم ترجع الخدمة نتيجة صالحة').slice(0, 180)}).`);
   }
-  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
+  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفذت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
   if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
   if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
@@ -501,7 +614,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
   const deadlineAt = Number(executionOptions.deadlineAt);
   const timeoutError = () => Object.assign(
-    new Error('انتهت المهلة المتاحة لتوليد المستند قبل اكتماله. احتفظ بالنص الجزئي إن وجد.'),
+    new Error('انتهت المهلة المتاحة لتوليد المستند قبل اكتمالها. احتفظ بالنص الجزئي إن وجد.'),
     { status: 504, statusCode: 504 },
   );
 
@@ -533,7 +646,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           if (chunkText) { emitted = true; onChunk(chunkText); }
         }
         if (!emitted) {
-          const emptyStreamError: any = new Error(`OpenRouter model ${model} انتهى بدون إرجاع أول جزء من النص.`);
+          const emptyStreamError: any = new Error(`OpenRouter model ${model} انتهى بدون إرجاع أو جزء من النص.`);
           emptyStreamError.status = 503;
           emptyStreamError.statusCode = 503;
           throw emptyStreamError;
@@ -660,7 +773,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
   if (Date.now() >= deadlineAt || Number(lastError?.status || lastError?.statusCode) === 504) throw lastError || timeoutError();
   const finalKind = getGeminiErrorKind(lastError);
-  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
+  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفذت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
   if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
   if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');

@@ -117,6 +117,100 @@ export async function deleteServerCloudGeminiKey(geminiKey: string): Promise<boo
   }
 }
 
+
+// OCR/document credentials are stored independently from the general legal-AI key pool.
+let cachedServerCloudOCRKeys: string[] = [];
+let cachedServerCloudOCRKeysAt = 0;
+
+export async function fetchServerCloudOCRGeminiKeys(timeoutMs?: number): Promise<string[]> {
+  const { supabaseUrl, supabaseKey } = getSupabaseServerConfig();
+  if (!supabaseUrl || !supabaseKey) {
+    cachedServerCloudOCRKeys = [];
+    cachedServerCloudOCRKeysAt = 0;
+    return [];
+  }
+  if (cachedServerCloudOCRKeysAt && Date.now() - cachedServerCloudOCRKeysAt < SERVER_CLOUD_KEYS_CACHE_MS) {
+    return [...cachedServerCloudOCRKeys];
+  }
+  try {
+    const timeout = Number(timeoutMs);
+    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?select=api_key,is_active&order=created_at.asc,id.asc`, {
+      method: 'GET',
+      headers: {
+        apikey: supabaseKey,
+        ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
+        'Content-Type': 'application/json',
+      },
+      ...(Number.isFinite(timeout) && timeout >= 1000 ? { signal: AbortSignal.timeout(timeout) } : {}),
+    });
+    if (!res.ok) throw new Error(`تعذر قراءة مفاتيح الصور والمستندات من Supabase (HTTP ${res.status}).`);
+    const records = (await res.json()) as any[];
+    if (!Array.isArray(records)) throw new Error('استجابة مفاتيح OCR من Supabase غير صالحة.');
+    cachedServerCloudOCRKeys = records
+      .filter((r) => r.is_active !== false && r.api_key)
+      .map((r) => sanitizeGeminiKey(r.api_key))
+      .filter(isValidKeyFormat);
+    cachedServerCloudOCRKeysAt = Date.now();
+    return [...cachedServerCloudOCRKeys];
+  } catch (err) {
+    console.error('Server: Error fetching dedicated OCR Gemini keys:', err);
+    throw new Error(err instanceof Error ? err.message : 'تعذر قراءة مفاتيح الصور والمستندات من Supabase.');
+  }
+}
+
+export async function saveServerCloudOCRGeminiKey(geminiKey: string): Promise<boolean> {
+  const { supabaseUrl, supabaseKey } = requireSupabaseServerConfig();
+  const cleanKey = sanitizeGeminiKey(geminiKey);
+  if (!isValidKeyFormat(cleanKey)) throw new Error('صيغة مفتاح Gemini لمجموعة الصور والمستندات غير صالحة.');
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?on_conflict=api_key`, {
+      method: 'POST',
+      headers: {
+        apikey: supabaseKey,
+        ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify({ api_key: cleanKey, is_active: true }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`فشل حفظ مفتاح الصور والمستندات في Supabase (HTTP ${res.status})${detail ? `: ${detail.slice(0, 240)}` : ''}`);
+    }
+    cachedServerCloudOCRKeys = [];
+    cachedServerCloudOCRKeysAt = 0;
+    return true;
+  } catch (err) {
+    console.error('Server: Error saving dedicated OCR Gemini key:', err);
+    throw new Error(err instanceof Error ? err.message : 'تعذر حفظ مفتاح الصور والمستندات.');
+  }
+}
+
+export async function deleteServerCloudOCRGeminiKey(geminiKey: string): Promise<boolean> {
+  const { supabaseUrl, supabaseKey } = requireSupabaseServerConfig();
+  const cleanKey = sanitizeGeminiKey(geminiKey);
+  if (!isValidKeyFormat(cleanKey)) throw new Error('صيغة مفتاح Gemini المراد حذفه من مجموعة الصور والمستندات غير صالحة.');
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?api_key=eq.${encodeURIComponent(cleanKey)}`, {
+      method: 'DELETE',
+      headers: {
+        apikey: supabaseKey,
+        ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
+        Prefer: 'return=representation',
+      },
+    });
+    if (!res.ok) throw new Error(`فشل حذف مفتاح الصور والمستندات من Supabase (HTTP ${res.status}).`);
+    const deleted = await res.json().catch(() => []);
+    if (!Array.isArray(deleted) || deleted.length === 0) throw new Error('لم يُعثر على مفتاح OCR المطلوب في التخزين الدائم.');
+    cachedServerCloudOCRKeys = [];
+    cachedServerCloudOCRKeysAt = 0;
+    return true;
+  } catch (err) {
+    console.error('Server: Error deleting dedicated OCR Gemini key:', err);
+    throw new Error(err instanceof Error ? err.message : 'تعذر حذف مفتاح الصور والمستندات.');
+  }
+}
+
 export default function handler(req: any, res: any) {
   return res.status(200).json({ ok: true });
 }

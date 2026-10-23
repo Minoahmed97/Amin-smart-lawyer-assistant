@@ -113,6 +113,11 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   });
 
   const [isRefreshingStatus, setIsRefreshingStatus] = useState<boolean>(false);
+  const [ocrKeyStatusData, setOcrKeyStatusData] = useState<{ totalCount: number; keys: Array<{ index: number; id: string; name: string; masked: string; prefix?: string; isActive: boolean }> }>({ totalCount: 0, keys: [] });
+  const [ocrNewApiKeyInput, setOcrNewApiKeyInput] = useState<string>('');
+  const [showNewOcrKey, setShowNewOcrKey] = useState<boolean>(false);
+  const [ocrKeyBusy, setOcrKeyBusy] = useState<boolean>(false);
+  const [ocrKeyActionMsg, setOcrKeyActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [newApiKeyInput, setNewApiKeyInput] = useState<string>('');
   const [showNewKey, setShowNewKey] = useState<boolean>(false);
   const [keyAddingLoading, setKeyAddingLoading] = useState<boolean>(false);
@@ -236,6 +241,55 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
         setKeyStatusData((prev) => ({ ...prev, isConfigured: false, totalCount: 0, keys: [] }));
       })
       .finally(() => setIsRefreshingStatus(false));
+  };
+
+  const fetchOCRKeysStatus = () => {
+    fetch('/api/admin/ocr-keys', { headers: { 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' }, cache: 'no-store' })
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok || data?.ok === false) throw new Error(data?.error || 'تعذر قراءة مفاتيح OCR.');
+        const keys = Array.isArray(data?.keys) ? data.keys : [];
+        setOcrKeyStatusData({ keys, totalCount: keys.length });
+      })
+      .catch((error: any) => {
+        setOcrKeyStatusData({ keys: [], totalCount: 0 });
+        setOcrKeyActionMsg({ type: 'error', text: error?.message || 'تعذر قراءة مجموعة مفاتيح OCR من التخزين المركزي.' });
+      });
+  };
+
+  const handleOCRKeyAction = async (action: 'add' | 'test' | 'testSaved' | 'delete', index?: number) => {
+    if ((action === 'add' || action === 'test') && !ocrNewApiKeyInput.trim()) {
+      setOcrKeyActionMsg({ type: 'error', text: 'أدخل مفتاح Gemini المخصص للصور والمستندات أولاً.' });
+      return;
+    }
+    if (action === 'delete' && !confirm('هل تريد حذف هذا المفتاح من مجموعة الصور والمستندات (OCR) فقط؟')) return;
+    setOcrKeyBusy(true);
+    setOcrKeyActionMsg(null);
+    try {
+      const res = await fetch('/api/admin/ocr-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          action,
+          ...(typeof index === 'number' ? { index } : {}),
+          ...((action === 'add' || action === 'test') ? { apiKey: sanitizeGeminiKey(ocrNewApiKeyInput) } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'تعذر تنفيذ العملية على مجموعة OCR.');
+      if (action === 'add') setOcrNewApiKeyInput('');
+      if (data?.status?.keys) setOcrKeyStatusData({ keys: data.status.keys, totalCount: data.status.totalCount || data.status.keys.length });
+      else fetchOCRKeysStatus();
+      setOcrKeyActionMsg({
+        type: 'success',
+        text: data?.message || (action === 'test' || action === 'testSaved' ? 'نجح فحص مفتاح مجموعة OCR.' : action === 'delete' ? 'تم حذف المفتاح من مجموعة OCR فقط.' : 'تم حفظ مفتاح OCR.'),
+      });
+    } catch (error: any) {
+      setOcrKeyActionMsg({ type: 'error', text: error?.message || 'تعذر تنفيذ العملية على مجموعة OCR.' });
+    } finally {
+      setOcrKeyBusy(false);
+    }
   };
 
   const handleCheckClientAiConnection = async () => {
@@ -423,6 +477,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
       });
       setCurrentBalance(getCurrentStoredCredits());
       fetchKeysStatus();
+      fetchOCRKeysStatus();
       if (isAuthenticated) {
         loadAnalytics();
         loadAccounts();
@@ -869,7 +924,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                         </span>
                       </div>
                       <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
-                        يحاول النظام استخدام مفاتيح ومزوّدات بديلة عند فشل الطلب؛ ولا يتجاوز حدود الحصص التي يفرضها كل مزوّد.
+                        هذه المجموعة مخصصة للصياغة القانونية والتفنيد والتكييف والنزاعات والاستشارات. تدويرها منفصل تماماً، ولا تُستخدم لقراءة الصور أو ملفات PDF وWord أو الخزنة.
                       </p>
                     </div>
                     <button
@@ -1109,11 +1164,77 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                             <span>لا توجد مفاتيح مسجلة حالياً</span>
                           </div>
                           <p className="text-slate-400 text-[11px] leading-relaxed">
-                            قم بإضافة مفتاح واحد على الأقل أعلاه للبدء في استخدام كافة أدوات الصياغة.
+                            أضف هنا مفاتيح الذكاء الاصطناعي الخاصة بأدوات الصياغة والتفنيد والتكييف والنزاعات. مفاتيح الصور والمستندات لها مجموعة مستقلة أدناه.
                           </p>
                         </div>
                       )}
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'keyStatus' && (
+                <div className="bg-[#1e293b] p-5 rounded-2xl border-2 border-cyan-600/70 space-y-4 shadow-xl">
+                  <div className="border-b border-slate-700 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-cyan-300 text-base font-bold flex items-center gap-2">
+                        <ShieldCheck className="w-5 h-5 text-cyan-300" />
+                        <span>مفاتيح الصور والمستندات والخزنة (OCR)</span>
+                      </h4>
+                      <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+                        مجموعة مستقلة حصرياً لاستخراج النص من الصور وملفات PDF، وأي قراءة مستند أو رفع للخزنة يحتاج OCR. تُحفظ المفاتيح على الخادم المركزي، وتُختبر وتُدوّر داخل هذه المجموعة فقط؛ لا رجوع للمفاتيح العامة.
+                      </p>
+                    </div>
+                    <button type="button" onClick={fetchOCRKeysStatus} disabled={ocrKeyBusy} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-200 rounded-lg text-xs font-bold border border-slate-700 flex items-center gap-1.5 disabled:opacity-50">
+                      <RefreshCw className={`w-3.5 h-3.5 ${ocrKeyBusy ? 'animate-spin' : ''}`} /> تحديث الحالة
+                    </button>
+                  </div>
+
+                  {ocrKeyActionMsg && (
+                    <div className={`p-3 rounded-xl border text-xs font-bold flex items-start gap-2 ${ocrKeyActionMsg.type === 'success' ? 'bg-emerald-950/70 border-emerald-500 text-emerald-200' : 'bg-rose-950/70 border-rose-500 text-rose-200'}`} role="status">
+                      {ocrKeyActionMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+                      <span>{ocrKeyActionMsg.text}</span>
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border border-cyan-800/70 bg-slate-950 p-4 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <h5 className="text-sm font-bold text-cyan-200 flex items-center gap-2"><Plus className="w-4 h-4" />إضافة مفتاح OCR جديد</h5>
+                      <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-[11px] text-sky-400 hover:text-sky-300 underline">Google AI Studio</a>
+                    </div>
+                    <div className="relative">
+                      <input type={showNewOcrKey ? 'text' : 'password'} value={ocrNewApiKeyInput} onChange={(e) => setOcrNewApiKeyInput(e.target.value)} placeholder="ألصق مفتاح Gemini المخصص للـ OCR" className="w-full p-2.5 pl-16 bg-slate-900 border border-slate-600 rounded-xl text-white font-mono text-xs focus:border-cyan-500 focus:outline-none placeholder:text-slate-500" />
+                      <button type="button" onClick={() => setShowNewOcrKey(!showNewOcrKey)} className="absolute left-3 top-2.5 text-slate-400 hover:text-white text-xs">{showNewOcrKey ? 'إخفاء' : 'إظهار'}</button>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button type="button" onClick={() => void handleOCRKeyAction('test')} disabled={ocrKeyBusy || !ocrNewApiKeyInput.trim()} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-200 border border-cyan-700/50 rounded-lg text-xs font-bold disabled:opacity-50 flex items-center gap-1.5">
+                        <ShieldCheck className="w-3.5 h-3.5" />{ocrKeyBusy ? 'جارٍ الفحص...' : 'فحص المفتاح فقط'}
+                      </button>
+                      <button type="button" onClick={() => void handleOCRKeyAction('add')} disabled={ocrKeyBusy || !ocrNewApiKeyInput.trim()} className="px-3 py-2 bg-gradient-to-r from-cyan-700 to-blue-700 hover:from-cyan-600 hover:to-blue-600 text-white rounded-lg text-xs font-bold disabled:opacity-50 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" />{ocrKeyBusy ? 'جارٍ الحفظ...' : 'فحص وحفظ وإضافة للتدوير'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <h5 className="text-xs font-bold text-slate-200 flex items-center gap-1.5"><ShieldCheck className="w-4 h-4 text-cyan-300" />مفاتيح OCR المحفوظة ({ocrKeyStatusData.totalCount})</h5>
+                    {ocrKeyStatusData.keys.length ? ocrKeyStatusData.keys.map((key) => (
+                      <div key={key.id} className="p-3 rounded-xl border border-slate-700 bg-slate-900/80 flex items-center justify-between gap-3 text-xs">
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-200">{key.name}</div>
+                          <div className="text-[11px] text-slate-400 font-mono mt-1">{key.prefix || 'AQ'} • {key.masked}</div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button type="button" onClick={() => void handleOCRKeyAction('testSaved', key.index)} disabled={ocrKeyBusy} className="px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-950/20 text-emerald-300 hover:bg-emerald-950/50 disabled:opacity-50 flex items-center gap-1" title="فحص مفتاح OCR المحفوظ"><ShieldCheck className="w-3.5 h-3.5" /><span>فحص</span></button>
+                          <button type="button" onClick={() => void handleOCRKeyAction('delete', key.index)} disabled={ocrKeyBusy} className="text-rose-400 hover:text-rose-300 p-1.5 rounded hover:bg-rose-950/50 disabled:opacity-50" title="حذف مفتاح OCR"><Trash2 className="w-3.5 h-3.5" /></button>
+                        </div>
+                      </div>
+                    )) : (
+                      <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300">
+                        <div className="font-bold text-amber-300 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" />لا توجد مفاتيح OCR محفوظة</div>
+                        <p className="mt-1 text-slate-400 leading-relaxed">لن تبدأ معالجة الصور وملفات PDF قبل نجاح فحص الجاهزية. أضف مفاتيح في هذه المجموعة؛ المفاتيح العامة لن تُستخدم احتياطياً.</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
