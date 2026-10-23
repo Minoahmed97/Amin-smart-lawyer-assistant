@@ -79,7 +79,26 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
     let totalChars = 0;
     const processedNames: string[] = [];
     const failedNames: string[] = [];
+    // Keep each successful extraction at its original upload position.
+    // Results are delivered to the parent only after retries finish, in upload order.
+    type ExtractionResult = Awaited<ReturnType<typeof extractTextFromAnyFile>>;
+    const extractedResults: Array<{ file: File; result: ExtractionResult } | undefined> =
+      new Array(filesToProcess.length);
+    const failedImages: Array<{ file: File; index: number }> = [];
     let hasStartedServerOCR = false;
+
+    const isImageFile = (file: File) =>
+      file.type.startsWith('image/') || /\.(jpe?g|png|webp|bmp)$/i.test(file.name.toLowerCase());
+
+    const getCleanFailureReason = (file: File, err: any) => {
+      const rawMsg = err?.message || '';
+      if (file.name.startsWith('~$')) return 'ملف مؤقت وورد';
+      if (rawMsg.includes('413')) return 'حجم الملف كبير';
+      if (rawMsg.includes('مفتاح') || rawMsg.includes('API Key') || rawMsg.includes('api key')) {
+        return 'يرجى تهيئة مفتاح Gemini';
+      }
+      return rawMsg || 'خطأ غير محدد أثناء استخراج النص';
+    };
 
     for (let i = 0; i < filesToProcess.length; i++) {
       const file = filesToProcess[i];
@@ -99,23 +118,55 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         if (isDirectOCRFile) hasStartedServerOCR = true;
         if (result && result.text) {
           totalChars += result.characterCount;
-          processedNames.push(file.name);
-          onTextExtracted(result.text, result.fileName, result.fileType, file);
+          extractedResults[i] = { file, result };
         }
       } catch (err: any) {
         if (isDirectOCRFile) hasStartedServerOCR = true;
         console.warn(`Extraction error for ${file.name}:`, err);
-        const rawMsg = err?.message || '';
-        let cleanReason = rawMsg;
-        if (file.name.startsWith('~$')) {
-          cleanReason = 'ملف مؤقت وورد';
-        } else if (rawMsg.includes('413')) {
-          cleanReason = 'حجم الملف كبير';
-        } else if (rawMsg.includes('مفتاح') || rawMsg.includes('API Key') || rawMsg.includes('api key')) {
-          cleanReason = 'يرجى تهيئة مفتاح Gemini';
+        const cleanReason = getCleanFailureReason(file, err);
+        if (isImageFile(file)) {
+          // Keep image failures for one batch-level retry after the initial batch finishes.
+          failedImages.push({ file, index: i });
+        } else {
+          failedNames.push(`${file.name}: ${cleanReason}`);
         }
-        failedNames.push(`${file.name}: ${cleanReason}`);
       }
+    }
+
+    // Retry only failed images, once, after every file in the original batch has been attempted.
+    // Successful files are never processed again, and non-image files keep their existing behavior.
+    for (let i = 0; i < failedImages.length; i++) {
+      const { file, index: originalIndex } = failedImages[i];
+      setBatchProgress({
+        current: i + 1,
+        total: failedImages.length,
+        currentFileName: `إعادة المحاولة: ${file.name}`,
+      });
+
+      // Keep OCR requests spaced out during the retry pass as well.
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      try {
+        const result = await extractTextFromAnyFile(file);
+        if (result && result.text) {
+          totalChars += result.characterCount;
+          extractedResults[originalIndex] = { file, result };
+        } else {
+          throw new Error('لم تُرجع خدمة استخراج النص نصًا صالحًا.');
+        }
+      } catch (retryErr: any) {
+        console.warn(`Image extraction retry failed for ${file.name}:`, retryErr);
+        const finalReason = getCleanFailureReason(file, retryErr);
+        failedNames.push(`${file.name}: تعذر استخراج النص حتى بعد إعادة المحاولة (${finalReason})`);
+      }
+    }
+
+    // Publish all successful results in original upload order, even when a result
+    // was recovered during the retry pass (e.g. image 3 stays in position 3).
+    for (const entry of extractedResults) {
+      if (!entry) continue;
+      const { file, result } = entry;
+      processedNames.push(file.name);
+      onTextExtracted(result.text, result.fileName, result.fileType, file);
     }
 
     setIsProcessing(false);
