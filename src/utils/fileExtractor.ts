@@ -222,6 +222,23 @@ async function extractTextViaServerOCROnce(base64Data: string, mimeType: string,
 }
 
 
+/** Check the server-managed OCR key/model pool before a batch of images/PDFs starts. */
+export async function checkServerOCRReadiness(): Promise<void> {
+  const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+  const sessionToken = getSessionToken();
+  if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+  let response: Response;
+  try {
+    response = await fetch('/api/ocr', { method: 'GET', headers, cache: 'no-store' });
+  } catch {
+    throw new Error('تعذر فحص جاهزية مفاتيح الصور والمستندات بسبب انقطاع الاتصال بالخادم.');
+  }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || result?.ready !== true) {
+    throw new Error(result?.message || result?.error || 'مجموعة مفاتيح الصور والمستندات (OCR) غير جاهزة. راجعها من لوحة إدارة المنصة.');
+  }
+}
+
 /**
  * إعادة محاولة محدودة لاستخراج OCR عند تأكيد أن الخادم أعاد خطأ مؤقتاً من Gemini.
  * لا نعيد المحاولة عند انقطاع اتصال غامض، لتجنب تكرار عملية قد تكون نجحت واحتسبت بالفعل.
