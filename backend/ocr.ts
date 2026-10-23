@@ -1,5 +1,5 @@
 import mammoth from 'mammoth';
-import { executeWithKeyRotation, GEMINI_MODELS } from './keyRotation.ts';
+import { executeWithDedicatedOCRKeyRotation, checkDedicatedOCRGeminiReadiness, GEMINI_MODELS } from './keyRotation.ts';
 
 import { requireActiveSession, consumeOperation } from './auth.ts';
 import { rateLimit, validateBase64Payload, limitBodyString } from './security.ts';
@@ -12,6 +12,18 @@ export const config = {
 };
 
 export default async function handler(req: any, res: any) {
+  if (req.method === 'GET') {
+    try {
+      rateLimit(req, 'ocr-readiness', 12, 10 * 60 * 1000);
+      await requireActiveSession(req);
+      const readiness = await checkDedicatedOCRGeminiReadiness(9000);
+      return res.status(readiness.ready ? 200 : 503).json(readiness);
+    } catch (err: any) {
+      const statusCode = Number(err?.statusCode || err?.status);
+      const status = Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600 ? statusCode : 500;
+      return res.status(status).json({ ready: false, keyCount: 0, checkedKeys: 0, error: err?.message || 'تعذر فحص جاهزية مجموعة OCR.' });
+    }
+  }
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -91,8 +103,7 @@ export default async function handler(req: any, res: any) {
     }
 
     const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل. - لا تصحح النص من عندك ولا تعيد صياغته ولا تلخصه. - لا تستنتج كلمة غير مقروءة ولا تخترع نصاً مفقوداً؛ عند تعذر قراءة جزء واضح استخدم [غير مقروء] بدلاً من التخمين. - لا تضف عناوين أو وقائع أو مواد قانونية أو أحكاماً أو أسماء غير ظاهرة في المستند. - حافظ على الجداول والقوائم والتقسيمات والعناوين قدر الإمكان. - إذا وجدت توقيعاً أو ختماً أو كتابة بخط اليد ولم يكن محتواها مقروءاً، صف وجوده بإيجاز دون اختلاق مضمونه. - أخرج النص المستخرج فقط، دون مقدمة أو تعليق أو تحليل أو ادعاء بأن الدقة مطلقة.`;
-    const isImageUpload = safeGeminiMime.startsWith('image/');
-    const extractedText = await executeWithKeyRotation(async (ai, _key, model) => {
+    const extractedText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
       const response = await ai.models.generateContent({
         skipAdaptiveAnswerLength: true,
         model,
@@ -127,7 +138,7 @@ export default async function handler(req: any, res: any) {
         });
       }
       return text;
-    }, GEMINI_MODELS, undefined, isImageUpload, isImageUpload ? { ocrMode: true } : undefined);
+    }, GEMINI_MODELS, 240000);
 
     if (extractedText) {
       const usage = await consumeOperation(req, 'ocr');
