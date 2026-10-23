@@ -3,7 +3,7 @@ import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
 import { createOpenRouterCompatibleClient, getOpenRouterModels } from './openrouterAdapter.ts';
-import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys } from './supabaseSync.ts';
+import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys, markServerCloudOCRGeminiKeySuccessful } from './supabaseSync.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
   if (!key || typeof key !== 'string') return false;
@@ -23,8 +23,8 @@ export function isValidGeminiApiKey(key: any): boolean {
 }
 
 export const GEMINI_MODELS = [
-  // Prefer the current stable Flash model, then stable fallbacks.
-  // Gemini 3.7 Flash is deprecated and automatically routed to 3.8 Flash.
+  // تفضيل نموذج Flash المستقر الحالي، ثم البدائل المستقرة.
+  // Gemini 3.7 Flash قديم ويتم توجيهه تلقائياً إلى 3.8 Flash.
   'gemini-3.8-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash',
@@ -33,8 +33,8 @@ export const GEMINI_MODELS = [
 let activeKeyIndex = 0;
 const permanentlyInvalidKeys = new Set<string>();
 const permanentlyInvalidOCRKeys = new Set<string>();
-// Per-instance fast-failover state. Cooldown entries expire lazily on access,
-// so no timers or additional serverless functions are needed.
+// حالة الفشل السريع لكل مثيل. تنتهي صلاحية إدخالات التبريد بكسل عند الوصول،
+// لذا لا توجد حاجة لوجود مؤقتات أو وظائف خادم إضافية.
 const keyCooldownUntil = new Map<string, number>();
 const keyModelCooldownUntil = new Map<string, number>();
 const modelCooldownUntil = new Map<string, number>();
@@ -78,10 +78,9 @@ function markRotationFailure(key: string, model: string, error: any, pool: 'gene
     keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
     pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
   } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
-    // A 503 observed with one key must not globally cool the model for every
-    // other key: this can make the scheduler report that every model is cooling
-    // after only a few attempts, leaving untouched keys unused. Cool only this
-    // key/model pair and let the next key try the same model.
+    // خطأ 503 الذي يتم ملاحظته مع مفتاح واحد يجب ألا يبرد النموذج عالمياً لكل
+    // مفتاح آخر: فهذا قد يجعل المجدول يبلغ بأن كل نموذج يبرد
+    // بعد محاولات قليلة فقط، مما يترك المفاتيح التي لم يتم لمسها بدون استخدام. قم بتبريد مفتاح زوج المفتاح/النموذج هذا فقط واترك المفتاح التالي يجرب نفس النموذج.
     pairCooldowns.set(pair, now + MODEL_BUSY_COOLDOWN_MS);
   } else if (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message)) {
     pairCooldowns.set(pair, now + (status === 504 || /timeout|timed out|network|connection|socket|econn|fetch failed/.test(message) ? CONNECTION_COOLDOWN_MS : MODEL_PAIR_COOLDOWN_MS));
@@ -108,15 +107,15 @@ function selectModelsForKey(models: string[], key: string, pool: 'general' | 'oc
     !isCooling(modelCooldowns, model, now) &&
     !isCooling(pairCooldowns, rotationPairKey(key, model), now)
   );
-  // Never retry a cooled key/model pair merely because no other pair is ready.
+  // لا تقم مطلقاً بإعادة محاولة زوج مفتاح/نموذج مبرد لمجرد عدم جاهزية زوج آخر.
   return available.slice(0, MAX_MODELS_PER_KEY_PER_REQUEST);
 }
-// A caller may bound an attempt when it must leave time to rotate providers or
-// persist a terminal job state. Unbounded non-OCR requests retain their old behavior.
+// يمكن للمستدعي تقييد المحاولة عندما يجب أن تترك وقتاً لتدوير المزودين أو
+// الحفاظ على حالة مهمة نهائية. تحافظ طلبات غير OCR غير المقيدة على سلوكها القديم.
 function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
   const httpOptions: any = { headers: { 'User-Agent': 'aistudio-build' } };
   if (Number.isFinite(timeoutMs) && Number(timeoutMs) >= 1000) {
-    // Bound each provider attempt so a stalled response can fail over without consuming the full task deadline.
+    // تحديد وقت كل محاولة للمزود حتى يتمكن الرد المتوقف مؤقتاً من الفشل دون استهلاك الموعد النهائي للمهمة بالكامل.
     httpOptions.timeout = Number(timeoutMs);
     httpOptions.retryOptions = { attempts: 1 };
   }
@@ -135,8 +134,8 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
 function shouldFallbackFromOpenRouter(error: any): boolean {
   const status = Number(error?.status || error?.statusCode || error?.response?.status);
   const message = String(error?.message || error?.error?.message || '').toLowerCase();
-  // Keep the app available through Gemini when OpenRouter credentials, free capacity,
-  // or a provider/model endpoint fail. The admin diagnostics report provider failures separately.
+  // الحفاظ على توفر التطبيق من خلال Gemini عند بيانات اعتماد OpenRouter، السعة المجانية،
+  // أو فشل نقطة نهاية المزود/النموذج. تقارير تشخيص المشرف تشير إلى اخفاقات المزود بشكل منفصل.
   return status === 401 || status === 402 || status === 403 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 ||
     (status === 400 && /max_tokens|context.?length|model|unsupported|parameter/.test(message)) ||
     /quota|rate.?limit|free.*(limit|unavailable|exhaust)|no free models|temporarily unavailable|service unavailable|timed out|timeout/.test(message);
@@ -145,8 +144,8 @@ const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
 let inMemoryDynamicKeys: string[] = [];
 
 export function getFileStoredKeys(): string[] {
-  // .keys_config.json is a development-only convenience. Production keys must
-  // come from durable Supabase storage or explicitly configured server env vars.
+  // ملف .keys_config.json هو وسيلة راحة للتطوير فقط. يجب أن تأتي مفاتيح الإنتاج
+  // من تخزين Supabase الدائم أو متغيرات بيئة الخادم التي تم تكوينها صراحةً.
   if (process.env.NODE_ENV === 'production') return [];
   try {
     if (fs.existsSync(KEYS_FILE)) {
@@ -157,7 +156,7 @@ export function getFileStoredKeys(): string[] {
       }
     }
   } catch (e) {
-    // ignore
+    // تجاهل
   }
   return inMemoryDynamicKeys;
 }
@@ -167,7 +166,7 @@ export function saveFileStoredKeys(keys: string[]): void {
   try {
     fs.writeFileSync(KEYS_FILE, JSON.stringify(inMemoryDynamicKeys, null, 2), 'utf-8');
   } catch (e) {
-    console.warn('Error saving keys config to disk:', e);
+    console.warn('خطأ في حفظ تكوين المفاتيح على القرص:', e);
   }
 }
 
@@ -207,8 +206,8 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
     };
   }
 
-  // Validate the credential and model access without calling generateContent.
-  // This prevents adding a key or opening the admin panel from consuming text-generation quota.
+  // التحقق من صحة بيانات الاعتماد والوصول إلى النموذج دون استدعاء generateContent.
+  // هذا يمنع إضافة مفتاح أو فتح لوحة المشرف من استهلاك حصة توليد النصوص.
   const deadline = Date.now() + Math.max(1000, timeoutMs);
   let lastFailure = '';
 
@@ -251,7 +250,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
         return { success: false, message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغى (${status}). أنشئ مفتاحاً جديداً.` };
       }
 
-      // Try the next configured model if this model is unavailable or access is restricted.
+      // جرب النموذج التالي الذي تم تكوينه إذا كان هذا النموذج غير متوفر أو كان الوصول مقيداً.
       if (status === 403 || status === 404 || status === 400) continue;
       if (status === 429) {
         return {
@@ -276,11 +275,11 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
 }
 
 
-let dedicatedOCRActiveKeyIndex = 0;
+let dedicatedOCRActiveKey = '';
 
 /**
- * Fast readiness check for the isolated OCR pool. It checks model access without generating content.
- * No general Gemini key, OpenRouter credential, or Vercel Gemini environment variable is consulted.
+ * فحص الجاهزية السريع لمجموعة OCR المعزولة. تتحقق من وصول النموذج دون توليد محتوى.
+ * لا يتم استشارة أي مفتاح Gemini عام، أو بيانات اعتماد OpenRouter، أو متغير بيئة Gemini في Vercel.
  */
 export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): Promise<{ ready: boolean; keyCount: number; checkedKeys: number; message: string }> {
   let keys: string[];
@@ -294,7 +293,7 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
       ready: false,
       keyCount: 0,
       checkedKeys: 0,
-      message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخازنة (OCR). أضف مفتاحاً من لوحة إدارة المنصة؛ لن تُستخدم المفاتيح العامة كبديل.',
+      message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخانزة (OCR). أضف مفتاحاً من لوحة إدارة المنصة؛ لن تُستخدم المفاتيح العامة كبديل.',
     };
   }
 
@@ -320,7 +319,7 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   };
 }
 
-/** OCR-only rotation: no OpenRouter, environment Gemini keys, or general legal-AI keys are fallback candidates. */
+/** تدوير OCR فقط: لا توجد OpenRouter، أو مفاتيح بيئة Gemini، أو مرشحات احتياطية لمفاتيح الذكاء الاصطناعي القانوني العام. */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -334,11 +333,18 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
     throw new Error(`تعذر تحميل مفاتيح الصور والمستندات من التخزين المركزي: ${String(error?.message || 'خطأ في Supabase').slice(0, 180)}`);
   }
   if (!keys.length) {
-    throw new Error('لا توجد مفاتيح مخصصة للصور والمستندات والخازنة (OCR). أضف مفتاحاً من لوحة إدارة المنصة؛ المفاتيح العامة للصياغة القانونية لا تستخدم هنا.');
+    throw new Error('لا توجد مفاتيح مخصصة للصور والمستندات والخانزة (OCR). أضف مفتاحاً من لوحة إدارة المنصة؛ المفاتيح العامة للصياغة القانونية لا تستخدم هنا.');
   }
 
-  if (dedicatedOCRActiveKeyIndex >= keys.length) dedicatedOCRActiveKeyIndex = 0;
-  const startIndex = reserveStartIndex(keys.length, 'ocr');
+  // تفضيل المفتاح الدقيق الذي نجح آخر مرة في OCR في مثيل الخادم الدافئ هذا.
+  // تخزين قيمة المفتاح (ليس الفهرس الخاص به)، لأن المشرف قد يعيد ترتيب قائمة مفاتيح Supabase.
+  // إذا تم إزالة هذا المفتاح، أو تم تبريده، أو لم يعد متاحاً، استخدم التدوير العادي.
+  const rememberedKeyIndex = dedicatedOCRActiveKey ? keys.indexOf(dedicatedOCRActiveKey) : -1;
+  const startIndex = rememberedKeyIndex >= 0 &&
+    !isCooling(ocrKeyCooldownUntil, dedicatedOCRActiveKey) &&
+    !permanentlyInvalidOCRKeys.has(dedicatedOCRActiveKey)
+      ? rememberedKeyIndex
+      : reserveStartIndex(keys.length, 'ocr');
   let lastError: any = null;
   const usableOCRKeys = keys.filter((candidate) => !permanentlyInvalidOCRKeys.has(candidate));
   if (usableOCRKeys.length && usableOCRKeys.every((candidate) => isCooling(ocrKeyCooldownUntil, candidate))) {
@@ -364,7 +370,9 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
         const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
         const result = await action(ai, key, model);
         if (Date.now() >= deadlineAt) throw Object.assign(new Error('انتهت مهلة استخراج النص عبر مجموعة OCR.'), { status: 504, statusCode: 504 });
-        dedicatedOCRActiveKeyIndex = keyIndex;
+        dedicatedOCRActiveKey = key;
+        // تفضيل دائم مشترك عبر مثيلات Vercel؛ المساعد هو جهد أفضل ما يكون.
+        await markServerCloudOCRGeminiKeySuccessful(key);
         return result;
       } catch (error: any) {
         lastError = error;
@@ -379,9 +387,9 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
           message: String(error?.message || 'Unknown OCR error').slice(0, 220),
         });
         const isModelUnavailable = status === 404 || status === 400 || /model.*not found|unsupported model|no longer available/.test(message);
-        // Try one alternate model on the same key for model availability and
-        // transient provider failures, including 503/504 deadline errors.
-        // Quota/auth failures still rotate to the next key without retrying this key.
+        // جرب نموذجاً ديلاً واحداً على نفس المفتاح لتوفر النموذج و
+        // اخفاقات المزود المؤقتة، بما في ذلك أخطاء المهلة 503/504.
+        // لا تزال اخفاقات الحصة/المصادقة تقوم بالتدوير إلى المفتاح التالي دون إعادة محاولة هذا المفتاح.
         const shouldTryAlternateModel = isModelUnavailable ||
           status === 503 || status === 504 ||
           kind === 'temporary' ||
@@ -422,8 +430,8 @@ export function getVercelGeminiKeys(_ignoredClientFallbackKey?: string): string[
     }
   };
 
-  // Explicit Gemini variables only. Never scan arbitrary process.env values:
-  // Supabase/service-role secrets must never be treated as Gemini credentials.
+  // متغيرات Gemini الصريحة فقط. لا تقم أبداً بمسح قيم process.env الاعتباطية:
+  // يجب عدم معاملة أسرار Supabase/service-role أبداً كبيانات اعتماد Gemini.
   for (let i = 1; i <= 50; i++) {
     addKey(process.env[`GEMINI_API_KEY_${i}`]);
     addKey(process.env[`GEMINI_KEY_${i}`]);
@@ -433,14 +441,14 @@ export function getVercelGeminiKeys(_ignoredClientFallbackKey?: string): string[
   addKey(process.env.GOOGLE_GENAI_API_KEY);
   addKey(process.env.GOOGLE_API_KEY);
 
-  // Keys added from the server-side admin panel are stored locally for
-  // development and must participate in the same AI key rotation path.
+  // المفاتيح المضافة من لوحة إدارة جانب الخادم يتم تخزينها محلياً لـ
+  // التطوير ويجب أن تشارك في نفس مسار تدوير مفتاح الذكاء الاصطناعي.
   for (const storedKey of getFileStoredKeys()) addKey(storedKey);
 
   return keys;
 }
 
-/** * Use both server environment keys and keys saved through the existing admin * panel in Supabase. Keep credentials server-side and preserve key order. */
+/** * استخدام كل من مفاتيح بيئة الخادم والمفاتيح المحفوظة من خلال لوحة إدارة * Supabase الحالية. احتفظ ببيانات الاعتماد على جانب الخادم وحافظ على ترتيب المفاتيح. */
 async function getAvailableGeminiKeys(timeoutMs?: number): Promise<string[]> {
   const keys = getVercelGeminiKeys();
   try {
@@ -448,8 +456,8 @@ async function getAvailableGeminiKeys(timeoutMs?: number): Promise<string[]> {
       if (isValidGeminiApiKey(key) && !keys.includes(key)) keys.push(key);
     }
   } catch (error) {
-    // If environment keys exist, a temporary Supabase read failure must not
-    // prevent the existing configured provider from working.
+    // إذا كانت مفاتيح البيئة موجودة، يجب ألا يمنع فشل القراءة المؤقت لـ Supabase
+    // المزود الذي تم تكوينه مسبقاً من العمل.
     if (keys.length === 0) throw error;
     console.error('[Gemini key rotation] Could not load admin-managed Gemini keys; using configured environment keys.');
   }
@@ -497,12 +505,12 @@ export function getKeysStatus() {
   };
 }
 
-/** Add guidance to let the model choose answer length based on the legal task, without a fixed word count. */
+/** إضافة إرشاد للسماح للنموذج اختيار طول الإجابة وفقاً للمهمة القانونية، دون عدد كلمات ثابت. */
 function withAdaptiveAnswerLength(ai: any): any {
-  const instruction = 'اختر طول الإجابة وفقاً لطبيعة الطلب وتعقيده؛ لا تلتزم بعدد كلمات ثابت ولا تختصر لمجرد الاختصار. قدم إجابة قانونية مكتملة ومفصلة بالقدر اللازم، مع الوقائع والتحليل والأسانيد والخطوات العملية عند الحاجة. تجنب التكرار والحشو، ولا تختلق نصوصاً أو أحكاماً أو وقائع غير متحقق منها، وصرح بما يحتاج إلى تحقق. إذا طلب المستخدم الإيجاز صراحةً، التزم بطلبه.';
+  const instruction = 'اختر طول الإجابة وفقاً لطبيعة الطلب وتعقيده؛ لا تلتزم بعدد كلمات ثابت ولا تختصر لمجرد الاختصار. قدم إجابة قانونية مكتملة ومفصلة بالقدر اللازم، مع الوقائع والتحليل والأساليب والخطوات العملية عند الحاجة. تجنب التكرار والحشو، ولا تختلق نصوصاً أو أحكاماً أو وقائع غير متحقق منها، وصرح بما يحتاج إلى تحقق. إذا طلب المستخدم الإيجاز صراحةً، التزم بطلبه.';
   const adaptOptions = (options: any) => {
     const { skipAdaptiveAnswerLength, ...apiOptions } = options || {};
-    // OCR must preserve its literal-extraction prompt without unrelated legal-drafting instructions.
+    // يجب أن يحافظ OCR على موجه الاستخراج الحرفي الخاص به دون تعليمات صياغة قانونية غير ذات صلة.
     if (skipAdaptiveAnswerLength === true) return apiOptions;
     const config = { ...(apiOptions?.config || {}) };
     const current = config.systemInstruction;
@@ -526,7 +534,7 @@ function withAdaptiveAnswerLength(ai: any): any {
 }
 
 type KeyRotationExecutionOptions = {
-  /** OCR uses a bounded, vision-aware provider path; all other callers keep the standard rotation. */
+  /** يستخدم OCR مسار مزود مقيد وواعي للرؤية؛ يحافظ جميع المستدعين الآخرين على التدوير القياسي. */
   ocrMode?: boolean;
   deadlineAt?: number;
   previousProviderError?: string;
@@ -540,8 +548,8 @@ export async function executeWithKeyRotation<T>(
   executionOptions?: KeyRotationExecutionOptions
 ): Promise<T> {
   if (!executionOptions?.deadlineAt) {
-    // Bound standalone requests too. OCR keeps its existing shorter deadline;
-    // other requests retain nearly all of Vercel's five-minute execution window.
+    // تقييد الطلبات المستقلة أيضاً. يحافظ OCR على الموعد النهائي الأقصر الحالي؛
+    // تحتفظ الطلبات الأخرى بما يقرب من كل نافذة تنفيذ لخمس دقائق لـ Vercel.
     executionOptions = { ...executionOptions, deadlineAt: Date.now() + (executionOptions?.ocrMode ? 240000 : 270000) };
   }
   const deadlineAt = Number(executionOptions.deadlineAt);
@@ -549,14 +557,14 @@ export async function executeWithKeyRotation<T>(
     new Error('انتهت المهلة المتاحة لتوليد النتيجة قبل اكتمالها. احتفظ بالنص الجزئي إن وجد.'),
     { status: 504, statusCode: 504 },
   );
-  // OpenRouter is primary unless explicitly forced to use the Gemini fallback.
+  // OpenRouter هي الأساس ما لم يتم فرض استخدام بديل Gemini صراحةً.
   if (!_forceGeminiFallback) {
-    // Generic AI tasks keep their configured model rotation. OCR uses only the router first,
-    // then tries Gemini on any failure instead of spending 4 sequential waits on free models.
+    // تحافظ مهام الذكاء الاصطناعي العامة على تدوير النماذج المكونة الخاصة بها. يستخدم OCR الموجه فقط أولاً،
+    // ثم يجرب Gemini عند أي فشل بدلاً من قضاء 4 انتظارات متتالية على النماذج المجانية.
     const models = executionOptions?.ocrMode ? ['openrouter/free'] : getOpenRouterModels();
     let lastError: any = null;
-    // Keep silent provider retries within a shared budget, preserving time for
-    // the server-side Gemini fallback rather than waiting once per model.
+    // الحفاظ على عمليات إعادة محاولة المزود الصامتة ضمن ميزانية مشتركة، مع الحفاظ على الوقت لـ
+    // بديل Gemini في جانب الخادم بدلاً من الانتظار مرة واحدة لكل نموذج.
     const openRouterDeadlineAt = Math.min(deadlineAt - 90000, Date.now() + 120000);
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
@@ -583,8 +591,8 @@ export async function executeWithKeyRotation<T>(
         const message = String(error?.message || '').toLowerCase();
         if (status === 401 || status === 403) break;
         if (status === 402 || status === 429 || /no free models|free.*(limit|unavailable|exhaust)|quota exhausted/.test(message)) {
-          // A single model/provider may be out of capacity while another configured
-          // fallback is still available. Try the remaining models before Gemini fallback.
+          // قد يكون نموذج/مزود واحد خارج السعة بينما يكون بديل آخر مكون
+          // لا يزال متاحاً. جرب النماذج المتبقية قبل بديل Gemini.
           continue;
         }
         const canRetry = status === 400 || status === 401 || status === 404 || status === 408 || status === 413 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
@@ -606,9 +614,9 @@ export async function executeWithKeyRotation<T>(
     if (status === 402 || status === 429) throw new Error('تعذر الاتصال بنماذج OpenRouter المتاحة بسبب حدود الاستخدام أو نفاذ الرصيد أو الحصة. راجع الرصيد أو جرب لاحقاً، وتأكد من إعداد مفتاح Gemini الاحتياطي إن كنت تستخدمه.');
     throw lastError || new Error('تعذر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
-  // Preserve the legacy function signature for compatibility, but never use a client-provided key.
-  // Gemini fallback credentials are read server-side from Vercel environment variables
-  // and the existing admin-managed Supabase key store.
+  // الحفاظ على توقيع الوظيفة القديمة للتوافق، ولكن لا تستخدم أبداً مفتاحاً مقدمأ من العميل.
+  // تتم قراءة بيانات اعتماد بديل Gemini من جانب الخادم من متغيرات بيئة Vercel
+  // ومتجر مفاتيح Supabase المدار من قبل المشرف الحالي.
   const remainingBeforeKeyLoad = deadlineAt - Date.now();
   if (remainingBeforeKeyLoad < 10000) throw timeoutError();
   let availableKeys: string[];
@@ -630,9 +638,9 @@ export async function executeWithKeyRotation<T>(
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
-  // Sweep all configured keys/models once per server request. The caller may retry
-  // a transient request failure, but repeating a full sweep here multiplies latency.
-  // This does NOT reduce the number of distinct keys or fallback models tried.
+  // مسح جميع المفاتيح/الننماذج المكونة مرة واحدة لكل طلب خادم. قد يعيد المستدعي محاولة
+  // فشل طلب عابر، لكن تكرار مسح كامل هنا يضاعف وقت الاستجابة.
+  // هذا لا يقلل من عدد المفاتيح المميزة أو نماذج البديل التي تمت تجربتها.
   const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
   if (keys.length && keys.every((candidate) => isCooling(keyCooldownUntil, candidate))) {
@@ -655,8 +663,8 @@ export async function executeWithKeyRotation<T>(
 
       for (let m = 0; m < keyModels.length; m++) {
         const remainingMs = deadlineAt - Date.now();
-        // Stop starting attempts when there is no longer time to finish and
-        // persist a terminal result. OCR still uses its existing 30-second cap.
+        // توقف عن بدء المحاولات عندما لا يكون هناك وقت كافٍ للانتهاء و
+        // الاحتفاظ بنتيجة نهائية. لا يزال OCR يستخدم الحد الأقصى الحالي البالغ 30 ثانية.
         if (remainingMs < 10000) {
           lastError = timeoutError();
           break geminiKeyLoop;
@@ -683,8 +691,8 @@ export async function executeWithKeyRotation<T>(
           const status = Number(err?.status || err?.statusCode || err?.response?.status);
           const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
             /not found|no longer available|model not found|unsupported model/.test(msg);
-          // Do not retry the same key/model. Try at most one alternate model on
-          // this key for model-specific 400/404/503 failures; otherwise rotate now.
+          // لا تعيد محاولة نفس المفتاح/النموذج. جرب نموذجاً ديلاً واحداً على الأكثر في
+          // هذا المفتاح لأخطاء 400/404/503 الخاصة بالنموذج؛ وإلا قم بالتدوير الآن.
           if ((isModelUnavailable || status === 503) && m < keyModels.length - 1) continue;
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
           break;
@@ -704,7 +712,7 @@ export async function executeWithKeyRotation<T>(
     if (finalKind === 'temporary') throw new Error('فشل استخراج النص عبر OpenRouter ثم انتهت مهلة Gemini أو تعذر الاتصال به بعد محاولات التبديل. أعد محاولة رفع المستند، وإذا تكرر الخطأ فرجع سجل /api/ocr على الخادم.');
     throw new Error(`فشل استخراج النص: تعطل OpenRouter (${executionOptions.previousProviderError}) ثم تعذر Gemini (${String(lastError?.message || 'لم ترجع الخدمة نتيجة صالحة').slice(0, 180)}).`);
   }
-  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفذت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
+  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفذت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحة.');
   if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
   if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
@@ -712,8 +720,8 @@ export async function executeWithKeyRotation<T>(
 
 
 export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false, executionOptions?: KeyRotationExecutionOptions ): Promise<void> {
-  // api/index.ts sets a five-minute Vercel limit. Stop at 4:30 to leave 30 seconds
-  // for error handling and persisting the terminal job state.
+  // يحدد api/index.ts حد خمس دقائق لـ Vercel. التوقف عند 4:30 لترك 30 ثانية
+  // لمعالجة الأخطاء والاحتفاظ بحالة المهمة النهائية.
   if (!executionOptions?.deadlineAt) {
     executionOptions = { ...executionOptions, deadlineAt: Date.now() + 270000 };
   }
@@ -726,8 +734,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   if (!_forceGeminiFallback) {
     const models = getOpenRouterModels();
     let lastError: any = null;
-    // Limit silent OpenRouter/model retries as a group so the Gemini fallback
-    // still has useful time available before Vercel's hard function deadline.
+    // تحديد عمليات إعادة محاولة OpenRouter/النموذج الصامتة كمجموعة بحيث يكون بديل Gemini
+    // لا يزال لديه وقت مفيد متاح قبل موعد انتهاء مهلة وظيفة Vercel الصعبة.
     const openRouterFirstTextDeadlineAt = Math.min(deadlineAt - 90000, Date.now() + 105000);
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
@@ -740,8 +748,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         if (remainingMs < 10000) lastError = timeoutError();
         break;
       }
-      // Bound the initial wait and total silent retries; once output starts,
-      // the adapter allows up to 90 seconds between actual text chunks.
+      // تقييد الانتظار الأولي وإعادة المحاولات الصامتة الإجمالية؛ بمجرد بدء الإخراج،
+      // يتيح المحول ما يصل إلى 90 ثانية بين قطع النص الفعلية.
       const attemptTimeoutMs = Math.min(12000, remainingMs, firstTextBudgetMs);
       try {
         const stream = await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient(attemptTimeoutMs, deadlineAt)) as unknown as GoogleGenAI, 'openrouter', model);
@@ -766,13 +774,13 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           code: typeof error?.code === 'string' ? error.code : undefined,
           message: String(error?.message || 'Unknown OpenRouter stream error').slice(0, 300),
         });
-        // Never restart on another model after visible output, as that duplicates or corrupts legal text.
+        // لا تقم مطلقاً بإعادة البدء على نموذج آخر بعد الإخراج المرئي، لأن ذلك يكرر أو يفسد النص القانوني.
         if (emitted) throw error;
         const status = Number(error?.status || error?.statusCode);
         const message = String(error?.message || '').toLowerCase();
         if (status === 401 || status === 403) break;
         if (status === 402 || status === 429 || /no free models|free.*(limit|unavailable|exhaust)|quota exhausted/.test(message)) {
-          // Keep trying remaining configured models before using the Gemini fallback.
+          // الاستمرار في تجربة النماذج المكونة المتبقية قبل استخدام بديل Gemini.
           continue;
         }
         const canRetry = status === 400 || status === 401 || status === 404 || status === 408 || status === 413 || status >= 500 || /timeout|rate.?limit|quota|unavailable|model.*not found/.test(message);
@@ -789,8 +797,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     if (status === 402 || status === 429) throw new Error('تعذر الاتصال بنماذج OpenRouter المتاحة بسبب حدود الاستخدام أو نفاذ الرصيد أو الحصة. راجع الرصيد أو جرب لاحقاً، وتأكد من إعداد مفتاح Gemini الاحتياطي إن كنت تستخدمه.');
     throw lastError || new Error('تعذر الاتصال بجميع نماذج OpenRouter المتاحة.');
   }
-  // Preserve the legacy function signature for compatibility, but never use a client-provided key.
-  // Streaming fallback also uses server-side environment and admin-managed keys.
+  // الحفاظ على توقيع الوظيفة القديمة للتوافق، ولكن لا تستخدم أبداً مفتاحاً مقدمأ من العميل.
+  // يستخدم بديل البث أيضاً بيئة جانب الخادم ومفاتيح إدارة المشرف.
   const remainingBeforeKeyLoad = deadlineAt - Date.now();
   if (remainingBeforeKeyLoad < 10000) throw timeoutError();
   const keys = (await getAvailableGeminiKeys(Math.min(8000, remainingBeforeKeyLoad - 2000))).filter((key) => !permanentlyInvalidKeys.has(key));
@@ -800,9 +808,9 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
-  // Sweep all configured keys/models once per server request. The caller may retry
-  // a transient request failure, but repeating a full sweep here multiplies latency.
-  // This does NOT reduce the number of distinct keys or fallback models tried.
+  // مسح جميع المفاتيح/الننماذج المكونة مرة واحدة لكل طلب خادم. قد يعيد المستدعي محاولة
+  // فشل طلب عابر، لكن تكرار مسح كامل هنا يضاعف وقت الاستجابة.
+  // هذا لا يقلل من عدد المفاتيح المميزة أو نماذج البديل التي تمت تجربتها.
   const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
   if (keys.length && keys.every((candidate) => isCooling(keyCooldownUntil, candidate))) {
@@ -855,8 +863,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
             message: String(err?.message || 'Unknown Gemini stream error').slice(0, 300),
           });
 
-          // Once Gemini has started streaming, the response may already be visible
-          // to the user, so do not silently restart and duplicate the answer.
+          // بمجرد أن يبدأ Gemini في البث، قد تكون الاستجابة مرئية بالفعل
+          // للمستخدم، لذا لا تقم بإعادة البدء بصمت وتكرار الإجابة.
           if (emittedAnyChunk) {
             throw err;
           }
@@ -866,8 +874,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           const status = Number(err?.status || err?.statusCode || err?.response?.status);
           const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
             /not found|no longer available|model not found|unsupported model/.test(msg);
-          // Never restart after visible output. Before output, only model-specific
-          // failures may try one alternate model; quota/network/timeouts rotate keys.
+          // لا تقم بإعادة البدء مطلقاً بعد الإخراج المرئي. قبل الإخراج، فقط إخفاقات النموذج المحددة
+          // قد تجرب نموذجاً ديلاً واحداً؛ الحصة/الشبكة/المهلات تدور المفاتيح.
           if ((isModelUnavailable || status === 503) && m < keyModels.length - 1) continue;
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
           break;
@@ -882,7 +890,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
   if (Date.now() >= deadlineAt || Number(lastError?.status || lastError?.statusCode) === 504) throw lastError || timeoutError();
   const finalKind = getGeminiErrorKind(lastError);
-  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفذت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحاً.');
+  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفذت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحة.');
   if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
   if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
