@@ -44,7 +44,70 @@ export function formatFriendlyLegalAiError(rawMsg: string): string {
 }
 
 
-type SavedJobType = 'counter-brief' | 'deconstruct' | 'qualify' | 'refine';
+type SavedJobType = 'counter-brief' | 'deconstruct' | 'qualify' | 'refine' | 'ocr';
+
+export interface SavedOcrJob {
+  jobId: string;
+  fileName: string;
+  mimeType: string;
+  status: 'pending' | 'completed' | 'failed';
+  createdAt: string;
+  error?: string;
+}
+
+function sanitizeStoragePart(value: string): string {
+  return String(value || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function ocrJobsStorageKey(scope: string, userId?: string): string {
+  return `amin_ai_ocr_jobs_${sanitizeStoragePart(scope)}_${sanitizeStoragePart(userId || 'default')}`;
+}
+
+function readSavedOcrJobs(scope: string, userId?: string): SavedOcrJob[] {
+  try {
+    const raw = localStorage.getItem(ocrJobsStorageKey(scope, userId));
+    const rows = raw ? JSON.parse(raw) : [];
+    return Array.isArray(rows) ? rows.filter((row) =>
+      row && typeof row.jobId === 'string' && typeof row.fileName === 'string'
+    ) as SavedOcrJob[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedOcrJobs(scope: string, userId: string | undefined, rows: SavedOcrJob[]): void {
+  try {
+    if (rows.length) localStorage.setItem(ocrJobsStorageKey(scope, userId), JSON.stringify(rows));
+    else localStorage.removeItem(ocrJobsStorageKey(scope, userId));
+  } catch (error) {
+    console.warn('OCR job recovery metadata could not be saved:', error);
+  }
+}
+
+function upsertSavedOcrJob(scope: string, userId: string | undefined, job: SavedOcrJob): void {
+  const rows = readSavedOcrJobs(scope, userId).filter((row) => row.jobId !== job.jobId);
+  rows.push(job);
+  writeSavedOcrJobs(scope, userId, rows);
+}
+
+function updateSavedOcrJob(scope: string, userId: string | undefined, jobId: string, status: SavedOcrJob['status'], error?: string): void {
+  const rows = readSavedOcrJobs(scope, userId).map((row) => row.jobId === jobId ? { ...row, status, ...(error ? { error } : {}) } : row);
+  writeSavedOcrJobs(scope, userId, rows);
+}
+
+export function getSavedOcrJobs(scope: string, userId?: string): SavedOcrJob[] {
+  return readSavedOcrJobs(scope, userId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function acknowledgeSavedOcrJob(scope: string, userId: string | undefined, jobId: string): void {
+  const rows = readSavedOcrJobs(scope, userId).filter((row) => row.jobId !== jobId);
+  writeSavedOcrJobs(scope, userId, rows);
+  const key = jobStorageKey('ocr', userId, scope);
+  try {
+    if (localStorage.getItem(key) === jobId) localStorage.removeItem(key);
+  } catch {}
+}
+
 
 function makeJobId(): string {
   try {
@@ -56,11 +119,41 @@ function makeJobId(): string {
   });
 }
 
-function jobStorageKey(type: SavedJobType, userId?: string): string {
-  const user = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
-  return type === 'counter-brief'
-    ? `amin_judicial_draft_job_id_${user}`
-    : `amin_ai_job_${type}_${user}`;
+function jobStorageKey(type: SavedJobType, userId?: string, storageScope?: string): string {
+  const user = sanitizeStoragePart(userId || 'default');
+  if (type === 'counter-brief') return `amin_judicial_draft_job_id_${user}`;
+  if (type === 'ocr' && storageScope) return `amin_ai_job_ocr_${sanitizeStoragePart(storageScope)}_${user}`;
+  return `amin_ai_job_${type}_${user}`;
+}
+
+async function enableCompletionPushNotifications(): Promise<void> {
+  try {
+    if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    const publicKey = String((import.meta as any).env?.VITE_VAPID_PUBLIC_KEY || '').trim();
+    if (!publicKey) return;
+    let permission = Notification.permission;
+    if (permission === 'default') permission = await Notification.requestPermission();
+    if (permission !== 'granted') return;
+    const registration = await navigator.serviceWorker.register('/sw.js');
+    const readyRegistration = await navigator.serviceWorker.ready;
+    let subscription = await readyRegistration.pushManager.getSubscription();
+    if (!subscription) {
+      const padding = '='.repeat((4 - publicKey.length % 4) % 4);
+      const base64 = (publicKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const raw = atob(base64);
+      const applicationServerKey = Uint8Array.from(raw, (character) => character.charCodeAt(0));
+      subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
+    }
+    const response = await fetch('/api/gemini/jobs', {
+      method: 'POST',
+      headers: getRequestHeaders(),
+      body: JSON.stringify({ action: 'subscribe-push', subscription: subscription.toJSON() }),
+    });
+    if (!response.ok) console.warn('Could not save completion notification subscription.');
+  } catch (error) {
+    // Notification permission or push setup must never block the requested legal task.
+    console.warn('Completion notifications are unavailable on this device/browser:', error);
+  }
 }
 
 async function requestSavedJob<T extends Record<string, any>>(
@@ -69,19 +162,38 @@ async function requestSavedJob<T extends Record<string, any>>(
   onChunk?: (text: string) => void,
   userId?: string,
   resumeId?: string,
+  storageScope?: string,
+  ocrMetadata?: { fileName: string; mimeType: string },
+  forcedJobId?: string,
 ): Promise<string> {
-  const key = jobStorageKey(type, userId);
+  const key = jobStorageKey(type, userId, storageScope);
   const storage = typeof localStorage !== 'undefined' ? localStorage : null;
   // A manual run always gets a new id. Reusing an old localStorage id is only
   // allowed when the caller explicitly invokes one of the resume functions.
   // Keep the newly generated id before POST so a lost response can be recovered
   // idempotently without charging for a second generation.
-  const jobId = resumeId || makeJobId();
+  const jobId = resumeId || forcedJobId || makeJobId();
   if (storage) storage.setItem(key, jobId);
+  if (type === 'ocr' && storageScope && ocrMetadata && !resumeId) {
+    upsertSavedOcrJob(storageScope, userId, {
+      jobId,
+      fileName: ocrMetadata.fileName,
+      mimeType: ocrMetadata.mimeType,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+  }
+  const clearJobReference = () => {
+    if (storage?.getItem(key) === jobId) storage.removeItem(key);
+    if (type === 'ocr' && storageScope) {
+      writeSavedOcrJobs(storageScope, userId, readSavedOcrJobs(storageScope, userId).filter((row) => row.jobId !== jobId));
+    }
+  };
 
   const headers = getRequestHeaders();
   let created = Boolean(resumeId);
   if (!resumeId) {
+    await enableCompletionPushNotifications();
     let receivedHttpResponse = false;
     try {
       const createResponse = await fetch('/api/gemini/jobs', {
@@ -92,7 +204,7 @@ async function requestSavedJob<T extends Record<string, any>>(
       receivedHttpResponse = true;
       if (!createResponse.ok) {
         const error = await createResponse.json().catch(() => ({}));
-        if (storage) storage.removeItem(key);
+        clearJobReference();
         throw new Error(error?.error || `تعذر حفظ المهمة (${createResponse.status}).`);
       }
       created = true;
@@ -145,35 +257,50 @@ async function requestSavedJob<T extends Record<string, any>>(
 
       if (data.status === 'completed') {
         const result = String(data.result || lastText);
-        if (storage) storage.removeItem(key);
+        if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'completed');
+        else if (storage) storage.removeItem(key);
         return result;
       }
       if (data.status === 'failed') {
-        if (storage) storage.removeItem(key);
         const failure: any = new Error(data.error || 'فشلت المهمة المحفوظة.');
         failure.terminalJobError = true;
+        failure.jobId = jobId;
+        if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'failed', failure.message);
+        else clearJobReference();
         throw failure;
       }
       if (Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS) {
         const failure: any = new Error('لم يصل أي تحديث للمهمة خلال 4 دقائق ونصف. توقفت متابعة الانتظار، واحتُفظ بمعرّفها لمحاولة استعادة حالتها دون بدء توليد جديد.');
         failure.noProgressTimeout = true;
+        failure.savedJobPending = type === 'ocr';
         throw failure;
       }
     } catch (err: any) {
       const statusCode = Number(err?.statusCode);
       const permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429;
       if (err?.noProgressTimeout || err?.terminalJobError || permanentClientError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) {
-        if (statusCode === 404 && storage) storage.removeItem(key);
+        if (statusCode === 404) clearJobReference();
         throw err;
       }
       transientFailures++;
       if (transientFailures >= 8) {
-        throw new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
+        if (type === 'ocr') {
+          // Keep attempting lightweight status checks while the page is open;
+          // a temporary client/network outage must not discard the OCR watcher.
+          transientFailures = 0;
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          continue;
+        }
+        const failure: any = new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
+        failure.savedJobPending = false;
+        throw failure;
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  throw new Error('المهمة ما زالت قيد المعالجة. ارجع لاحقًا لاستعادة النتيجة المحفوظة دون بدء توليد جديد.');
+  const failure: any = new Error('المهمة ما زالت قيد المعالجة. ارجع لاحقًا لاستعادة النتيجة المحفوظة دون بدء توليد جديد.');
+  failure.savedJobPending = type === 'ocr';
+  throw failure;
 }
 
 export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
@@ -183,6 +310,31 @@ export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: st
 
 export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
   return requestSavedJob(type, {}, onChunk, userId, jobId);
+}
+
+export async function runSavedOcrTask(
+  base64Data: string,
+  mimeType: string,
+  fileName: string,
+  storageScope: string,
+  userId?: string,
+): Promise<{ text: string; jobId: string }> {
+  const jobId = makeJobId();
+  const text = await requestSavedJob(
+    'ocr',
+    { base64Data, mimeType, fileName, recoveryScope: sanitizeStoragePart(storageScope) },
+    undefined,
+    userId,
+    undefined,
+    storageScope,
+    { fileName, mimeType },
+    jobId,
+  );
+  return { text, jobId };
+}
+
+export async function resumeSavedOcrTask(jobId: string, storageScope: string, userId?: string): Promise<string> {
+  return requestSavedJob('ocr', {}, undefined, userId, jobId, storageScope);
 }
 
 async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, onChunk?: (text: string) => void ): Promise<any> {
