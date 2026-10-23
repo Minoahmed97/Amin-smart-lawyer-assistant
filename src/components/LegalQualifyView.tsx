@@ -243,6 +243,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
+            recoveryScope="qualify"
             onProcessingChange={setIsUploadingDoc}
             onTextExtracted={handleExtractedDocumentText}
             title="رفع مستندات النزاع (وورد / بي دي إف / صور)"
