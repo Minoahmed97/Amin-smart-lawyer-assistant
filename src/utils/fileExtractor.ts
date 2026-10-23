@@ -22,11 +22,7 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   });
 }
 
-/** 
- * ضغط الصور وتغيير حجمها من جانب العميل (Client-Side). 
- * ضبط أبعاد الصور بحد أقصى 1200px بجودة JPEG 0.70. 
- * يمنع خطأ HTTP 413 تماماً ويسرّع عملية التعرف الضوئي على الحروف (OCR). 
- */
+/** * ضغط الصور وتغيير حجمها من جانب العميل (Client-Side). * ضبط أبعاد الصور بحد أقصى 1200px بجودة JPEG 0.70. * يمنع خطأ HTTP 413 تماماً ويسرّع عملية التعرف الضوئي على الحروف (OCR). */
 export async function compressAndResizeImage( file: File, maxDimension = 1200, quality = 0.70 ): Promise<{ base64Data: string; mimeType: string }> {
   if (typeof window !== 'undefined' && 'createImageBitmap' in window) {
     try {
@@ -125,9 +121,7 @@ export function resolveMimeType(file: File): string {
   return file.type || 'image/jpeg';
 }
 
-/** 
- * استخراج النصوص عبر خادم OCR الموجه من خلال خدمة التدوير الآلي لمفاتيح الذكاء الاصطناعي. 
- */
+/** * استخراج النصوص عبر خادم OCR الموجه من خلال خدمة التدوير الآلي لمفاتيح الذكاء الاصطناعي. */
 async function extractTextViaServerOCROnce(base64Data: string, mimeType: string, fileName: string): Promise<string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -239,10 +233,7 @@ export async function checkServerOCRReadiness(): Promise<void> {
   }
 }
 
-/**
- * إعادة محاولة محدودة لاستخراج OCR عند تأكيد أن الخادم أعاد خطأ مؤقتاً من Gemini.
- * لا نعيد المحاولة عند انقطاع اتصال غامض، لتجنب تكرار عملية قد تكون نجحت واحتسبت بالفعل.
- */
+/** * إعادة محاولة محدودة لاستخراج OCR عند تأكيد أن الخادم أعاد خطأ مؤقتاً من Gemini. * لا نعيد المحاولة عند انقطاع اتصال غامض، لتجنب تكرار عملية قد تكون نجحت واحتسبت بالفعل. */
 export async function extractTextViaServerOCR(base64Data: string, mimeType: string, fileName: string): Promise<string> {
   try {
     return await extractTextViaServerOCROnce(base64Data, mimeType, fileName);
@@ -250,11 +241,14 @@ export async function extractTextViaServerOCR(base64Data: string, mimeType: stri
     const message = String(error?.message || '');
     const isTransientProviderFailure =
       /\b(?:503|504)\b|DEADLINE_EXCEEDED|temporar(?:y|ily)|unavailable|high demand|مشغول.{0,20}مؤقت|انتهت المهلة المتاحة|تعذر الاتصال بنماذج|تعذر الاتصال بـ Gemini/i.test(message);
+    const isConnectionInterruption =
+      /انقطع الاتصال|أُغلق اتصال استخراج النصوص|انتهى اتصال استخراج النص|failed to fetch|network error|load failed/i.test(message);
 
-    if (!isTransientProviderFailure) throw error;
+    if (!isTransientProviderFailure && !isConnectionInterruption) throw error;
 
-    // محاولة إضافية واحدة فقط؛ يظل الرفع متعدد الملفات كما هو دون تغيير.
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    // محاولة واحدة بعد انتظار قصير عند تعطل مؤقت من المزود أو انقطاع الاتصال.
+    // لا نغيّر ضغط الصور أو طريقة استخراجها أو بقية وظائف التطبيق.
+    await new Promise((resolve) => setTimeout(resolve, isConnectionInterruption ? 2000 : 1200));
     return await extractTextViaServerOCROnce(base64Data, mimeType, fileName);
   }
 }
@@ -303,13 +297,7 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
   throw new Error(`تعذر استخراج نص وورد القديم (${file.name}).`);
 }
 
-/** 
- * أداة الاستخراج الشاملة والسريعة: 
- * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. 
- * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. 
- * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. 
- * 4. الملفات النصية (.txt): قراءة فورية للنص. 
- */
+/** * أداة الاستخراج الشاملة والسريعة: * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. * 4. الملفات النصية (.txt): قراءة فورية للنص. */
 export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
