@@ -1,4 +1,9 @@
-/** * Central Vercel API Function * * All application API routes are dispatched through this single function. * The individual handlers live under /backend and are NOT Vercel Functions. */
+/**
+ * دالة واجهة برمجة التطبيقات المركزية لـ Vercel
+ * 
+ * يتم توجيه جميع مسارات واجهة برمجة التطبيقات للتطبيق من خلال هذه الدالة الواحدة.
+ * المعالجات الفردية موجودة تحت /backend وليست دوال Vercel مستقلة.
+ */
 import reviewsHandler from '../backend/reviews.ts';
 import broadcastHandler from '../backend/broadcast.ts';
 import adminAnalyticsHandler from '../backend/admin/analytics.ts';
@@ -6,6 +11,7 @@ import addKeyHandler from '../backend/admin/keys/add.ts';
 import deleteKeyHandler from '../backend/admin/keys/delete.ts';
 import testKeyHandler from '../backend/admin/keys/test.ts';
 import keysStatusHandler from '../backend/admin/keys-status.ts';
+import ocrKeysHandler from '../backend/admin/ocr-keys.ts';
 import aiHealthHandler from '../backend/admin/ai-health.ts';
 import packagesHandler from '../backend/admin/packages.ts';
 import heartbeatHandler from '../backend/analytics/heartbeat.ts';
@@ -46,6 +52,7 @@ const ROUTES: Record<string, Handler> = {
 
   '/admin/analytics': adminAnalyticsHandler,
   '/admin/keys-status': keysStatusHandler,
+  '/admin/ocr-keys': ocrKeysHandler,
   '/admin/ai-health': aiHealthHandler,
   '/admin/keys/add': addKeyHandler,
   '/admin/keys/delete': deleteKeyHandler,
@@ -78,11 +85,11 @@ function normalizeRoute(value: unknown): string {
 }
 
 function getRoute(req: any): string {
-  // Vercel rewrite: /api/:path* -> /api/index?route=:path*
+  // إعادة توجيه Vercel: /api/:path* -> /api/index?route=:path*
   const queryRoute = req?.query?.route;
   if (queryRoute) return normalizeRoute(queryRoute);
 
-  // Also support direct invocation and local Express development.
+  // دعم الاستدعاء المباشر والتطوير المحلي عبر Express أيضاً.
   const url = String(req?.url || '').split('?')[0];
   return normalizeRoute(url);
 }
@@ -93,7 +100,7 @@ export default async function handler(req: any, res: any) {
     req.query = { ...(req.query || {}), subroute: route.slice('/auth/'.length) };
   }
 
-  // Keep the response behavior friendly for browser preflight requests.
+  // الحفاظ على سلوك الاستجابة ودياً لطلبات الفحص المسبق للمتصفح.
   if (req.method === 'OPTIONS') {
     const target = ROUTES[route];
     if (target) return target(req, res);
@@ -108,7 +115,7 @@ export default async function handler(req: any, res: any) {
   const target = ROUTES[route];
   if (!target) {
     return res.status(404).json({
-      error: 'API route not found.',
+      error: 'مسار واجهة برمجة التطبيقات غير موجود.',
       route,
     });
   }
@@ -116,7 +123,7 @@ export default async function handler(req: any, res: any) {
   try {
     return await target(req, res);
   } catch (error: any) {
-    // Do not log raw error objects: provider/database errors can contain request data or credentials.
+    // عدم تسجيل كائنات الأخطاء الخام: قد تحتوي أخطاء المزود أو قاعدة البيانات على بيانات الطلب أو بيانات الاعتماد.
     const statusCode = Number(error?.statusCode) || 500;
     console.error(`Central API error [${req.method} ${route}] status=${statusCode}`);
     if (!res.headersSent) {
