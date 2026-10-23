@@ -1,5 +1,7 @@
 import mammoth from 'mammoth';
 import { getSessionToken } from '../services/authService.ts';
+import { runSavedOcrTask } from '../services/aiService.ts';
+import { getActiveLawyerUserId } from './legalVaultService.ts';
 
 export interface ExtractedFileResult {
   fileName: string;
@@ -7,6 +9,7 @@ export interface ExtractedFileResult {
   text: string;
   previewSnippet: string;
   characterCount: number;
+  backgroundJobId?: string;
 }
 
 export function fileToBase64(file: File | Blob): Promise<string> {
@@ -121,100 +124,15 @@ export function resolveMimeType(file: File): string {
   return file.type || 'image/jpeg';
 }
 
-/** * استخراج النصوص عبر خادم OCR الموجه من خلال خدمة التدوير الآلي لمفاتيح الذكاء الاصطناعي. */
-async function extractTextViaServerOCROnce(base64Data: string, mimeType: string, fileName: string): Promise<string> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  const sessionToken = getSessionToken();
-  if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
-
-  let response: Response;
-  try {
-    // يستغرق OCR وقتاً أطول من طلبات JSON العادية.
-    // ترسل النقطة النهائية أحداث الحفاظ على الاتصال أثناء عمل Gemini لتعذير انقطاع الاتصال قبل استلام النص.
-    response = await fetch('/api/ocr', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ base64Data, mimeType, fileName, stream: true }),
-    });
-  } catch (error: any) {
-    if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
-      throw new Error('انقطع الاتصال بخادم استخراج النصوص قبل استلام النتيجة. تأكد من اتصال الإنترنت ومن نشر مسار البرمجة على الخادم، ثم أعد المحاولة.');
-    }
-    throw error;
-  }
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData?.error || `فشل الاستخراج (${response.status})`);
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('text/event-stream')) {
-    if (!response.body) throw new Error('أُغلق اتصال استخراج النصوص قبل استلام النتيجة.');
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let finalResult: any = null;
-    let serverError = '';
-
-    const processFrame = (frame: string) => {
-      const data = frame
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim())
-        .join('\n');
-      if (!data) return;
-      try {
-        const event = JSON.parse(data);
-        if (event?.type === 'done') finalResult = event;
-        else if (event?.type === 'error') serverError = String(event.error || 'فشل استخراج النص من المستند.');
-      } catch {
-        // يتجاهل إطارات الحفاظ على الاتصال غير المكتملة أو غير المتعلقة؛
-        // حيث يمرر محلل المخزن الإطارات الكاملة لهذه الدالة.
-      }
-    };
-
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-
-        let separatorMatch: RegExpMatchArray | null;
-        while ((separatorMatch = buffer.match(/\r?\n\r?\n/)) !== null) {
-          const separatorIndex = separatorMatch.index ?? -1;
-          if (separatorIndex < 0) break;
-          processFrame(buffer.slice(0, separatorIndex));
-          buffer = buffer.slice(separatorIndex + separatorMatch[0].length);
-        }
-
-        if (done) {
-          if (buffer.trim()) processFrame(buffer);
-          break;
-        }
-      }
-    } catch (error: any) {
-      if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
-        throw new Error('انقطع الاتصال أثناء استخراج النص. لم تصل النتيجة كاملة؛ تحقق من الاتصال ثم أعد المحاولة.');
-      }
-      throw error;
-    } finally {
-      reader.releaseLock();
-    }
-
-    if (serverError) throw new Error(serverError);
-    if (typeof finalResult?.text === 'string' && finalResult.text.trim()) return finalResult.text.trim();
-    throw new Error('انتهى اتصال استخراج النص دون إرجاع النص المستخرج. أعد المحاولة، وإذا تكرر الخطأ فراجع سجل واجهة البرمجة على الخادم.');
-  }
-
-  // قد ينتهي استخراج ملفات وورد محلياً في الخادم ويرجع JSON عادي.
-  const data = await response.json().catch(() => ({}));
-  if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
-  throw new Error(data?.error || 'خدمة استخراج النص لم ترجع نصاً صالحاً.');
+/** * يودع مهمة OCR في قائمة المعالجة المحفوظة؛ يظل السيرفر مسؤولاً عن النتيجة عند مغادرة المتصفح. */
+async function extractTextViaServerOCROnce(
+  base64Data: string,
+  mimeType: string,
+  fileName: string,
+  recoveryScope = 'general',
+): Promise<{ text: string; jobId: string }> {
+  return runSavedOcrTask(base64Data, mimeType, fileName, recoveryScope, getActiveLawyerUserId());
 }
-
 
 /** Check the server-managed OCR key/model pool before a batch of images/PDFs starts. */
 export async function checkServerOCRReadiness(): Promise<void> {
@@ -233,23 +151,24 @@ export async function checkServerOCRReadiness(): Promise<void> {
   }
 }
 
-/** * إعادة محاولة محدودة لاستخراج OCR عند تأكيد أن الخادم أعاد خطأ مؤقتاً من Gemini. * لا نعيد المحاولة عند انقطاع اتصال غامض، لتجنب تكرار عملية قد تكون نجحت واحتسبت بالفعل. */
-export async function extractTextViaServerOCR(base64Data: string, mimeType: string, fileName: string): Promise<string> {
+/** * إعادة محاولة محدودة عند رفض المهمة مؤقتاً فقط؛ لا تُكرر مهمة محفوظة ما زالت قيد التنفيذ. */
+export async function extractTextViaServerOCR(
+  base64Data: string,
+  mimeType: string,
+  fileName: string,
+  recoveryScope = 'general',
+): Promise<{ text: string; jobId: string }> {
   try {
-    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName);
+    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName, recoveryScope);
   } catch (error: any) {
+    if (error?.savedJobPending || error?.terminalJobError || error?.jobId) throw error;
     const message = String(error?.message || '');
     const isTransientProviderFailure =
       /\b(?:503|504)\b|DEADLINE_EXCEEDED|temporar(?:y|ily)|unavailable|high demand|مشغول.{0,20}مؤقت|انتهت المهلة المتاحة|تعذر الاتصال بنماذج|تعذر الاتصال بـ Gemini/i.test(message);
-    const isConnectionInterruption =
-      /انقطع الاتصال|أُغلق اتصال استخراج النصوص|انتهى اتصال استخراج النص|failed to fetch|network error|load failed/i.test(message);
+    if (!isTransientProviderFailure) throw error;
 
-    if (!isTransientProviderFailure && !isConnectionInterruption) throw error;
-
-    // محاولة واحدة بعد انتظار قصير عند تعطل مؤقت من المزود أو انقطاع الاتصال.
-    // لا نغيّر ضغط الصور أو طريقة استخراجها أو بقية وظائف التطبيق.
-    await new Promise((resolve) => setTimeout(resolve, isConnectionInterruption ? 2000 : 1200));
-    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName, recoveryScope);
   }
 }
 
@@ -298,10 +217,11 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
 }
 
 /** * أداة الاستخراج الشاملة والسريعة: * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. * 4. الملفات النصية (.txt): قراءة فورية للنص. */
-export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileResult> {
+export async function extractTextFromAnyFile(file: File, recoveryScope = 'general'): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
   let extractedText = '';
+  let backgroundJobId: string | undefined;
 
   if (fileName.startsWith('~$')) {
     throw new Error(`ملف مؤقت (${fileName}) من وورد. اختر المستند الأصلي.`);
@@ -318,7 +238,9 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
     } catch {
       const base64Data = await fileToBase64(file);
       const mimeType = resolveMimeType(file);
-      extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
+      const ocrResult = await extractTextViaServerOCR(base64Data, mimeType, fileName, recoveryScope);
+      extractedText = ocrResult.text;
+      backgroundJobId = ocrResult.jobId;
     }
   }
   // 3. ملفات وورد القديمة .doc
@@ -328,7 +250,9 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
     } catch {
       const base64Data = await fileToBase64(file);
       const mimeType = resolveMimeType(file);
-      extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
+      const ocrResult = await extractTextViaServerOCR(base64Data, mimeType, fileName, recoveryScope);
+      extractedText = ocrResult.text;
+      backgroundJobId = ocrResult.jobId;
     }
   }
   // 4. مستندات بي دي إف والصور
@@ -355,7 +279,9 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
     } else {
       base64Data = await fileToBase64(file);
     }
-    extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
+    const ocrResult = await extractTextViaServerOCR(base64Data, mimeType, fileName, recoveryScope);
+    extractedText = ocrResult.text;
+    backgroundJobId = ocrResult.jobId;
   } else {
     try {
       extractedText = await file.text();
@@ -375,5 +301,6 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
     text: cleanText,
     previewSnippet: cleanText.slice(0, 200) + (cleanText.length > 200 ? '...' : ''),
     characterCount: cleanText.length,
+    ...(backgroundJobId ? { backgroundJobId } : {}),
   };
 }
