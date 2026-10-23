@@ -1,7 +1,5 @@
 import mammoth from 'mammoth';
 import { getSessionToken } from '../services/authService.ts';
-import { runSavedOcrTask } from '../services/aiService.ts';
-import { getActiveLawyerUserId } from './legalVaultService.ts';
 
 export interface ExtractedFileResult {
   fileName: string;
@@ -9,7 +7,6 @@ export interface ExtractedFileResult {
   text: string;
   previewSnippet: string;
   characterCount: number;
-  backgroundJobId?: string;
 }
 
 export function fileToBase64(file: File | Blob): Promise<string> {
@@ -25,89 +22,89 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   });
 }
 
-/** * ضغط الصور وتغيير حجمها من جانب العميل (Client-Side). * ضبط أبعاد الصور بحد أقصى 1200px بجودة JPEG 0.70. * يمنع خطأ HTTP 413 تماماً ويسرّع عملية التعرف الضوئي على الحروف (OCR). */
-export async function compressAndResizeImage( file: File, maxDimension = 1200, quality = 0.70 ): Promise<{ base64Data: string; mimeType: string }> {
-  if (typeof window !== 'undefined' && 'createImageBitmap' in window) {
-    try {
+/**
+ * تجهيز الصور قبل OCR: تحويل إلى رمادي، تصغير الأبعاد، وضغط JPEG.
+ * يحاول إبقاء ملف الصورة الناتج دون 1MB مع الحفاظ على وضوح النص قدر الإمكان.
+ */
+export async function compressAndResizeImage(
+  file: File,
+  maxDimension = 1800,
+  quality = 0.82,
+): Promise<{ base64Data: string; mimeType: string }> {
+  const MAX_IMAGE_BYTES = 1024 * 1024;
+  const encodeCanvas = (canvas: HTMLCanvasElement, q: number) =>
+    new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', q));
+
+  const loadImage = async (): Promise<{ source: CanvasImageSource; width: number; height: number; close?: () => void }> => {
+    if (typeof createImageBitmap === 'function') {
       const bitmap = await createImageBitmap(file);
-      let { width, height } = bitmap;
-      if (width > maxDimension || height > maxDimension) {
-        const ratio = Math.min(maxDimension / width, maxDimension / height);
-        width = Math.round(width * ratio);
-        height = Math.round(height * ratio);
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, width, height);
-        ctx.drawImage(bitmap, 0, 0, width, height);
-        bitmap.close();
-        const dataUrl = canvas.toDataURL('image/jpeg', quality);
-        const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-        return { base64Data, mimeType: 'image/jpeg' };
-      }
-    } catch (bitmapErr) {
-      console.warn('createImageBitmap fallback to HTMLImage:', bitmapErr);
+      return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
     }
+    const sourceUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('تعذر فتح الصورة للضغط.'));
+        image.src = sourceUrl;
+      });
+      return { source: img, width: img.naturalWidth, height: img.naturalHeight };
+    } finally {
+      URL.revokeObjectURL(sourceUrl);
+    }
+  };
+
+  if (typeof document === 'undefined') {
+    const base64Data = await fileToBase64(file);
+    return { base64Data, mimeType: resolveMimeType(file) };
   }
 
-  return new Promise((resolve) => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') {
-      fileToBase64(file)
-        .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-        .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onerror = () => {
-      fileToBase64(file)
-        .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-        .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
-    };
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onerror = () => {
-        fileToBase64(file)
-          .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-          .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
-      };
-      img.onload = () => {
-        try {
-          let { width, height } = img;
-          if (width > maxDimension || height > maxDimension) {
-            const ratio = Math.min(maxDimension / width, maxDimension / height);
-            width = Math.round(width * ratio);
-            height = Math.round(height * ratio);
+  try {
+    const image = await loadImage();
+    let maxSide = maxDimension;
+    let resultBlob: Blob | null = null;
+    try {
+      // Reduce dimensions progressively if compression alone cannot reach the target.
+      for (let dimensionPass = 0; dimensionPass < 6; dimensionPass++) {
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+        const width = Math.max(1, Math.round(image.width * scale));
+        const height = Math.max(1, Math.round(image.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('تعذر تجهيز الصورة للضغط.');
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.filter = 'grayscale(100%)';
+        ctx.drawImage(image.source, 0, 0, width, height);
+        ctx.filter = 'none';
+
+        for (const q of [quality, 0.78, 0.74, 0.70, 0.66, 0.62, 0.58]) {
+          const candidate = await encodeCanvas(canvas, q);
+          if (candidate && (!resultBlob || candidate.size < resultBlob.size)) resultBlob = candidate;
+          if (candidate && candidate.size <= MAX_IMAGE_BYTES) {
+            resultBlob = candidate;
+            break;
           }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            fileToBase64(file)
-              .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-              .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
-            return;
-          }
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-          resolve({ base64Data, mimeType: 'image/jpeg' });
-        } catch {
-          fileToBase64(file)
-            .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-            .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
         }
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  });
+        if (resultBlob && resultBlob.size <= MAX_IMAGE_BYTES) break;
+        maxSide = Math.max(900, Math.floor(maxSide * 0.85));
+      }
+    } finally {
+      image.close?.();
+    }
+
+    if (!resultBlob || resultBlob.size > MAX_IMAGE_BYTES) {
+      throw new Error('تعذر ضغط الصورة إلى أقل من 1MB مع الحفاظ على وضوحها.');
+    }
+    const base64Data = await fileToBase64(resultBlob);
+    return { base64Data, mimeType: 'image/jpeg' };
+  } catch (error) {
+    // Do not silently send the original oversized image: report a clear error instead.
+    console.warn('Image compression failed:', error);
+    throw new Error('تعذر تجهيز الصورة وإيصال حجمها إلى أقل من 1MB. جرّب صورة أوضح أو أصغر.');
+  }
 }
 
 export function resolveMimeType(file: File): string {
@@ -124,15 +121,100 @@ export function resolveMimeType(file: File): string {
   return file.type || 'image/jpeg';
 }
 
-/** * يودع مهمة OCR في قائمة المعالجة المحفوظة؛ يظل السيرفر مسؤولاً عن النتيجة عند مغادرة المتصفح. */
-async function extractTextViaServerOCROnce(
-  base64Data: string,
-  mimeType: string,
-  fileName: string,
-  recoveryScope = 'general',
-): Promise<{ text: string; jobId: string }> {
-  return runSavedOcrTask(base64Data, mimeType, fileName, recoveryScope, getActiveLawyerUserId());
+/** * استخراج النصوص عبر خادم OCR الموجه من خلال خدمة التدوير الآلي لمفاتيح الذكاء الاصطناعي. */
+async function extractTextViaServerOCROnce(base64Data: string, mimeType: string, fileName: string): Promise<string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const sessionToken = getSessionToken();
+  if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+
+  let response: Response;
+  try {
+    // يستغرق OCR وقتاً أطول من طلبات JSON العادية.
+    // ترسل النقطة النهائية أحداث الحفاظ على الاتصال أثناء عمل Gemini لتعذير انقطاع الاتصال قبل استلام النص.
+    response = await fetch('/api/ocr', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ base64Data, mimeType, fileName, stream: true }),
+    });
+  } catch (error: any) {
+    if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
+      throw new Error('انقطع الاتصال بخادم استخراج النصوص قبل استلام النتيجة. تأكد من اتصال الإنترنت ومن نشر مسار البرمجة على الخادم، ثم أعد المحاولة.');
+    }
+    throw error;
+  }
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData?.error || `فشل الاستخراج (${response.status})`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/event-stream')) {
+    if (!response.body) throw new Error('أُغلق اتصال استخراج النصوص قبل استلام النتيجة.');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult: any = null;
+    let serverError = '';
+
+    const processFrame = (frame: string) => {
+      const data = frame
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+        .join('\n');
+      if (!data) return;
+      try {
+        const event = JSON.parse(data);
+        if (event?.type === 'done') finalResult = event;
+        else if (event?.type === 'error') serverError = String(event.error || 'فشل استخراج النص من المستند.');
+      } catch {
+        // يتجاهل إطارات الحفاظ على الاتصال غير المكتملة أو غير المتعلقة؛
+        // حيث يمرر محلل المخزن الإطارات الكاملة لهذه الدالة.
+      }
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+
+        let separatorMatch: RegExpMatchArray | null;
+        while ((separatorMatch = buffer.match(/\r?\n\r?\n/)) !== null) {
+          const separatorIndex = separatorMatch.index ?? -1;
+          if (separatorIndex < 0) break;
+          processFrame(buffer.slice(0, separatorIndex));
+          buffer = buffer.slice(separatorIndex + separatorMatch[0].length);
+        }
+
+        if (done) {
+          if (buffer.trim()) processFrame(buffer);
+          break;
+        }
+      }
+    } catch (error: any) {
+      if (error instanceof TypeError || /failed to fetch|network error/i.test(String(error?.message || ''))) {
+        throw new Error('انقطع الاتصال أثناء استخراج النص. لم تصل النتيجة كاملة؛ تحقق من الاتصال ثم أعد المحاولة.');
+      }
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (serverError) throw new Error(serverError);
+    if (typeof finalResult?.text === 'string' && finalResult.text.trim()) return finalResult.text.trim();
+    throw new Error('انتهى اتصال استخراج النص دون إرجاع النص المستخرج. أعد المحاولة، وإذا تكرر الخطأ فراجع سجل واجهة البرمجة على الخادم.');
+  }
+
+  // قد ينتهي استخراج ملفات وورد محلياً في الخادم ويرجع JSON عادي.
+  const data = await response.json().catch(() => ({}));
+  if (data && typeof data.text === 'string' && data.text.trim()) return data.text.trim();
+  throw new Error(data?.error || 'خدمة استخراج النص لم ترجع نصاً صالحاً.');
 }
+
 
 /** Check the server-managed OCR key/model pool before a batch of images/PDFs starts. */
 export async function checkServerOCRReadiness(): Promise<void> {
@@ -151,24 +233,23 @@ export async function checkServerOCRReadiness(): Promise<void> {
   }
 }
 
-/** * إعادة محاولة محدودة عند رفض المهمة مؤقتاً فقط؛ لا تُكرر مهمة محفوظة ما زالت قيد التنفيذ. */
-export async function extractTextViaServerOCR(
-  base64Data: string,
-  mimeType: string,
-  fileName: string,
-  recoveryScope = 'general',
-): Promise<{ text: string; jobId: string }> {
+/** * إعادة محاولة محدودة لاستخراج OCR عند تأكيد أن الخادم أعاد خطأ مؤقتاً من Gemini. * لا نعيد المحاولة عند انقطاع اتصال غامض، لتجنب تكرار عملية قد تكون نجحت واحتسبت بالفعل. */
+export async function extractTextViaServerOCR(base64Data: string, mimeType: string, fileName: string): Promise<string> {
   try {
-    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName, recoveryScope);
+    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName);
   } catch (error: any) {
-    if (error?.savedJobPending || error?.terminalJobError || error?.jobId) throw error;
     const message = String(error?.message || '');
     const isTransientProviderFailure =
       /\b(?:503|504)\b|DEADLINE_EXCEEDED|temporar(?:y|ily)|unavailable|high demand|مشغول.{0,20}مؤقت|انتهت المهلة المتاحة|تعذر الاتصال بنماذج|تعذر الاتصال بـ Gemini/i.test(message);
-    if (!isTransientProviderFailure) throw error;
+    const isConnectionInterruption =
+      /انقطع الاتصال|أُغلق اتصال استخراج النصوص|انتهى اتصال استخراج النص|failed to fetch|network error|load failed/i.test(message);
 
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName, recoveryScope);
+    if (!isTransientProviderFailure && !isConnectionInterruption) throw error;
+
+    // محاولة واحدة بعد انتظار قصير عند تعطل مؤقت من المزود أو انقطاع الاتصال.
+    // لا نغيّر ضغط الصور أو طريقة استخراجها أو بقية وظائف التطبيق.
+    await new Promise((resolve) => setTimeout(resolve, isConnectionInterruption ? 2000 : 1200));
+    return await extractTextViaServerOCROnce(base64Data, mimeType, fileName);
   }
 }
 
@@ -217,11 +298,10 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
 }
 
 /** * أداة الاستخراج الشاملة والسريعة: * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. * 4. الملفات النصية (.txt): قراءة فورية للنص. */
-export async function extractTextFromAnyFile(file: File, recoveryScope = 'general'): Promise<ExtractedFileResult> {
+export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
   let extractedText = '';
-  let backgroundJobId: string | undefined;
 
   if (fileName.startsWith('~$')) {
     throw new Error(`ملف مؤقت (${fileName}) من وورد. اختر المستند الأصلي.`);
@@ -238,9 +318,7 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
     } catch {
       const base64Data = await fileToBase64(file);
       const mimeType = resolveMimeType(file);
-      const ocrResult = await extractTextViaServerOCR(base64Data, mimeType, fileName, recoveryScope);
-      extractedText = ocrResult.text;
-      backgroundJobId = ocrResult.jobId;
+      extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
   // 3. ملفات وورد القديمة .doc
@@ -250,9 +328,7 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
     } catch {
       const base64Data = await fileToBase64(file);
       const mimeType = resolveMimeType(file);
-      const ocrResult = await extractTextViaServerOCR(base64Data, mimeType, fileName, recoveryScope);
-      extractedText = ocrResult.text;
-      backgroundJobId = ocrResult.jobId;
+      extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
   // 4. مستندات بي دي إف والصور
@@ -270,18 +346,19 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
     let mimeType = resolveMimeType(file);
     if (isImage) {
       try {
-        const compressed = await compressAndResizeImage(file, 1200, 0.70);
+        const compressed = await compressAndResizeImage(file, 1800, 0.82);
         base64Data = compressed.base64Data;
         mimeType = compressed.mimeType;
-      } catch {
-        base64Data = await fileToBase64(file);
+      } catch (error) {
+        // لا نرسل الصورة الأصلية عند فشل الضغط؛ حتى لا نتجاوز حد الحجم المتفق عليه.
+        throw error instanceof Error
+          ? error
+          : new Error('تعذر ضغط الصورة مع الحفاظ على وضوح الكتابة. جرّب صورة أوضح أو أصغر.');
       }
     } else {
       base64Data = await fileToBase64(file);
     }
-    const ocrResult = await extractTextViaServerOCR(base64Data, mimeType, fileName, recoveryScope);
-    extractedText = ocrResult.text;
-    backgroundJobId = ocrResult.jobId;
+    extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
   } else {
     try {
       extractedText = await file.text();
@@ -301,6 +378,5 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
     text: cleanText,
     previewSnippet: cleanText.slice(0, 200) + (cleanText.length > 200 ? '...' : ''),
     characterCount: cleanText.length,
-    ...(backgroundJobId ? { backgroundJobId } : {}),
   };
 }
