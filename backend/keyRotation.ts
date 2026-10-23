@@ -32,12 +32,91 @@ export const GEMINI_MODELS = [
 
 let activeKeyIndex = 0;
 const permanentlyInvalidKeys = new Set<string>();
+const permanentlyInvalidOCRKeys = new Set<string>();
+// Per-instance fast-failover state. Cooldown entries expire lazily on access,
+// so no timers or additional serverless functions are needed.
+const keyCooldownUntil = new Map<string, number>();
+const keyModelCooldownUntil = new Map<string, number>();
+const modelCooldownUntil = new Map<string, number>();
+const ocrKeyCooldownUntil = new Map<string, number>();
+const ocrKeyModelCooldownUntil = new Map<string, number>();
+const ocrModelCooldownUntil = new Map<string, number>();
+let nextGeneralKeyStart = 0;
+let nextOCRKeyStart = 0;
+const KEY_QUOTA_COOLDOWN_MS = 60_000;
+const MODEL_BUSY_COOLDOWN_MS = 30_000;
+const CONNECTION_COOLDOWN_MS = 12_000;
+const MODEL_PAIR_COOLDOWN_MS = 15_000;
+const MAX_MODELS_PER_KEY_PER_REQUEST = 2;
+
+function rotationPairKey(key: string, model: string): string {
+  return `${key}:${model}`;
+}
+
+function isCooling(map: Map<string, number>, id: string, now = Date.now()): boolean {
+  const until = map.get(id) || 0;
+  if (until <= now) {
+    if (until) map.delete(id);
+    return false;
+  }
+  return true;
+}
+
+function markRotationFailure(key: string, model: string, error: any, pool: 'general' | 'ocr' = 'general'): 'quota' | 'invalid' | 'temporary' | 'other' {
+  const keyCooldowns = pool === 'ocr' ? ocrKeyCooldownUntil : keyCooldownUntil;
+  const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
+  const invalidKeys = pool === 'ocr' ? permanentlyInvalidOCRKeys : permanentlyInvalidKeys;
+  const kind = getGeminiErrorKind(error);
+  const status = Number(error?.status || error?.statusCode || error?.response?.status);
+  const pair = rotationPairKey(key, model);
+  const message = String(error?.message || '').toLowerCase();
+  const now = Date.now();
+  if (kind === 'invalid') {
+    invalidKeys.add(key);
+    keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
+  } else if (kind === 'quota' || status === 429) {
+    keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
+    pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
+  } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
+    // A 503 observed with one key must not globally cool the model for every
+    // other key: this can make the scheduler report that every model is cooling
+    // after only a few attempts, leaving untouched keys unused. Cool only this
+    // key/model pair and let the next key try the same model.
+    pairCooldowns.set(pair, now + MODEL_BUSY_COOLDOWN_MS);
+  } else if (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message)) {
+    pairCooldowns.set(pair, now + (status === 504 || /timeout|timed out|network|connection|socket|econn|fetch failed/.test(message) ? CONNECTION_COOLDOWN_MS : MODEL_PAIR_COOLDOWN_MS));
+  }
+  return kind;
+}
+
+function reserveStartIndex(count: number, pool: 'general' | 'ocr'): number {
+  if (count <= 0) return 0;
+  if (pool === 'ocr') {
+    const start = nextOCRKeyStart % count;
+    nextOCRKeyStart = (start + 1) % count;
+    return start;
+  }
+  const start = nextGeneralKeyStart % count;
+  nextGeneralKeyStart = (start + 1) % count;
+  return start;
+}
+
+function selectModelsForKey(models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now()): string[] {
+  const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
+  const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
+  const available = models.filter((model) =>
+    !isCooling(modelCooldowns, model, now) &&
+    !isCooling(pairCooldowns, rotationPairKey(key, model), now)
+  );
+  // Never retry a cooled key/model pair merely because no other pair is ready.
+  return available.slice(0, MAX_MODELS_PER_KEY_PER_REQUEST);
+}
 // A caller may bound an attempt when it must leave time to rotate providers or
 // persist a terminal job state. Unbounded non-OCR requests retain their old behavior.
 function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
   const httpOptions: any = { headers: { 'User-Agent': 'aistudio-build' } };
   if (Number.isFinite(timeoutMs) && Number(timeoutMs) >= 1000) {
-    // Keep OCR failover attempts bounded. Other AI features retain their prior timeout behavior.
+    // Bound each provider attempt so a stalled response can fail over without consuming the full task deadline.
     httpOptions.timeout = Number(timeoutMs);
     httpOptions.retryOptions = { attempts: 1 };
   }
@@ -259,18 +338,30 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
   }
 
   if (dedicatedOCRActiveKeyIndex >= keys.length) dedicatedOCRActiveKeyIndex = 0;
-  const startIndex = dedicatedOCRActiveKeyIndex;
+  const startIndex = reserveStartIndex(keys.length, 'ocr');
   let lastError: any = null;
+  const usableOCRKeys = keys.filter((candidate) => !permanentlyInvalidOCRKeys.has(candidate));
+  if (usableOCRKeys.length && usableOCRKeys.every((candidate) => isCooling(ocrKeyCooldownUntil, candidate))) {
+    throw new Error('مفاتيح OCR وصلت مؤقتاً إلى حدود الاستخدام. تم تجاوزها دون إعادة تجربتها؛ انتظر انتهاء التبريد أو أضف مفاتيح متاحة.');
+  }
+  const hasReadyOCRPair = usableOCRKeys.some((candidate) =>
+    !isCooling(ocrKeyCooldownUntil, candidate) && preferredModels.some((model) =>
+      !isCooling(ocrModelCooldownUntil, model) && !isCooling(ocrKeyModelCooldownUntil, rotationPairKey(candidate, model))
+    )
+  );
+  if (!hasReadyOCRPair) throw new Error('نماذج OCR المتاحة في فترة تبريد مؤقت. تم تجاوز المحاولات غير الجاهزة دون تكرارها؛ أعد المحاولة بعد قليل.');
 
   ocrKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
     const keyIndex = (startIndex + offset) % keys.length;
     const key = keys[keyIndex];
-    for (let modelIndex = 0; modelIndex < preferredModels.length; modelIndex++) {
+    if (isCooling(ocrKeyCooldownUntil, key) || permanentlyInvalidOCRKeys.has(key)) continue;
+    const keyModels = selectModelsForKey(preferredModels, key, 'ocr');
+    for (let modelIndex = 0; modelIndex < keyModels.length; modelIndex++) {
       const remainingMs = deadlineAt - Date.now();
       if (remainingMs < 10000) break ocrKeyLoop;
-      const model = preferredModels[modelIndex];
+      const model = keyModels[modelIndex];
       try {
-        const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(45000, remainingMs)));
+        const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
         const result = await action(ai, key, model);
         if (Date.now() >= deadlineAt) throw Object.assign(new Error('انتهت مهلة استخراج النص عبر مجموعة OCR.'), { status: 504, statusCode: 504 });
         dedicatedOCRActiveKeyIndex = keyIndex;
@@ -279,17 +370,29 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
         lastError = error;
         const status = Number(error?.status || error?.statusCode || error?.response?.status);
         const message = String(error?.message || '').toLowerCase();
-        const kind = getGeminiErrorKind(error);
+        const kind = markRotationFailure(key, model, error, 'ocr');
         console.error('[Dedicated OCR key rotation] attempt failed', {
           model,
           keyIndex: keyIndex + 1,
           status: status || undefined,
+          errorKind: kind,
           message: String(error?.message || 'Unknown OCR error').slice(0, 220),
         });
-        if ((kind === 'temporary' || status === 404 || status === 400 || /model.*not found|unsupported model|no longer available/.test(message)) && modelIndex < preferredModels.length - 1) {
+        const isModelUnavailable = status === 404 || status === 400 || /model.*not found|unsupported model|no longer available/.test(message);
+        // Try one alternate model on the same key for model availability and
+        // transient provider failures, including 503/504 deadline errors.
+        // Quota/auth failures still rotate to the next key without retrying this key.
+        const shouldTryAlternateModel = isModelUnavailable ||
+          status === 503 || status === 504 ||
+          kind === 'temporary' ||
+          /deadline_exceeded|timed out|timeout|high demand|service unavailable|temporarily unavailable/.test(message);
+        if (
+          shouldTryAlternateModel &&
+          modelIndex < keyModels.length - 1 &&
+          deadlineAt - Date.now() >= 10000
+        ) {
           continue;
         }
-        // Quota, revoked keys and other request errors move only within the OCR key pool.
         break;
       }
     }
@@ -465,7 +568,7 @@ export async function executeWithKeyRotation<T>(
         if (remainingMs < 10000) lastError = timeoutError();
         break;
       }
-      const attemptTimeoutMs = Math.min(60000, remainingMs, providerBudgetMs);
+      const attemptTimeoutMs = Math.min(20000, remainingMs, providerBudgetMs);
       try {
         const result = await action(
           withAdaptiveAnswerLength(createOpenRouterCompatibleClient(attemptTimeoutMs, deadlineAt)) as unknown as GoogleGenAI,
@@ -532,14 +635,25 @@ export async function executeWithKeyRotation<T>(
   // This does NOT reduce the number of distinct keys or fallback models tried.
   const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
+  if (keys.length && keys.every((candidate) => isCooling(keyCooldownUntil, candidate))) {
+    throw new Error('مفاتيح Gemini وصلت مؤقتاً إلى حدود الاستخدام. تم تجاوزها دون إعادة تجربتها؛ انتظر انتهاء التبريد أو أضف مفاتيح متاحة.');
+  }
+  const hasReadyGeneralPair = keys.some((candidate) =>
+    !isCooling(keyCooldownUntil, candidate) && !permanentlyInvalidKeys.has(candidate) && preferredModels.some((model) =>
+      !isCooling(modelCooldownUntil, model) && !isCooling(keyModelCooldownUntil, rotationPairKey(candidate, model))
+    )
+  );
+  if (!hasReadyGeneralPair) throw new Error('نماذج Gemini المتاحة في فترة تبريد مؤقت. تم تجاوز المحاولات غير الجاهزة دون تكرارها؛ أعد المحاولة بعد قليل.');
 
   for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
-    const startIdx = activeKeyIndex;
+    const startIdx = reserveStartIndex(keys.length, 'general');
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
+      if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general');
 
-      for (let m = 0; m < preferredModels.length; m++) {
+      for (let m = 0; m < keyModels.length; m++) {
         const remainingMs = deadlineAt - Date.now();
         // Stop starting attempts when there is no longer time to finish and
         // persist a terminal result. OCR still uses its existing 30-second cap.
@@ -547,10 +661,8 @@ export async function executeWithKeyRotation<T>(
           lastError = timeoutError();
           break geminiKeyLoop;
         }
-        const model = preferredModels[m];
-        const attemptTimeoutMs = executionOptions?.ocrMode
-          ? Math.min(45000, remainingMs)
-          : remainingMs;
+        const model = keyModels[m];
+        const attemptTimeoutMs = Math.min(executionOptions?.ocrMode ? 18000 : 30000, remainingMs);
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, attemptTimeoutMs));
         try {
           const result = await action(ai, currentKey, model);
@@ -566,23 +678,16 @@ export async function executeWithKeyRotation<T>(
             code: typeof err?.code === 'string' ? err.code : undefined,
             message: String(err?.message || 'Unknown Gemini error').slice(0, 300),
           });
-          const kind = getGeminiErrorKind(err);
-          if (kind === 'invalid') permanentlyInvalidKeys.add(currentKey);
-          // A 503/high-demand response is usually model-specific and transient.
-          // Try the next configured Gemini model with the same key before rotating keys.
-          if (kind === 'temporary' && m < preferredModels.length - 1) continue;
-          if (kind === 'quota' || kind === 'temporary' || kind === 'invalid') {
-            activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
-            break;
-          }
+          const kind = markRotationFailure(currentKey, model, err, 'general');
           const msg = String(err?.message || '').toLowerCase();
-          const isModelUnavailable = err?.status === 404 || err?.status === 'NOT_FOUND' ||
+          const status = Number(err?.status || err?.statusCode || err?.response?.status);
+          const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
             /not found|no longer available|model not found|unsupported model/.test(msg);
-          if (isModelUnavailable && m < preferredModels.length - 1) continue;
-          if (keys.length > 1) {
-            activeKeyIndex = (currentKeyIndex + 1) % keys.length;
-            break;
-          }
+          // Do not retry the same key/model. Try at most one alternate model on
+          // this key for model-specific 400/404/503 failures; otherwise rotate now.
+          if ((isModelUnavailable || status === 503) && m < keyModels.length - 1) continue;
+          activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
+          break;
         }
       }
     }
@@ -637,7 +742,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       }
       // Bound the initial wait and total silent retries; once output starts,
       // the adapter allows up to 90 seconds between actual text chunks.
-      const attemptTimeoutMs = Math.min(35000, remainingMs, firstTextBudgetMs);
+      const attemptTimeoutMs = Math.min(12000, remainingMs, firstTextBudgetMs);
       try {
         const stream = await action(withAdaptiveAnswerLength(createOpenRouterCompatibleClient(attemptTimeoutMs, deadlineAt)) as unknown as GoogleGenAI, 'openrouter', model);
         for await (const chunk of stream) {
@@ -700,24 +805,35 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   // This does NOT reduce the number of distinct keys or fallback models tried.
   const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
+  if (keys.length && keys.every((candidate) => isCooling(keyCooldownUntil, candidate))) {
+    throw new Error('مفاتيح Gemini وصلت مؤقتاً إلى حدود الاستخدام. تم تجاوزها دون إعادة تجربتها؛ انتظر انتهاء التبريد أو أضف مفاتيح متاحة.');
+  }
+  const hasReadyGeneralPair = keys.some((candidate) =>
+    !isCooling(keyCooldownUntil, candidate) && !permanentlyInvalidKeys.has(candidate) && preferredModels.some((model) =>
+      !isCooling(modelCooldownUntil, model) && !isCooling(keyModelCooldownUntil, rotationPairKey(candidate, model))
+    )
+  );
+  if (!hasReadyGeneralPair) throw new Error('نماذج Gemini المتاحة في فترة تبريد مؤقت. تم تجاوز المحاولات غير الجاهزة دون تكرارها؛ أعد المحاولة بعد قليل.');
 
   for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
-    const startIdx = activeKeyIndex;
+    const startIdx = reserveStartIndex(keys.length, 'general');
 
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
+      if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general');
 
-      for (let m = 0; m < preferredModels.length; m++) {
+      for (let m = 0; m < keyModels.length; m++) {
         const remainingMs = deadlineAt - Date.now();
         if (remainingMs < 10000) {
           lastError = timeoutError();
           break geminiKeyLoop;
         }
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, remainingMs));
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(18000, remainingMs))); 
         let emittedAnyChunk = false;
         try {
-          const stream = await action(ai, currentKey, preferredModels[m]);
+          const stream = await action(ai, currentKey, keyModels[m]);
           for await (const chunk of stream) {
             if (Date.now() >= deadlineAt) throw timeoutError();
             const text = typeof chunk?.text === 'string' ? chunk.text : '';
@@ -731,7 +847,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         } catch (err: any) {
           lastError = err;
           console.error('[Gemini stream key rotation] attempt failed', {
-            model: preferredModels[m],
+            model: keyModels[m],
             keyIndex: currentKeyIndex + 1,
             emittedAnyChunk,
             status: Number(err?.status || err?.statusCode || err?.response?.status) || undefined,
@@ -745,23 +861,16 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
             throw err;
           }
 
-          const kind = getGeminiErrorKind(err);
-          if (kind === 'invalid') permanentlyInvalidKeys.add(currentKey);
-          // If Gemini is overloaded (503/504), try another model before moving
-          // to another key. Never restart after visible output (handled above).
-          if (kind === 'temporary' && m < preferredModels.length - 1) continue;
-          if (kind === 'quota' || kind === 'temporary' || kind === 'invalid') {
-            activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
-            break;
-          }
+          const kind = markRotationFailure(currentKey, keyModels[m], err, 'general');
           const msg = String(err?.message || '').toLowerCase();
-          const isModelUnavailable = err?.status === 404 || err?.status === 'NOT_FOUND' ||
+          const status = Number(err?.status || err?.statusCode || err?.response?.status);
+          const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
             /not found|no longer available|model not found|unsupported model/.test(msg);
-          if (isModelUnavailable && m < preferredModels.length - 1) continue;
-          if (keys.length > 1) {
-            activeKeyIndex = (currentKeyIndex + 1) % keys.length;
-            break;
-          }
+          // Never restart after visible output. Before output, only model-specific
+          // failures may try one alternate model; quota/network/timeouts rotate keys.
+          if ((isModelUnavailable || status === 503) && m < keyModels.length - 1) continue;
+          activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
+          break;
         }
       }
     }
