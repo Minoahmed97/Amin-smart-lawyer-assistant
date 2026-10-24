@@ -1,10 +1,67 @@
 import { requireAdmin } from '../auth.ts';
 import { getOpenRouterModels } from '../openrouterAdapter.ts';
-import { getVercelGeminiKeys } from '../keyRotation.ts';
+import { getVercelGeminiKeys, testGeminiKey } from '../keyRotation.ts';
 import { fetchServerCloudGeminiKeys } from '../supabaseSync.ts';
 
 function shortError(value: unknown): string {
   return String(value || 'سبب غير معروف').replace(/\s+/g, ' ').slice(0, 240);
+}
+
+function maskKey(key: string): string {
+  const clean = String(key || '').trim();
+  return clean.length > 8 ? `${clean.slice(0, 4)}…${clean.slice(-4)}` : '••••';
+}
+
+/** فحص معلومات المفتاح فقط. لا يستدعي generateContent أو chat/completions. */
+async function checkOpenRouterKeyMetadata() {
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) return { configured: false, ok: false, message: 'مفتاح OpenRouter غير مضبوط على الخادم.' };
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/key', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8000),
+      cache: 'no-store',
+    });
+    const raw = await response.text();
+    let payload: any = {};
+    try { payload = raw ? JSON.parse(raw) : {}; } catch {}
+    if (!response.ok || !payload?.data) {
+      const message = response.status === 401 || response.status === 403
+        ? 'رفض OpenRouter المفتاح؛ قد يكون غير صالح أو ملغى.'
+        : `تعذر التحقق من معلومات المفتاح لدى OpenRouter (${response.status}): ${shortError(payload?.error?.message || raw || response.statusText)}`;
+      return { configured: true, ok: false, status: response.status, message };
+    }
+    const data = payload.data;
+    const usage = typeof data.usage === 'number' && Number.isFinite(data.usage) ? data.usage : null;
+    const limit = typeof data.limit === 'number' && Number.isFinite(data.limit) ? data.limit : null;
+    const limitRemaining = typeof data.limit_remaining === 'number' && Number.isFinite(data.limit_remaining) ? data.limit_remaining : null;
+    const limitReached = limitRemaining !== null && limitRemaining <= 0;
+    let message = 'المفتاح مقبول لدى OpenRouter. هذا الفحص لا يولّد نصاً.';
+    if (limitRemaining !== null) {
+      message += ` الاستخدام المسجل: $${usage === null ? 'غير متاح' : usage.toFixed(4)}؛ حد الإنفاق المتبقي: $${limitRemaining.toFixed(4)}${limit === null ? '' : ` من $${limit.toFixed(4)}`}.`;
+      if (limitReached) message += ' وصل حد الإنفاق المسجل لهذا المفتاح إلى الصفر؛ هذا لا يحدد بمفرده حالة كل نموذج مجاني.';
+    } else {
+      message += ' لم تُرجع الخدمة حداً متبقياً رقمياً لهذا المفتاح، لذلك لا يمكن تحديد الرصيد المتبقي من هذه البيانات.';
+    }
+    return {
+      configured: true,
+      ok: true,
+      status: response.status,
+      usage,
+      limit,
+      limitRemaining,
+      limitReset: typeof data.limit_reset === 'string' ? data.limit_reset : null,
+      expiresAt: typeof data.expires_at === 'string' ? data.expires_at : null,
+      message,
+    };
+  } catch (error: any) {
+    return {
+      configured: true,
+      ok: false,
+      message: shortError(error?.name === 'TimeoutError' ? 'انتهت مهلة قراءة معلومات مفتاح OpenRouter.' : error?.message),
+    };
+  }
 }
 
 async function testOpenRouterGeneration() {
@@ -182,13 +239,14 @@ async function testGeminiGeneration() {
   };
 }
 
-/** * GET is metadata-only and never consumes model-generation quota. * POST is an explicit admin action that tests real text generation on both providers. */
+/** GET and POST health checks use metadata-only requests; neither route generates model text. */
 export default async function handler(req: any, res: any) {
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
 
   try {
     requireAdmin(req);
-    if (req.method === 'GET') {
+    const verifyMetadataRequested = req.method === 'POST' || String(req.headers?.['x-ai-health-check'] || '') === 'metadata' || String(req.query?.verify || '') === '1';
+    if (req.method === 'GET' && !verifyMetadataRequested) {
       const openrouterConfigured = Boolean(process.env.OPENROUTER_API_KEY?.trim());
       let geminiKeys = getVercelGeminiKeys();
       let cloudKeysReadable = true;
@@ -198,22 +256,78 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({
         ok: true,
         tested: false,
+        checkType: 'configuration',
         aiReachable: false,
-        routing: {
-          primary: 'openrouter',
-          fallback: 'gemini',
-        },
+        routing: { primary: 'gemini', fallback: 'openrouter' },
         providers: {
-          openrouter: { configured: openrouterConfigured, ok: null, message: openrouterConfigured ? 'المفتاح مضبوط؛ لم يتم توليد نص في هذا الفحص التلقائي.' : 'مفتاح OpenRouter غير مضبوط.' },
-          gemini: { configured: geminiKeys.length > 0, ok: null, keysCount: geminiKeys.length, cloudKeysReadable, message: geminiKeys.length ? 'المفاتيح موجودة؛ لم يتم توليد نص في هذا الفحص التلقائي.' : 'لا توجد مفاتيح Gemini متاحة.' },
+          gemini: { configured: geminiKeys.length > 0, ok: null, keysCount: geminiKeys.length, cloudKeysReadable, message: geminiKeys.length ? 'المفاتيح موجودة؛ لم يتم الاتصال بمزود خارجي في الفحص التلقائي.' : 'لا توجد مفاتيح Gemini متاحة.' },
+          openrouter: { configured: openrouterConfigured, ok: null, message: openrouterConfigured ? 'المفتاح مضبوط؛ لم يتم الاتصال بمزود خارجي في الفحص التلقائي.' : 'مفتاح OpenRouter غير مضبوط.' },
         },
-        message: 'هذا فحص إعدادات فقط ولا يستهلك حصة توليد. اضغط «اختبار فعلي للمزوّدين» للتحقق من توليد إجابة حقيقية.',
+        message: 'عرض الإعدادات فقط؛ لم يتم إرسال أي طلب إلى مزودي الذكاء الاصطناعي. استخدم زر «فحص المفاتيح دون توليد» للتحقق من بيانات الاعتماد والاستخدام دون توليد نص.',
+      });
+    }
+
+    if (req.method === 'GET' || req.method === 'POST') {
+      const startedAt = Date.now();
+      const openrouterPromise = checkOpenRouterKeyMetadata();
+      let geminiKeys = getVercelGeminiKeys();
+      let cloudKeysReadable = true;
+      try {
+        for (const key of await fetchServerCloudGeminiKeys()) if (!geminiKeys.includes(key)) geminiKeys.push(key);
+      } catch {
+        cloudKeysReadable = false;
+      }
+
+      // فحص الوصول لكل مفتاح Gemini باستخدام GET لبيانات النموذج فقط؛ لا يتم توليد نص.
+      const geminiKeyResults = await Promise.all(geminiKeys.map(async (key, index) => {
+        const result = await testGeminiKey(key, 7000);
+        return {
+          index: index + 1,
+          masked: maskKey(key),
+          valid: result.success,
+          status: result.success ? 'valid' : 'unverified_or_rejected',
+          message: result.message,
+        };
+      }));
+      const [openrouter] = await Promise.all([openrouterPromise]);
+      const validGeminiKeys = geminiKeyResults.filter((item) => item.valid).length;
+      const geminiConfigured = geminiKeys.length > 0;
+      const geminiOk = validGeminiKeys > 0;
+      const aiReachable = geminiOk || openrouter.ok === true;
+      return res.status(200).json({
+        ok: aiReachable,
+        tested: false,
+        checkType: 'metadata',
+        aiReachable,
+        routing: { primary: 'gemini', fallback: 'openrouter' },
+        latencyMs: Date.now() - startedAt,
+        cloudKeysReadable,
+        checkedKeys: geminiKeyResults.length,
+        providers: {
+          gemini: {
+            configured: geminiConfigured,
+            ok: geminiConfigured ? geminiOk : false,
+            keysCount: geminiKeys.length,
+            keysChecked: geminiKeyResults.length,
+            validKeys: validGeminiKeys,
+            cloudKeysReadable,
+            keyResults: geminiKeyResults,
+            quotaRemaining: null,
+            message: !geminiConfigured
+              ? 'لا توجد مفاتيح Gemini في متغيرات الخادم أو لوحة الإدارة.'
+              : `تم فحص ${geminiKeyResults.length} مفتاح Gemini دون توليد نص؛ ${validGeminiKeys} مفتاح وصل إلى بيانات النموذج. لا تعرض واجهة Gemini العامة مقدار حصة التوليد المتبقية من هذا الفحص، لذا حالة الحصة غير معروفة هنا.`,
+          },
+          openrouter: {
+            ...openrouter,
+            quotaRemaining: openrouter.limitRemaining ?? null,
+          },
+        },
+        message: 'فحص بيانات الاتصال فقط دون توليد نص. Gemini هو المزود الأساسي وOpenRouter هو الاحتياطي. يمكن التحقق من قبول مفتاح Gemini دون استهلاك حصة التوليد، لكن لا يمكن معرفة المتبقي الدقيق لحصة Gemini من واجهة الفحص هذه.',
       });
     }
 
     const [openrouter, gemini] = await Promise.all([testOpenRouterGeneration(), testGeminiGeneration()]);
-    // The app's primary provider is OpenRouter. A temporary Gemini fallback
-    // outage is degraded redundancy, not a total AI outage when OpenRouter works.
+    // This explicit diagnostic still performs generation; report the actual configured priority.
     const ok = openrouter.ok || gemini.ok;
     const degraded = !openrouter.ok || !gemini.ok;
     return res.status(ok ? 200 : 502).json({
@@ -222,8 +336,8 @@ export default async function handler(req: any, res: any) {
       tested: true,
       aiReachable: openrouter.ok || gemini.ok,
       routing: {
-        primary: 'openrouter',
-        fallback: 'gemini',
+        primary: 'gemini',
+        fallback: 'openrouter',
       },
       latencyMs: Math.max(openrouter.latencyMs, gemini.latencyMs),
       providers: { openrouter, gemini },
@@ -231,10 +345,10 @@ export default async function handler(req: any, res: any) {
         ? 'نجح التوليد الفعلي من OpenRouter وGemini.'
         : openrouter.ok
           ? (gemini.temporary
-            ? 'OpenRouter يعمل. خدمة Gemini الاحتياطية مشغولة مؤقتًا؛ سيستمر التطبيق عبر OpenRouter مع انخفاض التكرار الاحتياطي حتى تتعافى Google.'
-            : 'OpenRouter يعمل، لكن فحص Gemini الاحتياطي لم ينجح. التطبيق متاح عبر OpenRouter؛ راجع تفاصيل Gemini أدناه.')
+            ? 'Gemini الاحتياطي لم يعد هو المسار الأساسي؛ خدمة Gemini مشغولة مؤقتًا، وسيحاول التطبيق OpenRouter بعد فشل Gemini.'
+            : 'OpenRouter يعمل كاحتياطي، لكن فحص Gemini الأساسي لم ينجح. راجع تفاصيل Gemini أدناه.')
           : gemini.ok
-            ? 'Gemini يعمل كبديل، لكن OpenRouter الأساسي يحتاج مراجعة.'
+            ? 'Gemini يعمل كالمزوّد الأساسي، لكن فحص OpenRouter الاحتياطي يحتاج مراجعة.'
             : 'فشل التوليد الفعلي من المزوّدين. راجع رسائل الخطأ وإعدادات المفاتيح والحصص.',
     });
   } catch (error: any) {
