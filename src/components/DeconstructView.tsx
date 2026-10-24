@@ -343,6 +343,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
+            recoveryScope="deconstruct"
             onProcessingChange={setIsUploadingDoc}
             onTextExtracted={(text, fileName) => {
               const trimmed = text.trim();
@@ -422,7 +423,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                يفحص المساعد خزنة الحساب الحالي تلقائياً بحثاً عن نموذج مطابق أو قريب ومفيد. وإذا لم يجد نموذجاً مناسباً، ينشئ التفنيد والرد من الصفر دون توقف ودون طلب اختيار نموذج.
+                يفحص المساعد خزنة الحساب الحالي تلقائياً بحثاً عن نموذج مطابق أو قريب ومفيد. وإذا لم يجد نموذجا مناسباً، ينشئ التفنيد والرد من الصفر دون توقف ودون طلب اختيار نموذج.
               </p>
               <div className="mt-3">
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -540,7 +541,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     تقرير التفكيك والمذكرة المقابلة
                   </h3>
                   <span className="text-[11px] text-slate-400">
-                    إستراتيجية الدفاع والمذكرة الجوابية الكامله
+                    إستراتيجية الدفاع والمذكرة الجوابية الكاملة
                   </span>
                 </div>
               </div>

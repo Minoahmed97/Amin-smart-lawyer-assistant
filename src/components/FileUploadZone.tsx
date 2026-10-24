@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   UploadCloud,
   Loader2,
@@ -8,6 +8,8 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { checkServerOCRReadiness, extractTextFromAnyFile } from '../utils/fileExtractor.ts';
+import { acknowledgeSavedOcrJob, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
+import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 
 interface FileUploadZoneProps {
   onTextExtracted: (text: string, fileName: string, fileType?: string, sourceFile?: File) => void;
@@ -15,6 +17,7 @@ interface FileUploadZoneProps {
   description?: string;
   maxFiles?: number;
   onProcessingChange?: (isProcessing: boolean) => void;
+  recoveryScope?: 'drafting' | 'deconstruct' | 'qualify' | 'vault' | string;
 }
 
 export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
@@ -23,8 +26,10 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
   description = 'استخراج فوري للنصوص بالذكاء الاصطناعي مع الحفاظ على البيانات.',
   maxFiles = 10,
   onProcessingChange,
+  recoveryScope = 'general',
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
@@ -39,6 +44,59 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
   } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // Reattach completed or queued OCR work to the correct legal workflow after reopening it.
+  useEffect(() => {
+    let active = true;
+    const userId = getActiveLawyerUserId();
+    const savedJobs = getSavedOcrJobs(recoveryScope, userId);
+    if (!savedJobs.length) return () => { active = false; };
+
+    setIsProcessing(true);
+    onProcessingChange?.(true);
+    setErrorMsg(null);
+    setWarnings([]);
+
+    void (async () => {
+      let recoveredChars = 0;
+      const recoveredNames: string[] = [];
+      for (let i = 0; i < savedJobs.length; i++) {
+        const job = savedJobs[i];
+        if (!active) return;
+        setBatchProgress({ current: i + 1, total: savedJobs.length, currentFileName: `استعادة: ${job.fileName}` });
+        try {
+          const text = await resumeSavedOcrTask(job.jobId, recoveryScope, userId);
+          if (!active || !text.trim()) continue;
+          onTextExtracted(text, job.fileName, job.mimeType || undefined);
+          recoveredChars += text.length;
+          recoveredNames.push(job.fileName);
+          // Acknowledge only after delivering the text to its original workflow callback.
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          if (active) acknowledgeSavedOcrJob(recoveryScope, userId, job.jobId);
+        } catch (error: any) {
+          if (!active) return;
+          if (!error?.savedJobPending) acknowledgeSavedOcrJob(recoveryScope, userId, error?.jobId || job.jobId);
+          setWarnings((previous) => [...previous, error?.savedJobPending
+            ? `المهمة الخاصة بالملف ${job.fileName} ما زالت محفوظة على الخادم؛ ارجع لاحقًا لاستعادة نتيجتها.`
+            : `تعذر استعادة ${job.fileName}: ${error?.message || 'حدث خطأ أثناء استرجاع المهمة.'}`]);
+        }
+      }
+      if (!active) return;
+      if (recoveredNames.length) {
+        setSuccessInfo({ processedCount: recoveredNames.length, totalChars: recoveredChars, fileNames: recoveredNames });
+      }
+      setIsProcessing(false);
+      onProcessingChange?.(false);
+      setBatchProgress(null);
+    })();
+
+    return () => { active = false; };
+  }, [recoveryScope]);
 
   const processFilesBatch = async (filesList: FileList | File[]) => {
     const rawFiles = Array.from(filesList);
@@ -66,7 +124,9 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
     if (hasServerOCRFiles) {
       try {
         await checkServerOCRReadiness();
+        if (!mountedRef.current) return;
       } catch (error: any) {
+        if (!mountedRef.current) return;
         setIsProcessing(false);
         onProcessingChange?.(false);
         setBatchProgress(null);
@@ -112,23 +172,27 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
       const isDirectOCRFile = lowerFileName.endsWith('.pdf') || /\.(jpe?g|png|webp|bmp)$/i.test(lowerFileName) || file.type.startsWith('image/');
       if (isDirectOCRFile && hasStartedServerOCR) {
         await new Promise((resolve) => setTimeout(resolve, 2500));
+        if (!mountedRef.current) return;
       }
       try {
-        const result = await extractTextFromAnyFile(file);
+        const result = await extractTextFromAnyFile(file, recoveryScope);
+        if (!mountedRef.current) return;
         if (isDirectOCRFile) hasStartedServerOCR = true;
         if (result && result.text) {
           totalChars += result.characterCount;
           extractedResults[i] = { file, result };
         }
       } catch (err: any) {
+        if (!mountedRef.current) return;
+        if (err?.jobId && !err?.savedJobPending) acknowledgeSavedOcrJob(recoveryScope, getActiveLawyerUserId(), err.jobId);
         if (isDirectOCRFile) hasStartedServerOCR = true;
         console.warn(`Extraction error for ${file.name}:`, err);
         const cleanReason = getCleanFailureReason(file, err);
-        if (isImageFile(file)) {
-          // Keep image failures for one batch-level retry after the initial batch finishes.
+        if (isImageFile(file) && !err?.savedJobPending) {
+          // Retry only definitive OCR failures; a saved pending job must never be charged twice.
           failedImages.push({ file, index: i });
         } else {
-          failedNames.push(`${file.name}: ${cleanReason}`);
+          failedNames.push(`${file.name}: ${err?.savedJobPending ? 'المهمة محفوظة للمتابعة في الخلفية، ويمكن استعادة نتيجتها لاحقًا' : cleanReason}`);
         }
       }
     }
@@ -145,8 +209,10 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
 
       // Keep OCR requests spaced out during the retry pass as well.
       await new Promise((resolve) => setTimeout(resolve, 2500));
+      if (!mountedRef.current) return;
       try {
-        const result = await extractTextFromAnyFile(file);
+        const result = await extractTextFromAnyFile(file, recoveryScope);
+        if (!mountedRef.current) return;
         if (result && result.text) {
           totalChars += result.characterCount;
           extractedResults[originalIndex] = { file, result };
@@ -154,6 +220,8 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
           throw new Error('لم تُرجع خدمة استخراج النص نصًا صالحًا.');
         }
       } catch (retryErr: any) {
+        if (!mountedRef.current) return;
+        if (retryErr?.jobId && !retryErr?.savedJobPending) acknowledgeSavedOcrJob(recoveryScope, getActiveLawyerUserId(), retryErr.jobId);
         console.warn(`Image extraction retry failed for ${file.name}:`, retryErr);
         const finalReason = getCleanFailureReason(file, retryErr);
         failedNames.push(`${file.name}: تعذر استخراج النص حتى بعد إعادة المحاولة (${finalReason})`);
@@ -164,11 +232,16 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
     // was recovered during the retry pass (e.g. image 3 stays in position 3).
     for (const entry of extractedResults) {
       if (!entry) continue;
+      if (!mountedRef.current) return;
       const { file, result } = entry;
       processedNames.push(file.name);
       onTextExtracted(result.text, result.fileName, result.fileType, file);
+      if (result.backgroundJobId) {
+        acknowledgeSavedOcrJob(recoveryScope, getActiveLawyerUserId(), result.backgroundJobId);
+      }
     }
 
+    if (!mountedRef.current) return;
     setIsProcessing(false);
     onProcessingChange?.(false);
     setBatchProgress(null);

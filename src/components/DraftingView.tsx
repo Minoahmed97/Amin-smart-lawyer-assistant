@@ -386,6 +386,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
+            recoveryScope="drafting"
             onProcessingChange={(processing) => {
               setIsUploadingDoc(processing);
               if (processing) {

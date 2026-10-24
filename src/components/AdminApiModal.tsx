@@ -118,12 +118,17 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   const [showNewOcrKey, setShowNewOcrKey] = useState<boolean>(false);
   const [ocrKeyBusy, setOcrKeyBusy] = useState<boolean>(false);
   const [ocrKeyActionMsg, setOcrKeyActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [groqOCRFallbackStatus, setGroqOCRFallbackStatus] = useState<{ enabled: boolean; configured: boolean; maskedKey: string; model: string }>({ enabled: false, configured: false, maskedKey: '', model: 'qwen/qwen3.6-27b' });
+  const [groqOCRKeyInput, setGroqOCRKeyInput] = useState<string>('');
+  const [showGroqOCRKey, setShowGroqOCRKey] = useState<boolean>(false);
+  const [groqOCRBusy, setGroqOCRBusy] = useState<boolean>(false);
+  const [groqOCRMsg, setGroqOCRMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [newApiKeyInput, setNewApiKeyInput] = useState<string>('');
   const [showNewKey, setShowNewKey] = useState<boolean>(false);
   const [keyAddingLoading, setKeyAddingLoading] = useState<boolean>(false);
   const [keyActionMsg, setKeyActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [aiHealthLoading, setAiHealthLoading] = useState(false);
-  const [aiHealthResult, setAiHealthResult] = useState<{ ok: boolean; tested?: boolean; message: string; latencyMs?: number; checkedKeys?: number; cloudKeysReadable?: boolean; routing?: { primary?: string; fallback?: string }; providers?: { openrouter?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; model?: string }; gemini?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; keysCount?: number; keysChecked?: number; cloudKeysReadable?: boolean; model?: string } } } | null>(null);
+  const [aiHealthResult, setAiHealthResult] = useState<{ ok: boolean; tested?: boolean; checkType?: 'metadata' | 'generation'; message: string; latencyMs?: number; checkedKeys?: number; cloudKeysReadable?: boolean; routing?: { primary?: string; fallback?: string }; providers?: { openrouter?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; model?: string; usage?: number | null; limit?: number | null; limitRemaining?: number | null; quotaRemaining?: number | null }; gemini?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; keysCount?: number; keysChecked?: number; validKeys?: number; cloudKeysReadable?: boolean; model?: string; quotaRemaining?: number | null; keyResults?: Array<{ index: number; masked: string; valid: boolean; status: string; message: string }> } } } | null>(null);
 
   const [managedPackages, setManagedPackages] = useState<PlatformPackage[]>([]);
   const [packageSaveSuccess, setPackageSaveSuccess] = useState<string>('');
@@ -292,13 +297,79 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
     }
   };
 
+  const fetchGroqOCRFallbackStatus = () => {
+    fetch('/api/admin/ocr-fallback', {
+      headers: { 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' },
+      cache: 'no-store',
+    })
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok || data?.ok === false) throw new Error(data?.error || 'تعذر قراءة إعداد احتياطي Groq.');
+        setGroqOCRFallbackStatus({
+          enabled: data.enabled === true,
+          configured: data.configured === true,
+          maskedKey: String(data.maskedKey || ''),
+          model: String(data.model || 'qwen/qwen3.6-27b'),
+        });
+      })
+      .catch((error: any) => {
+        setGroqOCRMsg({ type: 'error', text: error?.message || 'تعذر قراءة إعداد احتياطي Groq من الخادم.' });
+      });
+  };
+
+  const handleGroqOCRFallbackAction = async (action: 'test' | 'save' | 'toggle' | 'testSaved' | 'delete', enabled?: boolean) => {
+    if (action === 'test' && !groqOCRKeyInput.trim() && !groqOCRFallbackStatus.configured) {
+      setGroqOCRMsg({ type: 'error', text: 'أدخل مفتاح Groq أولاً.' });
+      return;
+    }
+    if (action === 'delete' && !confirm('هل تريد حذف مفتاح Groq وإيقاف احتياطي OCR؟')) return;
+    setGroqOCRBusy(true);
+    setGroqOCRMsg(null);
+    try {
+      const res = await fetch('/api/admin/ocr-fallback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          action,
+          ...(action === 'test' && groqOCRKeyInput.trim() ? { apiKey: groqOCRKeyInput.trim() } : {}),
+          ...(action === 'save' ? { apiKey: groqOCRKeyInput.trim(), enabled: true } : {}),
+          ...(action === 'toggle' ? { enabled: enabled === true } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'تعذر تنفيذ عملية احتياطي Groq.');
+      if (action === 'save' || action === 'delete') setGroqOCRKeyInput('');
+      if (data?.status) {
+        setGroqOCRFallbackStatus({
+          enabled: data.status.enabled === true,
+          configured: data.status.configured === true,
+          maskedKey: String(data.status.maskedKey || ''),
+          model: String(data.status.model || 'qwen/qwen3.6-27b'),
+        });
+      } else if (action === 'toggle') {
+        setGroqOCRFallbackStatus((prev) => ({ ...prev, enabled: enabled === true }));
+      } else if (action === 'test' || action === 'testSaved') {
+        // Test actions do not change the stored settings.
+      } else {
+        fetchGroqOCRFallbackStatus();
+      }
+      setGroqOCRMsg({ type: 'success', text: data?.message || (action === 'test' || action === 'testSaved' ? `نجح اختبار اتصال Groq (${data?.latencyMs || 0} مللي ثانية).` : 'تم تحديث إعداد احتياطي Groq.') });
+    } catch (error: any) {
+      setGroqOCRMsg({ type: 'error', text: error?.message || 'تعذر تنفيذ عملية احتياطي Groq.' });
+      if (action === 'toggle') fetchGroqOCRFallbackStatus();
+    } finally {
+      setGroqOCRBusy(false);
+    }
+  };
+
   const handleCheckClientAiConnection = async () => {
     setAiHealthLoading(true);
     setAiHealthResult(null);
     try {
       const res = await fetch('/api/admin/ai-health', {
-        method: 'POST',
-        headers: { 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' },
+        method: 'GET',
+        headers: { 'x-admin-session': getAdminSessionToken(), 'x-ai-health-check': 'metadata', 'Cache-Control': 'no-store' },
         cache: 'no-store',
       });
       const data = await res.json().catch(() => ({}));
@@ -309,6 +380,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
         checkedKeys: data?.checkedKeys,
         cloudKeysReadable: data?.cloudKeysReadable,
         tested: data?.tested === true,
+        checkType: data?.checkType === 'metadata' ? 'metadata' : data?.tested === true ? 'generation' : undefined,
         providers: data?.providers,
         routing: data?.routing,
       });
@@ -340,6 +412,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
           checkedKeys: data?.checkedKeys,
           cloudKeysReadable: data?.cloudKeysReadable,
           tested: data?.tested === true,
+          checkType: data?.checkType === 'metadata' ? 'metadata' : data?.tested === true ? 'generation' : undefined,
           providers: data?.providers,
           routing: data?.routing,
         });
@@ -478,6 +551,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
       setCurrentBalance(getCurrentStoredCredits());
       fetchKeysStatus();
       fetchOCRKeysStatus();
+      fetchGroqOCRFallbackStatus();
       if (isAuthenticated) {
         loadAnalytics();
         loadAccounts();
@@ -946,7 +1020,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                           فحص وصول الذكاء الاصطناعي للعميل
                         </h5>
                         <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                          فحص الإعدادات التلقائي لا يولّد نصًا. الاختبار الفعلي يرسل طلب توليد قصيرًا واحدًا إلى OpenRouter ومفتاح Gemini واحدًا فقط؛ قد يستهلك حصة بسيطة، ولا يعمل إلا عند ضغط الزر.
+                          الفحص يقرأ حالة المفاتيح وبيانات الاستخدام دون توليد نص، ولا يستهلك حصة توليد المحتوى. Google لا تعرض الحصة المتبقية الدقيقة لـ Gemini عبر هذا الفحص؛ بينما قد تعرض OpenRouter حد الإنفاق المتبقي إذا كان متاحًا.
                         </p>
                       </div>
                       <button
@@ -956,14 +1030,14 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                         className="shrink-0 px-4 py-2 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-2"
                       >
                         <RefreshCw className={`w-4 h-4 ${aiHealthLoading ? 'animate-spin' : ''}`} />
-                        {aiHealthLoading ? 'جارٍ اختبار المزوّدين...' : 'اختبار فعلي للمزوّدين'}
+                        {aiHealthLoading ? 'جارٍ فحص المفاتيح...' : 'فحص المفاتيح دون توليد'}
                       </button>
                     </div>
                     {aiHealthResult && (
-                      <div className={`rounded-lg border p-3 text-xs ${!aiHealthResult.tested ? 'border-slate-600 bg-slate-900/70 text-slate-200' : aiHealthResult.ok ? 'border-emerald-600 bg-emerald-950/60 text-emerald-200' : 'border-rose-600 bg-rose-950/60 text-rose-200'}`} role="status">
+                      <div className={`rounded-lg border p-3 text-xs ${aiHealthResult.checkType === 'metadata' ? (aiHealthResult.ok ? 'border-emerald-600 bg-emerald-950/60 text-emerald-200' : 'border-rose-600 bg-rose-950/60 text-rose-200') : !aiHealthResult.tested ? 'border-slate-600 bg-slate-900/70 text-slate-200' : aiHealthResult.ok ? 'border-emerald-600 bg-emerald-950/60 text-emerald-200' : 'border-rose-600 bg-rose-950/60 text-rose-200'}`} role="status">
                         <div className="font-bold flex items-center gap-2">
-                          {!aiHealthResult.tested ? <RefreshCw className="w-4 h-4" /> : aiHealthResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-                          {aiHealthResult.tested ? (aiHealthResult.providers?.openrouter?.ok === true && aiHealthResult.providers?.gemini?.ok === true ? 'نجح التوليد من المزوّدين' : aiHealthResult.ok ? 'التوليد يعمل عبر مزوّد واحد على الأقل' : 'فشل اختبار التوليد من المزوّدين') : 'حالة الإعدادات فقط — التوليد لم يُختبر'}
+                          {aiHealthResult.checkType === 'metadata' ? (aiHealthResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />) : !aiHealthResult.tested ? <RefreshCw className="w-4 h-4" /> : aiHealthResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                          {aiHealthResult.checkType === 'metadata' ? (aiHealthResult.ok ? 'تم فحص الاتصال دون توليد نص' : 'تعذر تأكيد اتصال أحد المزودين') : aiHealthResult.tested ? (aiHealthResult.providers?.openrouter?.ok === true && aiHealthResult.providers?.gemini?.ok === true ? 'نجح التوليد من المزوّدين' : aiHealthResult.ok ? 'التوليد يعمل عبر مزوّد واحد على الأقل' : 'فشل اختبار التوليد من المزوّدين') : 'حالة الإعدادات فقط — التوليد لم يُختبر'}
                         </div>
                         <p className="mt-1 leading-relaxed">{aiHealthResult.message}</p>
                         {aiHealthResult.routing && <p className="mt-1 opacity-90">المزوّد الأساسي: {aiHealthResult.routing.primary === 'gemini' ? 'Gemini' : 'OpenRouter'} — البديل: {aiHealthResult.routing.fallback === 'gemini' ? 'Gemini' : 'OpenRouter'}</p>}
@@ -973,12 +1047,14 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                               const result = aiHealthResult.providers?.[provider];
                               if (!result) return null;
                               const label = provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
-                              const status = result.ok === true ? 'نجح التوليد' : result.ok === false ? 'فشل التوليد' : result.configured ? 'مُعدّ — لم يُختبر' : 'غير مُعدّ';
+                              const status = aiHealthResult.checkType === 'metadata' ? (result.ok === true ? (provider === 'gemini' ? 'مفتاح/مفاتيح مقبولة دون توليد' : 'المفتاح مقبول دون توليد') : result.ok === false ? 'تعذر التحقق' : result.configured ? 'مُعدّ — لم يُتحقق' : 'غير مُعدّ') : result.ok === true ? 'نجح التوليد' : result.ok === false ? 'فشل التوليد' : result.configured ? 'مُعدّ — لم يُختبر' : 'غير مُعدّ';
                               return (
                                 <div key={provider} className="rounded-lg border border-slate-600 bg-slate-900/70 p-2">
                                   <div className="font-bold">{label}: {status}</div>
                                   <div className="mt-1 leading-relaxed">{result.message}</div>
-                                  {'keysCount' in result && typeof result.keysCount === 'number' && <div className="mt-1 opacity-80">عدد مفاتيح Gemini: {result.keysCount}</div>}
+                                  {'keysCount' in result && typeof result.keysCount === 'number' && <div className="mt-1 opacity-80">عدد مفاتيح Gemini: {result.keysCount} • المقبولة: {result.validKeys ?? 'غير معروف'}</div>}
+                                  {provider === 'openrouter' && aiHealthResult.checkType === 'metadata' && 'limitRemaining' in result && typeof result.limitRemaining === 'number' && <div className="mt-1 opacity-80">حد الإنفاق المتبقي: ${result.limitRemaining.toFixed(4)}{'usage' in result && typeof result.usage === 'number' ? ` • الاستخدام: $${result.usage.toFixed(4)}` : ''}</div>}
+                                  {'keyResults' in result && Array.isArray(result.keyResults) && result.keyResults.map((keyResult) => <div key={`${keyResult.index}-${keyResult.masked}`} className="mt-2 border-t border-slate-700 pt-2"><div className="font-semibold">مفتاح {keyResult.index} ({keyResult.masked}): {keyResult.valid ? 'تم التحقق من صلاحيته' : 'تعذر التحقق أو الوصول'}</div><div className="mt-1 opacity-80">{keyResult.message}</div></div>)}
                                   {typeof result.latencyMs === 'number' && <div className="mt-1 opacity-80">زمن الاختبار: {result.latencyMs} مللي ثانية</div>}
                                 </div>
                               );
@@ -1174,6 +1250,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
               )}
 
               {activeTab === 'keyStatus' && (
+                <>
                 <div className="bg-[#1e293b] p-5 rounded-2xl border-2 border-cyan-600/70 space-y-4 shadow-xl">
                   <div className="border-b border-slate-700 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
@@ -1237,6 +1314,51 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                     )}
                   </div>
                 </div>
+
+                <div className="bg-[#1e293b] p-5 rounded-2xl border-2 border-violet-600/70 space-y-4 shadow-xl mt-4">
+                  <div className="border-b border-slate-700 pb-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <h4 className="text-violet-300 text-base font-bold flex items-center gap-2"><Zap className="w-5 h-5" />احتياطي OCR باستخدام Groq Vision</h4>
+                      <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">عند استنفاد حصة مفاتيح Gemini، يمكن تحويل استخراج الصور تلقائياً إلى Groq. المفتاح محفوظ على الخادم في إعدادات Supabase المركزية ولا يظهر كاملاً بعد الحفظ.</p>
+                    </div>
+                    <span className={`text-[11px] px-2.5 py-1 rounded-full border font-bold ${groqOCRFallbackStatus.enabled && groqOCRFallbackStatus.configured ? 'bg-emerald-950 text-emerald-300 border-emerald-600/50' : 'bg-slate-900 text-slate-300 border-slate-700'}`}>
+                      {groqOCRFallbackStatus.enabled && groqOCRFallbackStatus.configured ? 'الاحتياطي مفعل' : groqOCRFallbackStatus.configured ? 'المفتاح محفوظ — متوقف' : 'غير مضبوط'}
+                    </span>
+                  </div>
+
+                  {groqOCRMsg && (
+                    <div className={`p-3 rounded-xl border text-xs font-bold flex items-start gap-2 ${groqOCRMsg.type === 'success' ? 'bg-emerald-950/70 border-emerald-500 text-emerald-200' : 'bg-rose-950/70 border-rose-500 text-rose-200'}`} role="status">
+                      {groqOCRMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+                      <span>{groqOCRMsg.text}</span>
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border border-violet-800/70 bg-slate-950 p-4 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <h5 className="text-sm font-bold text-violet-200 flex items-center gap-2"><KeyRound className="w-4 h-4" />مفتاح Groq الاحتياطي</h5>
+                      <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" className="text-[11px] text-sky-400 hover:text-sky-300 underline">إنشاء مفتاح Groq API</a>
+                    </div>
+                    {groqOCRFallbackStatus.configured && (
+                      <div className="text-[11px] text-slate-300 font-mono">المفتاح المحفوظ: {groqOCRFallbackStatus.maskedKey} — النموذج: <span dir="ltr">{groqOCRFallbackStatus.model}</span></div>
+                    )}
+                    <div className="relative">
+                      <input type={showGroqOCRKey ? 'text' : 'password'} value={groqOCRKeyInput} onChange={(e) => setGroqOCRKeyInput(e.target.value)} placeholder={groqOCRFallbackStatus.configured ? 'اتركه فارغاً للاحتفاظ بالمفتاح المحفوظ أو أدخل بديلاً' : 'ألصق مفتاح Groq الذي يبدأ بـ gsk_'} dir="ltr" autoComplete="off" className="w-full p-2.5 pl-16 bg-slate-900 border border-slate-600 rounded-xl text-white font-mono text-xs focus:border-violet-500 focus:outline-none placeholder:text-slate-500" />
+                      <button type="button" onClick={() => setShowGroqOCRKey(!showGroqOCRKey)} className="absolute left-3 top-2.5 text-slate-400 hover:text-white text-xs">{showGroqOCRKey ? 'إخفاء' : 'إظهار'}</button>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button type="button" onClick={() => void handleGroqOCRFallbackAction('test')} disabled={groqOCRBusy || (!groqOCRKeyInput.trim() && !groqOCRFallbackStatus.configured)} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-violet-200 border border-violet-700/50 rounded-lg text-xs font-bold disabled:opacity-50 flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" />{groqOCRBusy ? 'جارٍ الاختبار...' : 'اختبار المفتاح'}</button>
+                      <button type="button" onClick={() => void handleGroqOCRFallbackAction('save')} disabled={groqOCRBusy || (!groqOCRKeyInput.trim() && !groqOCRFallbackStatus.configured)} className="px-3 py-2 bg-gradient-to-r from-violet-700 to-indigo-700 hover:from-violet-600 hover:to-indigo-600 text-white rounded-lg text-xs font-bold disabled:opacity-50 flex items-center gap-1.5"><Save className="w-3.5 h-3.5" />{groqOCRBusy ? 'جارٍ الحفظ...' : 'حفظ وتفعيل الاحتياطي'}</button>
+                      <button type="button" onClick={() => void handleGroqOCRFallbackAction('delete')} disabled={groqOCRBusy || !groqOCRFallbackStatus.configured} className="px-3 py-2 bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/60 rounded-lg text-xs font-bold disabled:opacity-50 flex items-center gap-1.5"><Trash2 className="w-3.5 h-3.5" />حذف المفتاح</button>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-3 p-3 rounded-xl border border-slate-700 bg-slate-950 cursor-pointer">
+                    <input type="checkbox" checked={groqOCRFallbackStatus.enabled} onChange={(e) => void handleGroqOCRFallbackAction('toggle', e.target.checked)} disabled={groqOCRBusy || !groqOCRFallbackStatus.configured} className="h-4 w-4 accent-violet-500" />
+                    <span className="text-xs text-slate-200 font-bold">تفعيل Groq تلقائياً عند تجاوز حصة Gemini</span>
+                  </label>
+                  <p className="text-[11px] leading-relaxed text-amber-200/90">ملاحظة: نموذج Groq الاحتياطي المحدد للرؤية يدعم الصور. ملف PDF نفسه لا يتحول تلقائياً إلى صور بهذا المسار؛ عند نفاد Gemini قد يحتاج PDF إلى رفع صفحاته كصور. يظل رصيد المستخدم والتحقق من تسجيل الدخول معمولاً بهما.</p>
+                </div>
+                </>
               )}
 
               {activeTab === 'supabase' && (

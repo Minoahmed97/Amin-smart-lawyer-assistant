@@ -12,6 +12,7 @@ import deleteKeyHandler from '../backend/admin/keys/delete.ts';
 import testKeyHandler from '../backend/admin/keys/test.ts';
 import keysStatusHandler from '../backend/admin/keys-status.ts';
 import ocrKeysHandler from '../backend/admin/ocr-keys.ts';
+import ocrFallbackHandler from '../backend/admin/ocr-fallback.ts';
 import aiHealthHandler from '../backend/admin/ai-health.ts';
 import packagesHandler from '../backend/admin/packages.ts';
 import heartbeatHandler from '../backend/analytics/heartbeat.ts';
@@ -53,6 +54,7 @@ const ROUTES: Record<string, Handler> = {
   '/admin/analytics': adminAnalyticsHandler,
   '/admin/keys-status': keysStatusHandler,
   '/admin/ocr-keys': ocrKeysHandler,
+  '/admin/ocr-fallback': ocrFallbackHandler,
   '/admin/ai-health': aiHealthHandler,
   '/admin/keys/add': addKeyHandler,
   '/admin/keys/delete': deleteKeyHandler,

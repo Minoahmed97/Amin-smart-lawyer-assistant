@@ -2,7 +2,9 @@ import mammoth from 'mammoth';
 import { executeWithDedicatedOCRKeyRotation, checkDedicatedOCRGeminiReadiness, GEMINI_MODELS } from './keyRotation.ts';
 
 import { requireActiveSession, consumeOperation } from './auth.ts';
-import { rateLimit, validateBase64Payload, limitBodyString } from './security.ts';
+import { fetchServerCloudOCRGroqFallbackConfig } from './supabaseSync.ts';
+import { extractTextWithGroqOCR } from './groqOcr.ts';
+import { validateBase64Payload, limitBodyString } from './security.ts';
 export const config = {
   api: {
     bodyParser: {
@@ -14,8 +16,23 @@ export const config = {
 export default async function handler(req: any, res: any) {
   if (req.method === 'GET') {
     try {
-      rateLimit(req, 'ocr-readiness', 12, 10 * 60 * 1000);
       await requireActiveSession(req);
+      // If the administrator enabled the server-side Groq vision fallback,
+      // don't block image uploads just because the Gemini OCR pool is exhausted.
+      try {
+        const groqFallback = await fetchServerCloudOCRGroqFallbackConfig();
+        if (groqFallback.enabled && groqFallback.apiKey) {
+          return res.status(200).json({
+            ready: true,
+            keyCount: 0,
+            checkedKeys: 0,
+            fallbackReady: true,
+            message: 'احتياطي Groq Vision مفعّل. سيجرب التطبيق Gemini أولاً ثم Groq عند تجاوز حصة Gemini للصور.',
+          });
+        }
+      } catch (fallbackConfigError: any) {
+        console.warn('[OCR readiness] Could not read Groq fallback configuration. Gemini readiness will be checked.');
+      }
       const readiness = await checkDedicatedOCRGeminiReadiness(9000);
       return res.status(readiness.ready ? 200 : 503).json(readiness);
     } catch (err: any) {
@@ -30,7 +47,6 @@ export default async function handler(req: any, res: any) {
 
 
   try {
-    rateLimit(req, 'ocr', 12, 10 * 60 * 1000);
     await requireActiveSession(req);
     let body = req.body;
     if (typeof body === 'string') {
@@ -102,43 +118,53 @@ export default async function handler(req: any, res: any) {
       safeGeminiMime = 'image/bmp';
     }
 
-    const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل. - لا تصحح النص من عندك ولا تعيد صياغته ولا تلخصه. - لا تستنتج كلمة غير مقروءة ولا تخترع نصاً مفقوداً؛ عند تعذر قراءة جزء واضح استخدم [غير مقروء] بدلاً من التخمين. - لا تضف عناوين أو وقائع أو مواد قانونية أو أحكاماً أو أسماء غير ظاهرة في المستند. - حافظ على الجداول والقوائم والتقسيمات والعناوين قدر الإمكان. - إذا وجدت توقيعاً أو ختماً أو كتابة بخط اليد ولم يكن محتواها مقروءاً، صف وجوده بإيجاز دون اختلاق مضمونه. - أخرج النص المستخرج فقط، دون مقدمة أو تعليق أو تحليل أو ادعاء بأن الدقة مطلقة.`;
-    const extractedText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
-      const response = await ai.models.generateContent({
-        skipAdaptiveAnswerLength: true,
-        model,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: ocrPrompt,
-              },
-              {
-                inlineData: {
-                  mimeType: safeGeminiMime,
-                  data: compactBase64,
-                },
-              },
-            ],
-          },
-        ],
-        config: {
-          temperature: 0.2,
-          maxOutputTokens: 32768,
-        },
-      } as any);
-      const text = response.text?.trim() || '';
-      if (!text) {
-        // Treat an empty model response as a failed attempt so the existing
-        // provider/model/key rotation can continue instead of stopping early.
-        throw Object.assign(new Error(`لم يُرجع النموذج ${model} نصاً مستخرجاً صالحاً.`), {
-          status: 503,
-          statusCode: 503,
-        });
+    const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر والجداول والعناوين قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل، ولا تطبع الأرقام أو تغيّر صيغتها. - تعليمات خاصة بالخط اليدوي: افحص شكل الحروف واتصالها والنقاط والمسافات والكلمات المحيطة، خصوصاً في محاضر الشرطة المصرية وتحقيقات النيابة. استخدم سياق الجملة القانونية وموضوع المحضر لترجيح قراءة بين احتمالات تدعمها العلامات المرئية في الصورة فقط؛ لا تستكمل عبارة متوقعة لمجرد شيوعها، ولا تجعل السياق بديلاً عن الحروف غير الظاهرة. - لا تصحح الإملاء أو النحو، ولا تعِد الصياغة، ولا تستبدل التعبير الأصلي بصياغة قانونية مألوفة. - إذا بقيت كلمة غير مؤكدة بعد فحص الصورة والسياق، فاكتب حرفياً [كلمة غير واضحة] مكانها، ولا تخمّنها ولا تخترع أي كلمة. حافظ على الكلمات المقروءة قبلها وبعدها ولا تستبدل الجملة كلها بعلامة واحدة إذا كانت بعض كلماتها واضحة. - لا تضف وقائع أو أسماء أو أرقاماً أو تواريخ أو مواد قانونية أو أحكاماً غير ظاهرة في المستند. - إذا وجدت توقيعاً أو ختماً لا يمكن قراءة محتواه، فاذكر وجوده بإيجاز من دون نسبة اسم أو مضمون إليه. - أخرج النص المستخرج فقط دون مقدمة أو تعليق أو تحليل، ولا تدّعِ دقة مطلقة.`;
+    let extractedText = '';
+    try {
+      extractedText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
+        const response = await ai.models.generateContent({
+          skipAdaptiveAnswerLength: true,
+          model,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: ocrPrompt },
+                { inlineData: { mimeType: safeGeminiMime, data: compactBase64 } },
+              ],
+            },
+          ],
+          config: { temperature: 0.2, maxOutputTokens: 32768 },
+        } as any);
+        const text = response.text?.trim() || '';
+        if (!text) {
+          throw Object.assign(new Error(`لم يُرجع النموذج ${model} نصاً مستخرجاً صالحاً.`), {
+            status: 503,
+            statusCode: 503,
+          });
+        }
+        return text;
+      }, GEMINI_MODELS, 240000);
+    } catch (geminiError: any) {
+      const geminiStatus = Number(geminiError?.statusCode || geminiError?.status || geminiError?.response?.status);
+      const geminiMessage = String(geminiError?.message || '');
+      const quotaExhausted = geminiStatus === 429 || /نفدت الحصة|تجاوز.*الحصة|وصلت مؤقتاً إلى حدود الاستخدام|حدود الطلبات في مفاتيح|resource_exhausted|quota exceeded|rate.?limit|too many requests|http.?429/i.test(geminiMessage);
+      if (!quotaExhausted) throw geminiError;
+
+      const groqFallback = await fetchServerCloudOCRGroqFallbackConfig().catch((configError: any) => {
+        throw new Error(`نفدت حصة Gemini ولم يمكن قراءة إعداد احتياطي Groq من التخزين المركزي: ${String(configError?.message || 'خطأ في الإعدادات').slice(0, 160)}`);
+      });
+      if (!groqFallback.enabled || !groqFallback.apiKey) throw geminiError;
+
+      // Groq's configured vision model accepts image inputs. It does not accept a
+      // raw application/pdf payload through this endpoint, so PDF requests retain
+      // a clear error rather than sending an unsupported payload.
+      if (!safeGeminiMime.startsWith('image/')) {
+        throw new Error('نفدت حصة Gemini. احتياطي Groq Vision مفعل لكنه يدعم الصور فقط وليس ملف PDF مباشرةً؛ جرّب رفع صفحات الـ PDF كصور أو انتظر تجدد الحصة.');
       }
-      return text;
-    }, GEMINI_MODELS, 240000);
+      console.warn('[OCR] Gemini quota exhausted; using configured Groq vision fallback for image OCR.');
+      extractedText = await extractTextWithGroqOCR(compactBase64, safeGeminiMime, fileName || 'المستند');
+    }
 
     if (extractedText) {
       const usage = await consumeOperation(req, 'ocr');
