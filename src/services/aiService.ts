@@ -129,7 +129,16 @@ function jobStorageKey(type: SavedJobType, userId?: string, storageScope?: strin
 async function enableCompletionPushNotifications(): Promise<void> {
   try {
     if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
-    const publicKey = String((import.meta as any).env?.VITE_VAPID_PUBLIC_KEY || '').trim();
+    // Fetch the public key from the backend so the browser and server always
+    // use the same VAPID configuration; the private key never leaves the server.
+    const keyResponse = await fetch('/api/gemini/jobs?action=push-public-key', {
+      method: 'GET',
+      headers: getRequestHeaders(),
+      cache: 'no-store',
+    });
+    if (!keyResponse.ok) return;
+    const keyData = await keyResponse.json().catch(() => ({}));
+    const publicKey = String(keyData?.publicKey || '').trim();
     if (!publicKey) return;
     let permission = Notification.permission;
     if (permission === 'default') permission = await Notification.requestPermission();
@@ -312,13 +321,7 @@ export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: 
   return requestSavedJob(type, {}, onChunk, userId, jobId);
 }
 
-export async function runSavedOcrTask(
-  base64Data: string,
-  mimeType: string,
-  fileName: string,
-  storageScope: string,
-  userId?: string,
-): Promise<{ text: string; jobId: string }> {
+export async function runSavedOcrTask( base64Data: string, mimeType: string, fileName: string, storageScope: string, userId?: string, ): Promise<{ text: string; jobId: string }> {
   const jobId = makeJobId();
   const text = await requestSavedJob(
     'ocr',
