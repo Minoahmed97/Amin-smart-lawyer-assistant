@@ -670,10 +670,9 @@ export async function executeWithKeyRotation<T>(
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
-  // مسح جميع المفاتيح/الننماذج المكونة مرة واحدة لكل طلب خادم. قد يعيد المستدعي محاولة
-  // فشل طلب عابر، لكن تكرار مسح كامل هنا يضاعف وقت الاستجابة.
-  // هذا لا يقلل من عدد المفاتيح المميزة أو نماذج البديل التي تمت تجربتها.
-  const MAX_ROTATION_CYCLES = 1;
+  
+  // السماح بدورتين كاملتين كحد أقصى عند وجود أخطاء ضغط عالي أو مهلة لم تُحل في الدورة الأولى
+  const MAX_ROTATION_CYCLES = 2;
   let lastError: any = null;
   const keyFailureKinds = new Map<string, string>();
   if (keys.length && keys.every((candidate) => isCooling(keyCooldownUntil, candidate))) {
@@ -687,6 +686,13 @@ export async function executeWithKeyRotation<T>(
   if (!hasReadyGeneralPair) throw new Error('نماذج Gemini المتاحة في فترة تبريد مؤقت. تم تجاوز المحاولات غير الجاهزة دون تكرارها؛ أعد المحاولة بعد قليل.');
 
   for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
+    // إذا كانت هذه هي الدورة الثانية (بعد تجريب كامل المفاتيح دون نتيجة)، ننتظر قليلاً (Backoff)
+    if (cycle > 0) {
+      const cycleBackoffDelay = Math.pow(2, cycle) * 1000; // 2000ms للدورة الثانية
+      if (deadlineAt - Date.now() < cycleBackoffDelay + 10000) break;
+      await new Promise((r) => setTimeout(r, cycleBackoffDelay));
+    }
+
     const startIdx = reserveStartIndex(keys.length, 'general');
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
@@ -696,8 +702,6 @@ export async function executeWithKeyRotation<T>(
 
       for (let m = 0; m < keyModels.length; m++) {
         const remainingMs = deadlineAt - Date.now();
-        // توقف عن بدء المحاولات عندما لا يكون هناك وقت كافٍ للانتهاء و
-        // الاحتفاظ بنتيجة نهائية. لا يزال OCR يستخدم الحد الأقصى الحالي البالغ 30 ثانية.
         if (remainingMs < 10000) {
           lastError = timeoutError();
           break geminiKeyLoop;
@@ -715,13 +719,12 @@ export async function executeWithKeyRotation<T>(
           console.error('[Gemini key rotation] attempt failed', {
             model,
             keyIndex: currentKeyIndex + 1,
+            cycleAttempt: cycle + 1,
             status: Number(err?.status || err?.statusCode || err?.response?.status) || undefined,
             code: typeof err?.code === 'string' ? err.code : undefined,
             message: String(err?.message || 'Unknown Gemini error').slice(0, 300),
           });
           const kind = markRotationFailure(currentKey, model, err, 'general');
-          // لا نعتبر المفتاح مستنفداً للحصة إذا سبق أن فشل بنوع آخر؛ احتفظ
-          // بتصنيف quota فقط عندما تكون كل محاولات هذا المفتاح بسبب الحصة.
           const previousKind = keyFailureKinds.get(currentKey);
           keyFailureKinds.set(currentKey, previousKind === undefined ? kind :
             (previousKind === 'quota' && kind === 'quota' ? 'quota' : 'other'));
@@ -729,16 +732,12 @@ export async function executeWithKeyRotation<T>(
           const status = Number(err?.status || err?.statusCode || err?.response?.status);
           const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
             /not found|no longer available|model not found|unsupported model/.test(msg);
-          // لا تعيد محاولة زوج المفتاح/النموذج نفسه. جرّب النموذج البديل على المفتاح
-          // نفسه أيضاً عند 429، لأن حد الحصة قد يختلف من نموذج لآخر.
+          
           if ((isModelUnavailable || status === 503 || kind === 'quota') && m < keyModels.length - 1) continue;
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
-          break;
+          break; // الانتقال الفوري للمفتاح الموالي في تدوير السلسلة
         }
       }
-    }
-    if (cycle < MAX_ROTATION_CYCLES - 1) {
-      await new Promise((r) => setTimeout(r, 300));
     }
   }
   if (Date.now() >= deadlineAt || String(lastError?.message || '').includes('انتهت المهلة')) {
@@ -888,10 +887,9 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
-  // مسح جميع المفاتيح/الننماذج المكونة مرة واحدة لكل طلب خادم. قد يعيد المستدعي محاولة
-  // فشل طلب عابر، لكن تكرار مسح كامل هنا يضاعف وقت الاستجابة.
-  // هذا لا يقلل من عدد المفاتيح المميزة أو نماذج البديل التي تمت تجربتها.
-  const MAX_ROTATION_CYCLES = 1;
+  
+  // السماح بدورتين كاملتين كحد أقصى عند التوليد المتدفق
+  const MAX_ROTATION_CYCLES = 2;
   let lastError: any = null;
   const keyFailureKinds = new Map<string, string>();
   if (keys.length && keys.every((candidate) => isCooling(keyCooldownUntil, candidate))) {
@@ -905,6 +903,13 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   if (!hasReadyGeneralPair) throw new Error('نماذج Gemini المتاحة في فترة تبريد مؤقت. تم تجاوز المحاولات غير الجاهزة دون تكرارها؛ أعد المحاولة بعد قليل.');
 
   for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
+    // إذا كانت هذه هي الدورة الثانية (بعد جولة كاملة لجميع المفاتيح)، ننتظر فترة Backoff
+    if (cycle > 0) {
+      const cycleBackoffDelay = Math.pow(2, cycle) * 1000; // 2000ms للدورة الثانية
+      if (deadlineAt - Date.now() < cycleBackoffDelay + 10000) break;
+      await new Promise((r) => setTimeout(r, cycleBackoffDelay));
+    }
+
     const startIdx = reserveStartIndex(keys.length, 'general');
 
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
@@ -938,6 +943,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           console.error('[Gemini stream key rotation] attempt failed', {
             model: keyModels[m],
             keyIndex: currentKeyIndex + 1,
+            cycleAttempt: cycle + 1,
             emittedAnyChunk,
             status: Number(err?.status || err?.statusCode || err?.response?.status) || undefined,
             code: typeof err?.code === 'string' ? err.code : undefined,
@@ -951,8 +957,6 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           }
 
           const kind = markRotationFailure(currentKey, keyModels[m], err, 'general');
-          // لا نعتبر المفتاح مستنفداً للحصة إذا سبق أن فشل بنوع آخر؛ احتفظ
-          // بتصنيف quota فقط عندما تكون كل محاولات هذا المفتاح بسبب الحصة.
           const previousKind = keyFailureKinds.get(currentKey);
           keyFailureKinds.set(currentKey, previousKind === undefined ? kind :
             (previousKind === 'quota' && kind === 'quota' ? 'quota' : 'other'));
@@ -960,17 +964,12 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           const status = Number(err?.status || err?.statusCode || err?.response?.status);
           const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
             /not found|no longer available|model not found|unsupported model/.test(msg);
-          // لا تقم بإعادة البدء بعد الإخراج المرئي. قبل الإخراج جرّب النموذج البديل
-          // كذلك عند 429، لأن حدود الاستخدام قد تختلف بين النماذج.
+          
           if ((isModelUnavailable || status === 503 || kind === 'quota') && m < keyModels.length - 1) continue;
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
-          break;
+          break; // الانتقال الفوري للمفتاح الموالي في تدوير السلسلة
         }
       }
-    }
-
-    if (cycle < MAX_ROTATION_CYCLES - 1) {
-      await new Promise((r) => setTimeout(r, 300));
     }
   }
 
