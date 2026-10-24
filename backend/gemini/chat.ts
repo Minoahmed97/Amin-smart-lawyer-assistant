@@ -24,10 +24,10 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
     await enforceAiCooldown(req);
 
-    // لا نرسل سجل المحادثة بالكامل في كل مرة؛ الاحتفاظ بآخر 12 رسالة يقلل حجم الطلب
-    // ويُبقي السياق الأحدث، مع ترك سياق القضية والنتيجة الأصلية منفصلين دون تغيير.
-    const recentMessages = messages.slice(-12);
-    const history = recentMessages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content.slice(-4000)}`).join('\n\n');
+    // سجل المحادثة المرسل للنموذج يقتصر على آخر 8 رسائل وبحد أقصى 2500 حرف لكل رسالة.
+    // لا نقص سياق القضية أو المستند الأصلي حتى لا نحذف وقائع قانونية قد يحتاجها الرد.
+    const recentMessages = messages.slice(-8);
+    const history = recentMessages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content.slice(-2500)}`).join('\n\n');
     const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
 
     // لا تعتبر كلمة «اكتب» وحدها طلب تعديل للمستند؛ قد يريد المحامي نصاً قابلاً للنسخ في الشات.
@@ -75,7 +75,8 @@ ${history}
         config: {
           systemInstruction: `أنت أمين، مساعد قانوني مصري محترف يتابع المحامي داخل دردشة مرتبطة بقضية ومستند. افهم الفصحى والعامية المصرية. اعتمد على السياق والنتيجة وسجل المحادثة المرفق، ولا تختلق وقائع أو مواد قانونية أو أرقام أحكام أو طعون أو مصادر. ميّز ما هو ثابت عما يحتاج إلى تحقق. أخرج JSON صالحاً فقط وفق الحقول المطلوبة في رسالة المستخدم. في السؤال أو النقاش، أجب مباشرة بإيجاز مفيد واجعل updatedResult قيمة null. إذا طلب المحامي صراحة تعديل المستند، فغيّر المطلوب وحده وحافظ على بقية النص كاملاً واجعل updatedResult النص المعدل كاملاً. لا تدّعِ تنفيذ تعديل إذا لم تنفذه.`,
           temperature: 0.15,
-          maxOutputTokens: requestsEdit ? 32768 : 4096,
+          // الأسئلة العادية لا تحتاج ميزانية إخراج مستند كامل؛ أبقِ مساحة أكبر للتعديل الكامل.
+          maxOutputTokens: requestsEdit ? 24576 : 2048,
           responseMimeType: 'application/json',
         },
       });
