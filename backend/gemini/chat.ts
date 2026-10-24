@@ -24,7 +24,10 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
     await enforceAiCooldown(req);
 
-    const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
+    // لا نرسل سجل المحادثة بالكامل في كل مرة؛ الاحتفاظ بآخر 12 رسالة يقلل حجم الطلب
+    // ويُبقي السياق الأحدث، مع ترك سياق القضية والنتيجة الأصلية منفصلين دون تغيير.
+    const recentMessages = messages.slice(-12);
+    const history = recentMessages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content.slice(-4000)}`).join('\n\n');
     const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
 
     // لا تعتبر كلمة «اكتب» وحدها طلب تعديل للمستند؛ قد يريد المحامي نصاً قابلاً للنسخ في الشات.
@@ -108,25 +111,11 @@ ${history}
       answer = sanitizeLegalText(answer);
     }
 
+    // لا نطلق طلب توليد ثانٍ مستقلاً عند فشل استخراج التعديل؛ كل استدعاء جديد
+    // يملك مهلة تدوير كاملة خاصة به وقد يتجاوز مع الطلب الأول حد Vercel ويظهر للعميل Failed to fetch.
+    // بدلاً من ذلك نوضح أن التعديل لم يُطبّق، ونحافظ على النتيجة الحالية دون إرجاع مستند غير مكتمل.
     if (requestsEdit && !updatedResult) {
-      try {
-        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي (سواء بالعامية أو الفصحى). أعد النص الكامل النهائي المعدل فقط بدون رموز "n\\" أو "\\n" نصية.
-
-[طلب المحامي] ${latestUserMessage}
-[النتيجة الحالية]
-${result}`;
-
-        const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
-        let recoveredResult = sanitizeLegalText(recoveredRaw);
-        
-        const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
-        if (recoveredResult.length >= minimumDocumentLength) {
-          updatedResult = recoveredResult;
-          answer = 'تم تحديث النتيجة بنجاح.';
-        }
-      } catch (recoveryError: any) {
-        console.warn('Legal chat result-update recovery failed:', recoveryError?.message || 'unknown error');
-      }
+      answer = answer || 'لم أتمكن من تأكيد التعديل على المستند في هذه المحاولة؛ لم يتم تغيير النتيجة الحالية. أعد إرسال طلب التعديل بصياغة محددة.';
     }
 
     if (!answer.trim()) {
