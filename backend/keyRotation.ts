@@ -237,7 +237,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
       if (response.ok && data?.name) {
         return {
           success: true,
-          message: `تم التحقق من المفتاح والوصول إلى بيانات النموذج ${model}. هذا الفحص لا يولد نصوصاً ولا يستهلك حصة توليد المحتوى.`,
+          message: `المفتاح صالح ويمكنه الوصول إلى النموذج ${model}. هذا الفحص لا يولد نصاً؛ لكن Google لا تعرض عبر هذا الطلب مقدار حصة التوليد المتبقية، لذلك لا يمكن تأكيد أن الحصة لم تنتهِ من هذا الفحص وحده.`,
         };
       }
 
@@ -537,6 +537,8 @@ type KeyRotationExecutionOptions = {
   ocrMode?: boolean;
   deadlineAt?: number;
   previousProviderError?: string;
+  /** اختيار داخلي يمنع تكرار المحاولة عند ترتيب Gemini أولاً ثم OpenRouter. */
+  providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
 };
 
 export async function executeWithKeyRotation<T>(
@@ -556,7 +558,35 @@ export async function executeWithKeyRotation<T>(
     new Error('انتهت المهلة المتاحة لتوليد النتيجة قبل اكتمالها. احتفظ بالنص الجزئي إن وجد.'),
     { status: 504, statusCode: 504 },
   );
-  // OpenRouter هي الأساس ما لم يتم فرض استخدام بديل Gemini صراحةً.
+
+  // للمهام القانونية العادية: جرّب Gemini أولاً بنفس تدوير المفاتيح والنماذج الحالي،
+  // واحتفظ بوقت كافٍ لـ OpenRouter كبديل عند فشل Gemini. OCR يحتفظ بمساره الحالي.
+  if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
+    const geminiDeadlineAt = Math.min(deadlineAt - 120000, Date.now() + 150000);
+    try {
+      return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
+        ...executionOptions,
+        deadlineAt: geminiDeadlineAt,
+        providerAttempt: 'gemini-primary',
+      });
+    } catch (geminiError: any) {
+      if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
+      try {
+        return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
+          ...executionOptions,
+          providerAttempt: 'openrouter-fallback',
+          previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
+        });
+      } catch (openRouterError: any) {
+        const combined: any = new Error(`تعذر تنفيذ الطلب عبر Gemini أولاً (${String(geminiError?.message || 'فشل غير محدد').slice(0, 160)})، ثم تعذر OpenRouter الاحتياطي (${String(openRouterError?.message || 'فشل غير محدد').slice(0, 160)}).`);
+        combined.status = Number(openRouterError?.status || openRouterError?.statusCode) || 503;
+        combined.statusCode = combined.status;
+        throw combined;
+      }
+    }
+  }
+
+  // OpenRouter يعمل هنا فقط عندما يكون هو المحاولة الاحتياطية أو في مسار OCR القديم.
   if (!_forceGeminiFallback) {
     // تحافظ مهام الذكاء الاصطناعي العامة على تدوير النماذج المكونة الخاصة بها. يستخدم OCR الموجه فقط أولاً،
     // ثم يجرب Gemini عند أي فشل بدلاً من قضاء 4 انتظارات متتالية على النماذج المجانية.
@@ -564,7 +594,9 @@ export async function executeWithKeyRotation<T>(
     let lastError: any = null;
     // الحفاظ على عمليات إعادة محاولة المزود الصامتة ضمن ميزانية مشتركة، مع الحفاظ على الوقت لـ
     // بديل Gemini في جانب الخادم بدلاً من الانتظار مرة واحدة لكل نموذج.
-    const openRouterDeadlineAt = Math.min(deadlineAt - 90000, Date.now() + 120000);
+    const openRouterDeadlineAt = executionOptions?.providerAttempt === 'openrouter-fallback'
+      ? Math.min(deadlineAt - 10000, Date.now() + 120000)
+      : Math.min(deadlineAt - 90000, Date.now() + 120000);
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
     }
@@ -598,7 +630,7 @@ export async function executeWithKeyRotation<T>(
         if (!canRetry && !executionOptions?.ocrMode) throw error;
       }
     }
-    if (executionOptions?.ocrMode || shouldFallbackFromOpenRouter(lastError)) {
+    if ((executionOptions?.ocrMode || shouldFallbackFromOpenRouter(lastError)) && executionOptions?.providerAttempt !== 'openrouter-fallback') {
       if (deadlineAt - Date.now() < 10000) throw timeoutError();
       const providerMessage = String(lastError?.message || 'تعذر الاتصال عبر OpenRouter.').slice(0, 220);
       console.warn(executionOptions?.ocrMode
@@ -730,12 +762,48 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     { status: 504, statusCode: 504 },
   );
 
+  // في التوليد المتدفق، جرّب Gemini أولاً مع الحفاظ على منطق تدوير المفاتيح الحالي.
+  // لا تنتقل إلى مزود آخر بعد ظهور أي نص حتى لا تختلط مسودتان في مربع النتيجة.
+  if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
+    const geminiDeadlineAt = Math.min(deadlineAt - 120000, Date.now() + 150000);
+    let geminiEmittedText = false;
+    try {
+      await executeWithKeyRotationStream(action, (chunk) => {
+        if (chunk) geminiEmittedText = true;
+        onChunk(chunk);
+      }, preferredModels, _ignoredClientFallbackKey, true, {
+        ...executionOptions,
+        deadlineAt: geminiDeadlineAt,
+        providerAttempt: 'gemini-primary',
+      });
+      return;
+    } catch (geminiError: any) {
+      if (geminiEmittedText) throw geminiError;
+      if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
+      try {
+        await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
+          ...executionOptions,
+          providerAttempt: 'openrouter-fallback',
+          previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
+        });
+        return;
+      } catch (openRouterError: any) {
+        const combined: any = new Error(`تعذر التوليد عبر Gemini أولاً (${String(geminiError?.message || 'فشل غير محدد').slice(0, 160)})، ثم تعذر OpenRouter الاحتياطي (${String(openRouterError?.message || 'فشل غير محدد').slice(0, 160)}).`);
+        combined.status = Number(openRouterError?.status || openRouterError?.statusCode) || 503;
+        combined.statusCode = combined.status;
+        throw combined;
+      }
+    }
+  }
+
   if (!_forceGeminiFallback) {
     const models = getOpenRouterModels();
     let lastError: any = null;
     // تحديد عمليات إعادة محاولة OpenRouter/النموذج الصامتة كمجموعة بحيث يكون بديل Gemini
     // لا يزال لديه وقت مفيد متاح قبل موعد انتهاء مهلة وظيفة Vercel الصعبة.
-    const openRouterFirstTextDeadlineAt = Math.min(deadlineAt - 90000, Date.now() + 105000);
+    const openRouterFirstTextDeadlineAt = executionOptions?.providerAttempt === 'openrouter-fallback'
+      ? Math.min(deadlineAt - 15000, Date.now() + 105000)
+      : Math.min(deadlineAt - 90000, Date.now() + 105000);
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
     }
@@ -786,7 +854,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         if (!canRetry) throw error;
       }
     }
-    if (shouldFallbackFromOpenRouter(lastError)) {
+    if (shouldFallbackFromOpenRouter(lastError) && executionOptions?.providerAttempt !== 'openrouter-fallback') {
       console.warn('OpenRouter free route unavailable before stream output; retrying through server-side Gemini fallback.');
       if (deadlineAt - Date.now() < 10000) throw timeoutError();
       return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
