@@ -1,4 +1,4 @@
-import { generateDeepLegalResponse } from './counter-brief.ts';
+import { executeWithKeyRotation } from '../keyRotation.ts';
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
 
@@ -65,7 +65,22 @@ ${history}
 
 أرجع JSON فقط:`;
 
-    const rawAnswer = await generateDeepLegalResponse(prompt);
+    // استخدم مسار تدوير المفاتيح المشترك مباشرةً، لكن بتعليمات خاصة بالدردشة.
+    // خدمة الصياغة العامة تضيف تعليمات طويلة وعلامة اكتمال لا يحتاجهما رد الشات،
+    // ما يزيد حجم الطلب وزمنه حتى عندما يكون سؤال المحامي قصيراً.
+    const rawAnswer = await executeWithKeyRotation(async (ai, _key, model) => {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: {
+          systemInstruction: `أنت أمين، مساعد قانوني مصري محترف يتابع المحامي داخل دردشة مرتبطة بقضية ومستند. افهم الفصحى والعامية المصرية. اعتمد على السياق والنتيجة وسجل المحادثة المرفق، ولا تختلق وقائع أو مواد قانونية أو أرقام أحكام أو طعون أو مصادر. ميّز ما هو ثابت عما يحتاج إلى تحقق. أخرج JSON صالحاً فقط وفق الحقول المطلوبة في رسالة المستخدم. في السؤال أو النقاش، أجب مباشرة بإيجاز مفيد واجعل updatedResult قيمة null. إذا طلب المحامي صراحة تعديل المستند، فغيّر المطلوب وحده وحافظ على بقية النص كاملاً واجعل updatedResult النص المعدل كاملاً. لا تدّعِ تنفيذ تعديل إذا لم تنفذه.`,
+          temperature: 0.15,
+          maxOutputTokens: requestsEdit ? 32768 : 4096,
+          responseMimeType: 'application/json',
+        },
+      });
+      return typeof response?.text === 'string' ? response.text : '';
+    });
     let answer = '';
     let updatedResult: string | null = null;
 
