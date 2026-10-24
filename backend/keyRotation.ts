@@ -3,7 +3,7 @@ import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
 import { createOpenRouterCompatibleClient, getOpenRouterModels } from './openrouterAdapter.ts';
-import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys, markServerCloudOCRGeminiKeySuccessful } from './supabaseSync.ts';
+import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys } from './supabaseSync.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
   if (!key || typeof key !== 'string') return false;
@@ -371,8 +371,7 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
         const result = await action(ai, key, model);
         if (Date.now() >= deadlineAt) throw Object.assign(new Error('انتهت مهلة استخراج النص عبر مجموعة OCR.'), { status: 504, statusCode: 504 });
         dedicatedOCRActiveKey = key;
-        // تفضيل دائم مشترك عبر مثيلات Vercel؛ المساعد هو جهد أفضل ما يكون.
-        await markServerCloudOCRGeminiKeySuccessful(key);
+        // تفضيل المفتاح الناجح داخل مثيل الخادم الحالي؛ لا نعتمد على دالة تخزين غير موجودة.
         return result;
       } catch (error: any) {
         lastError = error;
