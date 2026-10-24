@@ -367,6 +367,14 @@ export default async function handler(req: any, res: any) {
 
     if (req.method === 'GET') {
       const session = requireSession(req);
+      // The VAPID public key is safe to expose to the authenticated client.
+      // Read it from the same server environment used to send push notifications,
+      // so a missing/mismatched VITE build variable cannot silently disable push.
+      if (String(req?.query?.action || '') === 'push-public-key') {
+        const publicKey = (process.env.VAPID_PUBLIC_KEY || '').trim();
+        if (!publicKey) return res.status(503).json({ error: 'إعدادات إشعارات الإنجاز غير مكتملة على الخادم.' });
+        return res.status(200).json({ publicKey });
+      }
       const id = String(req?.query?.id || '').trim();
       if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
       const jobPath = `${JOB_TABLE}?select=id,status,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
