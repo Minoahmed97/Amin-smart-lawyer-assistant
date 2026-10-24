@@ -134,7 +134,7 @@ export async function fetchServerCloudOCRGeminiKeys(timeoutMs?: number): Promise
   }
   try {
     const timeout = Number(timeoutMs);
-    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?select=api_key,is_active,last_success_at&order=last_success_at.desc.nullslast,created_at.asc,id.asc`, {
+    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?select=api_key,is_active&order=created_at.asc,id.asc`, {
       method: 'GET',
       headers: {
         apikey: supabaseKey,
@@ -155,38 +155,6 @@ export async function fetchServerCloudOCRGeminiKeys(timeoutMs?: number): Promise
   } catch (err) {
     console.error('Server: Error fetching dedicated OCR Gemini keys:', err);
     throw new Error(err instanceof Error ? err.message : 'تعذر قراءة مفاتيح الصور والمستندات من Supabase.');
-  }
-}
-
-
-/** Persist the last OCR key that successfully completed a request so other Vercel instances
- * prioritize the same known-good key on the next OCR call/retry. Failure to update priority
- * must never turn a successful OCR extraction into a failed user operation. */
-export async function markServerCloudOCRGeminiKeySuccessful(geminiKey: string): Promise<void> {
-  const { supabaseUrl, supabaseKey } = getSupabaseServerConfig();
-  const cleanKey = sanitizeGeminiKey(geminiKey);
-  if (!supabaseUrl || !supabaseKey || !isValidKeyFormat(cleanKey)) return;
-  try {
-    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_ocr_keys?api_key=eq.${encodeURIComponent(cleanKey)}`, {
-      method: 'PATCH',
-      headers: {
-        apikey: supabaseKey,
-        ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify({ last_success_at: new Date().toISOString() }),
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // Keep this warm instance's cache aligned immediately; other instances will refresh
-    // within the existing 30-second cache window.
-    if (cachedServerCloudOCRKeys.includes(cleanKey)) {
-      cachedServerCloudOCRKeys = [cleanKey, ...cachedServerCloudOCRKeys.filter((key) => key !== cleanKey)];
-      cachedServerCloudOCRKeysAt = Date.now();
-    }
-  } catch (err) {
-    console.warn('Could not persist the preferred OCR key; extraction itself remains successful:', err);
   }
 }
 
@@ -245,4 +213,86 @@ export async function deleteServerCloudOCRGeminiKey(geminiKey: string): Promise<
 
 export default function handler(req: any, res: any) {
   return res.status(200).json({ ok: true });
+}
+
+
+// Groq vision is a separate, server-only OCR fallback configuration stored in
+// platform_settings (this table is already part of the central schema and is
+// not readable by anon/authenticated clients).
+export type OCRGroqFallbackConfig = {
+  enabled: boolean;
+  apiKey: string;
+  model: string;
+};
+
+const OCR_GROQ_FALLBACK_SETTING_KEY = 'ocr_groq_fallback';
+const OCR_GROQ_DEFAULT_MODEL = 'qwen/qwen3.6-27b';
+let cachedOCRGroqFallback: OCRGroqFallbackConfig | null = null;
+let cachedOCRGroqFallbackAt = 0;
+const OCR_GROQ_FALLBACK_CACHE_MS = 15_000;
+
+function cleanOCRGroqFallbackConfig(value: any): OCRGroqFallbackConfig {
+  const object = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const apiKey = typeof object.apiKey === 'string' ? object.apiKey.trim() : '';
+  const model = typeof object.model === 'string' && object.model.trim()
+    ? object.model.trim().slice(0, 100)
+    : OCR_GROQ_DEFAULT_MODEL;
+  return {
+    enabled: object.enabled === true,
+    apiKey: apiKey.startsWith('gsk_') && apiKey.length >= 20 ? apiKey : '',
+    model,
+  };
+}
+
+export async function fetchServerCloudOCRGroqFallbackConfig(forceRefresh = false): Promise<OCRGroqFallbackConfig> {
+  const { supabaseUrl, supabaseKey } = getSupabaseServerConfig();
+  if (!supabaseUrl || !supabaseKey) return { enabled: false, apiKey: '', model: OCR_GROQ_DEFAULT_MODEL };
+  if (!forceRefresh && cachedOCRGroqFallback && Date.now() - cachedOCRGroqFallbackAt < OCR_GROQ_FALLBACK_CACHE_MS) {
+    return { ...cachedOCRGroqFallback };
+  }
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/platform_settings?select=value&key=eq.${encodeURIComponent(OCR_GROQ_FALLBACK_SETTING_KEY)}&limit=1`,
+    {
+      headers: {
+        apikey: supabaseKey,
+        ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(7000),
+    },
+  );
+  if (!response.ok) throw new Error(`تعذر قراءة إعداد احتياطي OCR من Supabase (HTTP ${response.status}).`);
+  const rows = await response.json().catch(() => []);
+  const config = cleanOCRGroqFallbackConfig(Array.isArray(rows) ? rows[0]?.value : null);
+  cachedOCRGroqFallback = config;
+  cachedOCRGroqFallbackAt = Date.now();
+  return { ...config };
+}
+
+export async function saveServerCloudOCRGroqFallbackConfig(config: OCRGroqFallbackConfig): Promise<boolean> {
+  const { supabaseUrl, supabaseKey } = requireSupabaseServerConfig();
+  const clean = cleanOCRGroqFallbackConfig(config);
+  if (config.apiKey && !clean.apiKey) throw new Error('صيغة مفتاح Groq غير صحيحة. يجب أن يكون المفتاح كاملاً ويبدأ بـ gsk_.');
+  const response = await fetch(`${supabaseUrl}/rest/v1/platform_settings?on_conflict=key`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseKey,
+      ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=minimal',
+    },
+    body: JSON.stringify({
+      key: OCR_GROQ_FALLBACK_SETTING_KEY,
+      value: clean,
+      updated_at: new Date().toISOString(),
+    }),
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`تعذر حفظ إعداد Groq الاحتياطي في Supabase (HTTP ${response.status})${detail ? `: ${detail.slice(0, 180)}` : ''}`);
+  }
+  cachedOCRGroqFallback = clean;
+  cachedOCRGroqFallbackAt = Date.now();
+  return true;
 }
