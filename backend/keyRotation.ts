@@ -277,10 +277,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
 
 let dedicatedOCRActiveKey = '';
 
-/**
- * فحص الجاهزية السريع لمجموعة OCR المعزولة. تتحقق من وصول النموذج دون توليد محتوى.
- * لا يتم استشارة أي مفتاح Gemini عام، أو بيانات اعتماد OpenRouter، أو متغير بيئة Gemini في Vercel.
- */
+/** * فحص الجاهزية السريع لمجموعة OCR المعزولة. تتحقق من وصول النموذج دون توليد محتوى. * لا يتم استشارة أي مفتاح Gemini عام، أو بيانات اعتماد OpenRouter، أو متغير بيئة Gemini في Vercel. */
 export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): Promise<{ ready: boolean; keyCount: number; checkedKeys: number; message: string }> {
   let keys: string[];
   try {
@@ -570,6 +567,8 @@ export async function executeWithKeyRotation<T>(
         providerAttempt: 'gemini-primary',
       });
     } catch (geminiError: any) {
+      // OpenRouter مسار أخير فقط بعد التأكد من أن كل مفاتيح Gemini استنفدت الحصة.
+      if (geminiError?.allGeminiQuotasExhausted !== true) throw geminiError || timeoutError();
       if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
       try {
         return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
@@ -674,6 +673,7 @@ export async function executeWithKeyRotation<T>(
   // هذا لا يقلل من عدد المفاتيح المميزة أو نماذج البديل التي تمت تجربتها.
   const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
+  const keyFailureKinds = new Map<string, string>();
   if (keys.length && keys.every((candidate) => isCooling(keyCooldownUntil, candidate))) {
     throw new Error('مفاتيح Gemini وصلت مؤقتاً إلى حدود الاستخدام. تم تجاوزها دون إعادة تجربتها؛ انتظر انتهاء التبريد أو أضف مفاتيح متاحة.');
   }
@@ -718,6 +718,7 @@ export async function executeWithKeyRotation<T>(
             message: String(err?.message || 'Unknown Gemini error').slice(0, 300),
           });
           const kind = markRotationFailure(currentKey, model, err, 'general');
+          keyFailureKinds.set(currentKey, kind);
           const msg = String(err?.message || '').toLowerCase();
           const status = Number(err?.status || err?.statusCode || err?.response?.status);
           const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
@@ -743,7 +744,11 @@ export async function executeWithKeyRotation<T>(
     if (finalKind === 'temporary') throw new Error('فشل استخراج النص عبر OpenRouter ثم انتهت مهلة Gemini أو تعذر الاتصال به بعد محاولات التبديل. أعد محاولة رفع المستند، وإذا تكرر الخطأ فرجع سجل /api/ocr على الخادم.');
     throw new Error(`فشل استخراج النص: تعطل OpenRouter (${executionOptions.previousProviderError}) ثم تعذر Gemini (${String(lastError?.message || 'لم ترجع الخدمة نتيجة صالحة').slice(0, 180)}).`);
   }
-  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفذت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحة.');
+  if (finalKind === 'quota') {
+    const quotaError: any = new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحة.');
+    quotaError.allGeminiQuotasExhausted = keys.length > 0 && keys.every((key) => keyFailureKinds.get(key) === 'quota');
+    throw quotaError;
+  }
   if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
   if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
@@ -779,6 +784,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       return;
     } catch (geminiError: any) {
       if (geminiEmittedText) throw geminiError;
+      // لا ننتقل إلى OpenRouter بسبب الضغط المؤقت أو انتهاء المهلة.
+      if (geminiError?.allGeminiQuotasExhausted !== true) throw geminiError || timeoutError();
       if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
       try {
         await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
@@ -880,6 +887,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   // هذا لا يقلل من عدد المفاتيح المميزة أو نماذج البديل التي تمت تجربتها.
   const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
+  const keyFailureKinds = new Map<string, string>();
   if (keys.length && keys.every((candidate) => isCooling(keyCooldownUntil, candidate))) {
     throw new Error('مفاتيح Gemini وصلت مؤقتاً إلى حدود الاستخدام. تم تجاوزها دون إعادة تجربتها؛ انتظر انتهاء التبريد أو أضف مفاتيح متاحة.');
   }
@@ -937,6 +945,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           }
 
           const kind = markRotationFailure(currentKey, keyModels[m], err, 'general');
+          keyFailureKinds.set(currentKey, kind);
           const msg = String(err?.message || '').toLowerCase();
           const status = Number(err?.status || err?.statusCode || err?.response?.status);
           const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
@@ -957,7 +966,11 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
   if (Date.now() >= deadlineAt || Number(lastError?.status || lastError?.statusCode) === 504) throw lastError || timeoutError();
   const finalKind = getGeminiErrorKind(lastError);
-  if (finalKind === 'quota') throw new Error('تعذر تنفيذ الطلب: استنفذت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحة.');
+  if (finalKind === 'quota') {
+    const quotaError: any = new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام. انتظر تجدد الحصة أو أضف مفتاحاً متاحة.');
+    quotaError.allGeminiQuotasExhausted = keys.length > 0 && keys.every((key) => keyFailureKinds.get(key) === 'quota');
+    throw quotaError;
+  }
   if (finalKind === 'temporary') throw new Error('خدمة Gemini مشغولة مؤقتاً أو الاتصال متأخر. جرب مرة أخرى بعد قليل.');
   if (keys.every((key) => permanentlyInvalidKeys.has(key))) throw new Error('مفاتيح Gemini المتاحة غير صالحة. حدّث المفاتيح من لوحة الإدارة.');
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
