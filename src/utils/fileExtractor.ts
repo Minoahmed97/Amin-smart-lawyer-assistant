@@ -22,89 +22,89 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   });
 }
 
-/** * ضغط الصور وتغيير حجمها من جانب العميل (Client-Side). * ضبط أبعاد الصور بحد أقصى 1200px بجودة JPEG 0.70. * يمنع خطأ HTTP 413 تماماً ويسرّع عملية التعرف الضوئي على الحروف (OCR). */
-export async function compressAndResizeImage( file: File, maxDimension = 1200, quality = 0.70 ): Promise<{ base64Data: string; mimeType: string }> {
-  if (typeof window !== 'undefined' && 'createImageBitmap' in window) {
-    try {
+/**
+ * تجهيز الصور قبل OCR: تحويل إلى رمادي، تصغير الأبعاد، وضغط JPEG.
+ * يحاول إبقاء ملف الصورة الناتج دون 1MB مع الحفاظ على وضوح النص قدر الإمكان.
+ */
+export async function compressAndResizeImage(
+  file: File,
+  maxDimension = 1800,
+  quality = 0.82,
+): Promise<{ base64Data: string; mimeType: string }> {
+  const MAX_IMAGE_BYTES = 1024 * 1024;
+  const encodeCanvas = (canvas: HTMLCanvasElement, q: number) =>
+    new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', q));
+
+  const loadImage = async (): Promise<{ source: CanvasImageSource; width: number; height: number; close?: () => void }> => {
+    if (typeof createImageBitmap === 'function') {
       const bitmap = await createImageBitmap(file);
-      let { width, height } = bitmap;
-      if (width > maxDimension || height > maxDimension) {
-        const ratio = Math.min(maxDimension / width, maxDimension / height);
-        width = Math.round(width * ratio);
-        height = Math.round(height * ratio);
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, width, height);
-        ctx.drawImage(bitmap, 0, 0, width, height);
-        bitmap.close();
-        const dataUrl = canvas.toDataURL('image/jpeg', quality);
-        const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-        return { base64Data, mimeType: 'image/jpeg' };
-      }
-    } catch (bitmapErr) {
-      console.warn('createImageBitmap fallback to HTMLImage:', bitmapErr);
+      return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
     }
+    const sourceUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('تعذر فتح الصورة للضغط.'));
+        image.src = sourceUrl;
+      });
+      return { source: img, width: img.naturalWidth, height: img.naturalHeight };
+    } finally {
+      URL.revokeObjectURL(sourceUrl);
+    }
+  };
+
+  if (typeof document === 'undefined') {
+    const base64Data = await fileToBase64(file);
+    return { base64Data, mimeType: resolveMimeType(file) };
   }
 
-  return new Promise((resolve) => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') {
-      fileToBase64(file)
-        .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-        .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onerror = () => {
-      fileToBase64(file)
-        .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-        .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
-    };
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onerror = () => {
-        fileToBase64(file)
-          .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-          .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
-      };
-      img.onload = () => {
-        try {
-          let { width, height } = img;
-          if (width > maxDimension || height > maxDimension) {
-            const ratio = Math.min(maxDimension / width, maxDimension / height);
-            width = Math.round(width * ratio);
-            height = Math.round(height * ratio);
+  try {
+    const image = await loadImage();
+    let maxSide = maxDimension;
+    let resultBlob: Blob | null = null;
+    try {
+      // Reduce dimensions progressively if compression alone cannot reach the target.
+      for (let dimensionPass = 0; dimensionPass < 6; dimensionPass++) {
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+        const width = Math.max(1, Math.round(image.width * scale));
+        const height = Math.max(1, Math.round(image.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('تعذر تجهيز الصورة للضغط.');
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.filter = 'grayscale(100%)';
+        ctx.drawImage(image.source, 0, 0, width, height);
+        ctx.filter = 'none';
+
+        for (const q of [quality, 0.78, 0.74, 0.70, 0.66, 0.62, 0.58]) {
+          const candidate = await encodeCanvas(canvas, q);
+          if (candidate && (!resultBlob || candidate.size < resultBlob.size)) resultBlob = candidate;
+          if (candidate && candidate.size <= MAX_IMAGE_BYTES) {
+            resultBlob = candidate;
+            break;
           }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            fileToBase64(file)
-              .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-              .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
-            return;
-          }
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-          resolve({ base64Data, mimeType: 'image/jpeg' });
-        } catch {
-          fileToBase64(file)
-            .then((b64) => resolve({ base64Data: b64, mimeType: resolveMimeType(file) }))
-            .catch(() => resolve({ base64Data: '', mimeType: 'image/jpeg' }));
         }
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  });
+        if (resultBlob && resultBlob.size <= MAX_IMAGE_BYTES) break;
+        maxSide = Math.max(900, Math.floor(maxSide * 0.85));
+      }
+    } finally {
+      image.close?.();
+    }
+
+    if (!resultBlob || resultBlob.size > MAX_IMAGE_BYTES) {
+      throw new Error('تعذر ضغط الصورة إلى أقل من 1MB مع الحفاظ على وضوحها.');
+    }
+    const base64Data = await fileToBase64(resultBlob);
+    return { base64Data, mimeType: 'image/jpeg' };
+  } catch (error) {
+    // Do not silently send the original oversized image: report a clear error instead.
+    console.warn('Image compression failed:', error);
+    throw new Error('تعذر تجهيز الصورة وإيصال حجمها إلى أقل من 1MB. جرّب صورة أوضح أو أصغر.');
+  }
 }
 
 export function resolveMimeType(file: File): string {
@@ -346,11 +346,14 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
     let mimeType = resolveMimeType(file);
     if (isImage) {
       try {
-        const compressed = await compressAndResizeImage(file, 1200, 0.70);
+        const compressed = await compressAndResizeImage(file, 1800, 0.82);
         base64Data = compressed.base64Data;
         mimeType = compressed.mimeType;
-      } catch {
-        base64Data = await fileToBase64(file);
+      } catch (error) {
+        // لا نرسل الصورة الأصلية عند فشل الضغط؛ حتى لا نتجاوز حد الحجم المتفق عليه.
+        throw error instanceof Error
+          ? error
+          : new Error('تعذر ضغط الصورة مع الحفاظ على وضوح الكتابة. جرّب صورة أوضح أو أصغر.');
       }
     } else {
       base64Data = await fileToBase64(file);
