@@ -75,7 +75,9 @@ function markRotationFailure(key: string, model: string, error: any, pool: 'gene
     invalidKeys.add(key);
     keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
   } else if (kind === 'quota' || status === 429) {
-    keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
+    // OCR يحتفظ بسلوكه المعزول الحالي دون أي تغيير. في التدوير العام، قد تكون
+    // الحصة محددة بالنموذج؛ لذلك لا نوقف المفتاح كله بسبب 429 من نموذج واحد.
+    if (pool === 'ocr') keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
     pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
   } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
     // خطأ 503 الذي يتم ملاحظته مع مفتاح واحد يجب ألا يبرد النموذج عالمياً لكل
@@ -718,14 +720,18 @@ export async function executeWithKeyRotation<T>(
             message: String(err?.message || 'Unknown Gemini error').slice(0, 300),
           });
           const kind = markRotationFailure(currentKey, model, err, 'general');
-          keyFailureKinds.set(currentKey, kind);
+          // لا نعتبر المفتاح مستنفداً للحصة إذا سبق أن فشل بنوع آخر؛ احتفظ
+          // بتصنيف quota فقط عندما تكون كل محاولات هذا المفتاح بسبب الحصة.
+          const previousKind = keyFailureKinds.get(currentKey);
+          keyFailureKinds.set(currentKey, previousKind === undefined ? kind :
+            (previousKind === 'quota' && kind === 'quota' ? 'quota' : 'other'));
           const msg = String(err?.message || '').toLowerCase();
           const status = Number(err?.status || err?.statusCode || err?.response?.status);
           const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
             /not found|no longer available|model not found|unsupported model/.test(msg);
-          // لا تعيد محاولة نفس المفتاح/النموذج. جرب نموذجاً ديلاً واحداً على الأكثر في
-          // هذا المفتاح لأخطاء 400/404/503 الخاصة بالنموذج؛ وإلا قم بالتدوير الآن.
-          if ((isModelUnavailable || status === 503) && m < keyModels.length - 1) continue;
+          // لا تعيد محاولة زوج المفتاح/النموذج نفسه. جرّب النموذج البديل على المفتاح
+          // نفسه أيضاً عند 429، لأن حد الحصة قد يختلف من نموذج لآخر.
+          if ((isModelUnavailable || status === 503 || kind === 'quota') && m < keyModels.length - 1) continue;
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
           break;
         }
@@ -945,14 +951,18 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           }
 
           const kind = markRotationFailure(currentKey, keyModels[m], err, 'general');
-          keyFailureKinds.set(currentKey, kind);
+          // لا نعتبر المفتاح مستنفداً للحصة إذا سبق أن فشل بنوع آخر؛ احتفظ
+          // بتصنيف quota فقط عندما تكون كل محاولات هذا المفتاح بسبب الحصة.
+          const previousKind = keyFailureKinds.get(currentKey);
+          keyFailureKinds.set(currentKey, previousKind === undefined ? kind :
+            (previousKind === 'quota' && kind === 'quota' ? 'quota' : 'other'));
           const msg = String(err?.message || '').toLowerCase();
           const status = Number(err?.status || err?.statusCode || err?.response?.status);
           const isModelUnavailable = status === 404 || status === 400 || err?.status === 'NOT_FOUND' ||
             /not found|no longer available|model not found|unsupported model/.test(msg);
-          // لا تقم بإعادة البدء مطلقاً بعد الإخراج المرئي. قبل الإخراج، فقط إخفاقات النموذج المحددة
-          // قد تجرب نموذجاً ديلاً واحداً؛ الحصة/الشبكة/المهلات تدور المفاتيح.
-          if ((isModelUnavailable || status === 503) && m < keyModels.length - 1) continue;
+          // لا تقم بإعادة البدء بعد الإخراج المرئي. قبل الإخراج جرّب النموذج البديل
+          // كذلك عند 429، لأن حدود الاستخدام قد تختلف بين النماذج.
+          if ((isModelUnavailable || status === 503 || kind === 'quota') && m < keyModels.length - 1) continue;
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
           break;
         }
