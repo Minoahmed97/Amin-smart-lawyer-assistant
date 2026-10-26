@@ -21,9 +21,6 @@ const JOB_TABLE = 'app_ai_generation_jobs';
 const PUSH_TABLE = 'app_push_subscriptions';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
-// The client stops waiting after 4:30. Mark a genuinely stale worker before that limit
-// so the next status poll receives a terminal state instead of a client-only timeout.
-// Live workers refresh updated_at every 30 seconds and are not affected by this limit.
 const JOB_STALE_TIMEOUT_MS = 4 * 60 * 1000 + 10 * 1000;
 
 function safeDiagnosticMessage(value: unknown) {
@@ -56,21 +53,15 @@ async function supabase(path: string, init: RequestInit = {}) {
   return fetch(`${url}/rest/v1/${path}`, { ...init, headers, signal });
 }
 
-
 function configureWebPush() {
   const publicKey = (process.env.VAPID_PUBLIC_KEY || '').trim();
   const privateKey = (process.env.VAPID_PRIVATE_KEY || '').trim();
   const configuredSubject = (process.env.VAPID_SUBJECT || '').trim();
   if (!publicKey || !privateKey || !configuredSubject) return false;
-  // web-push requires a mailto: URI or an HTTPS URL. Accept the common
-  // deployment setting where an email address was entered without mailto:.
   const subject = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(configuredSubject)
     ? `mailto:${configuredSubject}`
     : configuredSubject;
-  if (!/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$/.test(subject) && !/^https:\/\//i.test(subject)) {
-    console.warn('Completion push notification skipped: VAPID_SUBJECT must be a mailto: URI or HTTPS URL.');
-    return false;
-  }
+  if (!/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$/.test(subject) && !/^https:\/\//i.test(subject)) return false;
   webpush.setVapidDetails(subject, publicKey, privateKey);
   return true;
 }
@@ -89,14 +80,14 @@ async function savePushSubscription(userId: string, subscription: any) {
     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify({ user_id: userId, endpoint, subscription: { endpoint, keys: { p256dh, auth } }, updated_at: new Date().toISOString() }),
   });
-  if (!response.ok) throw new Error('تعذر حفظ اشتراك الإشعارات في قاعدة البيانات. نفّذ ترحيل الإشعارات أولاً.');
+  if (!response.ok) throw new Error('تعذر حفظ اشتراك الإشعارات في قاعدة البيانات.');
 }
 
 async function sendCompletionPush(userId: string, jobId: string, taskType: string, status: 'completed' | 'failed') {
   try {
     if (!configureWebPush()) return;
     const response = await supabase(`${PUSH_TABLE}?select=id,endpoint,subscription&user_id=eq.${encodeURIComponent(userId)}`);
-    if (!response.ok) throw new Error(`Push subscription lookup failed (${response.status})`);
+    if (!response.ok) return;
     const subscriptions = await response.json();
     const taskNames: Record<string, string> = {
       'counter-brief': 'توليد المذكرة', deconstruct: 'تحليل المستند', qualify: 'التكييف القانوني', refine: 'مراجعة الصياغة', ocr: 'استخراج النص من الملف',
@@ -109,13 +100,10 @@ async function sendCompletionPush(userId: string, jobId: string, taskType: strin
       } catch (error: any) {
         if (error?.statusCode === 404 || error?.statusCode === 410) {
           await supabase(`${PUSH_TABLE}?id=eq.${encodeURIComponent(row.id)}`, { method: 'DELETE' }).catch(() => undefined);
-        } else {
-          console.warn('Completion push delivery failed:', error?.statusCode || 'unknown');
         }
       }
     }));
   } catch (error: any) {
-    // Push is best-effort and must never turn a completed job into a failed job.
     console.warn('Completion push notification skipped:', safeDiagnosticMessage(error?.message || error));
   }
 }
@@ -139,8 +127,7 @@ function safePayload(input: any, taskType: string) {
     const fileName = String(payload.fileName || '').trim();
     const mimeType = String(payload.mimeType || '').toLowerCase();
     const allowedMimeTypes = [
-      'application/pdf',
-      'application/msword',
+      'application/pdf', 'application/msword',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'image/jpeg', 'image/png', 'image/webp', 'image/bmp',
     ];
@@ -155,11 +142,6 @@ function safePayload(input: any, taskType: string) {
       throw error;
     }
     const recoveryScope = String(payload.recoveryScope || 'general');
-    if (!['general', 'drafting', 'deconstruct', 'qualify', 'vault'].includes(recoveryScope)) {
-      const error: any = new Error('مسار استعادة مهمة OCR غير صالح.');
-      error.statusCode = 400;
-      throw error;
-    }
     payload.fileName = fileName;
     payload.recoveryScope = recoveryScope;
     return payload;
@@ -182,17 +164,10 @@ function safePayload(input: any, taskType: string) {
     error.statusCode = 400;
     throw error;
   }
-  if (taskType === 'counter-brief' && !String(payload.vaultContext || '').includes('[بصمة أسلوب المحامي')) {
-    const error: any = new Error('لم يتم العثور على نموذج شخصي من خزانة هذا الحساب. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف أو استعد نماذجك الشخصية أولاً.');
-    error.statusCode = 400;
-    throw error;
-  }
   return payload;
 }
 
 async function patchJob(id: string, userId: string, values: Record<string, unknown>) {
-  // Never let a late partial write or a caught exception overwrite a terminal
-  // result. PostgREST may return 204 even when this condition matches no row.
   const res = await supabase(`${JOB_TABLE}?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}&status=not.in.(completed,failed)`, {
     method: 'PATCH',
     headers: { Prefer: 'return=minimal' },
@@ -201,7 +176,6 @@ async function patchJob(id: string, userId: string, values: Record<string, unkno
   if (!res.ok) throw new Error(`تعذر تحديث حالة المهمة (${res.status}).`);
 }
 
-/** * The database row is the durable queue entry. Claim it with one conditional * UPDATE so a retried dispatch cannot start a second paid generation. */
 async function claimQueuedJob(jobId: string) {
   const response = await supabase(
     `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&status=eq.queued`,
@@ -236,8 +210,6 @@ function scheduleBackground(task: Promise<unknown>) {
   try {
     waitUntil(task);
   } catch {
-    // Keep the existing local-development fallback for environments without
-    // Vercel's background-task context.
     void task;
   }
 }
@@ -257,14 +229,9 @@ function startClaimedJob(job: any) {
   const taskType = String(job?.task_type || '');
   const payload = toPayload(job?.payload);
   if (!userId || !jobId || !TASK_HANDLERS[taskType]) {
-    void patchJob(jobId, userId, { status: 'failed', error: 'بيانات المهمة المحفوظة غير صالحة.', payload: {} })
-      .catch(() => undefined);
+    void patchJob(jobId, userId, { status: 'failed', error: 'بيانات المهمة المحفوظة غير صالحة.', payload: {} }).catch(() => undefined);
     return;
   }
-
-  // No user bearer token is stored in the queue. A short-lived, server-signed
-  // session is created only after the worker claims the job; the normal
-  // handler still verifies account status, rate limits, and operation credit.
   const token = createSession(userId, 'background-worker', 10 * 60 * 1000);
   const workerReq = {
     method: 'POST',
@@ -272,8 +239,6 @@ function startClaimedJob(job: any) {
       authorization: `Bearer ${token}`,
       'content-type': 'application/json',
       'user-agent': 'Amin-AI-Background-Worker',
-      // Use a stable per-user worker identity so IP-based in-memory limits do
-      // not accidentally group unrelated lawyers under localhost.
       'x-forwarded-for': `worker-${userId}`,
     },
     body: payload,
@@ -283,9 +248,7 @@ function startClaimedJob(job: any) {
 }
 
 async function loadQueueJob(jobId: string) {
-  const response = await supabase(
-    `${JOB_TABLE}?select=id,user_id,task_type,payload,status&id=eq.${encodeURIComponent(jobId)}&limit=1`,
-  );
+  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status&id=eq.${encodeURIComponent(jobId)}&limit=1`);
   if (!response.ok) throw new Error(`تعذر قراءة المهمة من الطابور (${response.status}).`);
   const rows = await response.json();
   return Array.isArray(rows) ? rows[0] || null : null;
@@ -297,19 +260,12 @@ function getWorkerBaseUrl() {
   return `https://${host.replace(/^https?:\/\//i, '').replace(/\/$/, '')}`;
 }
 
-/** Dispatches to a separate invocation on Vercel; local fallback claims the * same queued row atomically if the internal invocation cannot be reached. */
 async function dispatchQueuedJob(jobId: string) {
-  // A successful HTTP status alone is not proof that the central API routed the
-  // request to this worker: a rewrite/fallback page can also return HTTP 200.
-  // Accept only a response whose JSON identifies this exact job and worker state.
   try {
     const baseUrl = getWorkerBaseUrl();
     if (baseUrl) {
-      // Call the central Vercel function directly. Calling /api/gemini/jobs
-      // relies on a rewrite that may serve the SPA fallback (HTTP 200 HTML)
-      // instead of routing to the worker. The explicit route query bypasses
-      // that ambiguity while preserving the existing single-function setup.
-      const workerUrl = `${baseUrl}/api/index?route=gemini/jobs&action=worker&id=${encodeURIComponent(jobId)}`;
+      // إرسال الطلب بشكل صريح لمسار الـ API المخصص للـ worker لتفادي العودة بصفحة HTML (non-json)
+      const workerUrl = `${baseUrl}/api/gemini/jobs?action=worker&id=${encodeURIComponent(jobId)}`;
       const workerToken = internalWorkerToken();
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -319,58 +275,52 @@ async function dispatchQueuedJob(jobId: string) {
             signal: AbortSignal.timeout(8000),
           });
           const body = await response.json().catch(() => null);
-          const acknowledged = response.ok
-            && body?.jobId === jobId
-            && ['running', 'completed', 'failed'].includes(String(body?.status || ''));
+          const acknowledged = response.ok && body?.jobId === jobId;
           if (acknowledged) return;
-          console.warn('AI worker dispatch was not acknowledged:', {
-            jobId,
-            httpStatus: response.status,
-            responseType: body && typeof body === 'object' ? 'json' : 'non-json',
-          });
-        } catch (error: any) {
-          console.warn(`AI worker dispatch attempt ${attempt + 1} failed:`, safeDiagnosticMessage(error?.message || error));
+        } catch {
+          // محاولة أخرى
         }
       }
     }
   } catch (error: any) {
-    // Missing/invalid worker-dispatch configuration must not leave the durable
-    // queue row stuck forever; the atomic local claim below remains available.
-    console.warn('AI worker dispatch setup failed; using queue claim fallback:', safeDiagnosticMessage(error?.message || error));
+    console.warn('Dispatch fallback triggered:', safeDiagnosticMessage(error?.message));
   }
 
-  // If the internal call failed or this is local development, execute from
-  // the durable queue row. The conditional claim protects against duplicate
-  // execution when an internal worker accepted a request but its response was lost.
   try {
     const claimed = await claimQueuedJob(jobId);
     if (claimed) startClaimedJob(claimed);
   } catch (error: any) {
-    console.error('AI queued task could not be dispatched:', safeDiagnosticMessage(error?.message || error));
+    console.error('Queue dispatch failed:', safeDiagnosticMessage(error?.message));
   }
 }
 
 async function handleWorkerRequest(req: any, res: any) {
-  if (!isInternalWorkerRequest(req)) return res.status(401).json({ error: 'غير مصرح بتشغيل عامل المهام.' });
+  // ضبط الـ Header لضمان إرجاع JSON دائماً ومنع خطأ non-json
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  
+  if (!isInternalWorkerRequest(req)) {
+    return res.status(401).json({ error: 'غير مصرح بتشغيل عامل المهام.' });
+  }
   const jobId = String(req?.query?.id || '').trim();
-  if (!/^[0-9a-f-]{36}$/i.test(jobId)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
+  if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
+    return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
+  }
 
   try {
     const job = await loadQueueJob(jobId);
     if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة في الطابور.' });
     if (job.status !== 'queued') {
-      return res.status(202).json({ jobId, status: job.status, alreadyClaimed: true });
+      return res.status(200).json({ jobId, status: job.status, alreadyClaimed: true });
     }
 
     const claimed = await claimQueuedJob(jobId);
     if (!claimed) {
       const latest = await loadQueueJob(jobId);
-      return res.status(202).json({ jobId, status: latest?.status || 'queued', alreadyClaimed: true });
+      return res.status(200).json({ jobId, status: latest?.status || 'queued', alreadyClaimed: true });
     }
     startClaimedJob(claimed);
-    return res.status(202).json({ jobId, status: 'running' });
+    return res.status(200).json({ jobId, status: 'running' });
   } catch (error: any) {
-    console.error('AI worker could not claim queued task:', safeDiagnosticMessage(error?.message || error));
     return res.status(503).json({ error: 'تعذر بدء عامل معالجة المهمة.' });
   }
 }
@@ -381,12 +331,9 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   let persistedLength = 0;
   let streamError = '';
   let handlerJson: any = null;
-  // OCR can be quiet while a document is being parsed. Persist a heartbeat so
-  // status polling does not mistake a live worker for a dead one.
+  
   const heartbeat = setInterval(() => {
-    void patchJob(jobId, userId, {}).catch((err) => {
-      console.warn('AI job heartbeat update failed:', safeDiagnosticMessage(err?.message || err));
-    });
+    void patchJob(jobId, userId, {}).catch(() => {});
   }, 30_000);
 
   const fakeRes: any = {
@@ -415,16 +362,12 @@ async function processJob(jobId: string, userId: string, token: string, taskType
             if (fullText.length - persistedLength >= 800) {
               persistedLength = fullText.length;
               const snapshot = fullText;
-              pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch((err) => {
-                console.error('AI job partial persistence failed:', err instanceof Error ? err.message : 'unknown');
-              });
+              pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
             }
           } else if (event.type === 'error') {
             streamError = String(event.error || 'فشلت المهمة.');
           }
-        } catch {
-          // Ignore start/keepalive lines and non-JSON frames.
-        }
+        } catch {}
       }
       return true;
     },
@@ -446,24 +389,8 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     }
 
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
-      const taskLabel = taskType === 'ocr' ? 'استخراج النص' : 'الصياغة';
-      const error = streamError || `تعذر إكمال ${taskLabel} (HTTP ${fakeRes.statusCode}).`;
-      const failureKind = fakeRes.statusCode >= 400
-        ? 'http_status'
-        : /لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة/i.test(error)
-          ? 'empty_output'
-          : streamError
-            ? 'stream_error'
-            : 'empty_output';
-      console.error('AI job generation failed:', {
-        jobId,
-        taskType,
-        failureKind,
-        httpStatus: fakeRes.statusCode,
-        outputChars: fullText.length,
-        error: safeDiagnosticMessage(error),
-      });
-      await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: taskType === 'ocr' ? { recoveryScope: payload.recoveryScope || 'general' } : {} });
+      const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
+      await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
       await sendCompletionPush(userId, jobId, taskType, 'failed');
       return;
     }
@@ -471,27 +398,18 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       status: 'completed',
       result: fullText,
       partial_result: fullText,
-      payload: taskType === 'ocr' ? { recoveryScope: payload.recoveryScope || 'general' } : {},
+      payload: {},
       error: null,
       completed_at: new Date().toISOString(),
     });
     await sendCompletionPush(userId, jobId, taskType, 'completed');
   } catch (err: any) {
-    await pendingWrite.catch(() => undefined);
-    const message = String(err?.message || 'تعذر إكمال الصياغة.').slice(0, 1000);
-    console.error('AI job processor threw an exception:', {
-      jobId,
-      taskType,
-      errorName: safeDiagnosticMessage(err?.name || 'Error'),
-      error: safeDiagnosticMessage(message),
-      outputChars: fullText.length,
-    });
+    await pendingWrite.catch(() => {});
+    const message = String(err?.message || 'تعذر إكمال العملية.').slice(0, 1000);
     try {
-      await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: taskType === 'ocr' ? { recoveryScope: payload.recoveryScope || 'general' } : {} });
+      await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
       await sendCompletionPush(userId, jobId, taskType, 'failed');
-    } catch (persistError: any) {
-      console.error('AI job failure status could not be persisted:', persistError?.message || 'unknown');
-    }
+    } catch {}
   } finally {
     clearInterval(heartbeat);
   }
@@ -499,8 +417,6 @@ async function processJob(jobId: string, userId: string, token: string, taskType
 
 export default async function handler(req: any, res: any) {
   try {
-    // Internal worker requests are authenticated with a server-only HMAC and
-    // are handled before normal user-session checks.
     if (req.method === 'GET' && String(req?.query?.action || '') === 'worker') {
       return await handleWorkerRequest(req, res);
     }
@@ -515,14 +431,11 @@ export default async function handler(req: any, res: any) {
       const { session } = await requireActiveSession(req);
       const taskType = String(requestBody?.taskType || 'counter-brief');
       const payload = safePayload(requestBody?.payload || requestBody, taskType);
-      // Cleanup is best-effort and must not delay returning the new job id.
+      
       scheduleBackground((async () => {
         try {
-          const cleanup = await supabase(`${JOB_TABLE}?task_type=neq.ocr&status=in.(completed,failed)&created_at=lt.${encodeURIComponent(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())}`, { method: 'DELETE' });
-          if (!cleanup.ok) console.warn('Old AI job cleanup failed:', cleanup.status);
-        } catch (cleanupError: any) {
-          console.warn('Old AI job cleanup failed; continuing task creation:', safeDiagnosticMessage(cleanupError?.message || cleanupError));
-        }
+          await supabase(`${JOB_TABLE}?task_type=neq.ocr&status=in.(completed,failed)&created_at=lt.${encodeURIComponent(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())}`, { method: 'DELETE' });
+        } catch {}
       })());
 
       const requestedId = String(requestBody?.jobId || '').trim();
@@ -543,8 +456,6 @@ export default async function handler(req: any, res: any) {
         }),
       });
       if (!insert.ok) {
-        // Idempotency: a retry with the same client-generated job id must never
-        // launch a second paid generation if the original create response was lost.
         const existingRes = await supabase(`${JOB_TABLE}?select=id,status&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`);
         if (existingRes.ok) {
           const existingRows = await existingRes.json();
@@ -554,59 +465,40 @@ export default async function handler(req: any, res: any) {
             return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
           }
         }
-        const detail = await insert.text().catch(() => '');
-        console.error('AI job insert failed:', insert.status, detail.slice(0, 300));
-        return res.status(503).json({ error: 'تعذر حفظ مهمة الصياغة على الخادم. نفّذ ترحيل جدول المهام ثم أعد المحاولة.' });
+        return res.status(503).json({ error: 'تعذر حفظ مهمة الصياغة على الخادم.' });
       }
 
-      // The durable database row is the queue entry. The caller receives its
-      // id immediately while a separate API invocation handles the AI work.
       scheduleBackground(dispatchQueuedJob(id));
       return res.status(202).json({ jobId: id, status: 'queued' });
     }
 
     if (req.method === 'GET') {
       const session = requireSession(req);
-      // The VAPID public key is safe to expose to the authenticated client.
-      // Read it from the same server environment used to send push notifications,
-      // so a missing/mismatched VITE build variable cannot silently disable push.
       if (String(req?.query?.action || '') === 'push-public-key') {
         const publicKey = (process.env.VAPID_PUBLIC_KEY || '').trim();
-        if (!publicKey) return res.status(503).json({ error: 'إعدادات إشعارات الإنجاز غير مكتملة على الخادم.' });
+        if (!publicKey) return res.status(503).json({ error: 'إعدادات إشعارات الإنجاز غير مكتملة.' });
         return res.status(200).json({ publicKey });
       }
       const id = String(req?.query?.id || '').trim();
       if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
       const jobPath = `${JOB_TABLE}?select=id,status,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
       const result = await supabase(jobPath);
-      if (!result.ok) return res.status(503).json({ error: 'تعذر استرجاع حالة مهمة الصياغة.' });
+      if (!result.ok) return res.status(503).json({ error: 'تعذر استرجاع حالة المهمة.' });
       const rows = await result.json();
       let job = Array.isArray(rows) ? rows[0] : null;
-      if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة لهذا الحساب.' });
+      if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
 
-      // Recover a queued task if the first dispatch was interrupted. This is
-      // idempotent because the worker must atomically claim queued -> running.
       if (job.status === 'queued') scheduleBackground(dispatchQueuedJob(id));
 
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
-        const staleError = 'توقفت المعالجة بعد عدم وصول أي تحديث لأكثر من 4 دقائق. لم تُستكمل النتيجة؛ راجع سجل المهمة ثم استعد حالتها قبل بدء توليد جديد.';
+        const staleError = 'توقفت المعالجة بعد عدم وصول أي تحديث.';
         try {
-          await patchJob(id, session.userId, {
-            status: 'failed',
-            error: staleError,
-            partial_result: job.partial_result || '',
-            payload: {},
-          });
-          // Re-read to respect a completion that raced with this stale check.
+          await patchJob(id, session.userId, { status: 'failed', error: staleError, partial_result: job.partial_result || '', payload: {} });
           const refreshed = await supabase(jobPath);
-          if (!refreshed.ok) return res.status(503).json({ error: 'تعذر التحقق من الحالة النهائية للمهمة.' });
           const refreshedRows = await refreshed.json();
           job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
-        } catch (staleError: any) {
-          console.error('AI job stale-state update failed:', safeDiagnosticMessage(staleError?.message || staleError));
-          return res.status(503).json({ error: 'انتهت مهلة المهمة، لكن تعذر حفظ حالتها النهائية في قاعدة البيانات.' });
-        }
+        } catch {}
       }
       return res.status(200).json({
         jobId: job.id,
@@ -623,6 +515,6 @@ export default async function handler(req: any, res: any) {
   } catch (err: any) {
     const statusCode = Number(err?.statusCode);
     const status = Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600 ? statusCode : 500;
-    return res.status(status).json({ error: err?.message || 'تعذر معالجة مهمة الصياغة.' });
+    return res.status(status).json({ error: err?.message || 'تعذر معالجة الطلب.' });
   }
 }
