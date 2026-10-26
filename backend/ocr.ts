@@ -144,7 +144,7 @@ export default async function handler(req: any, res: any) {
           });
         }
         return text;
-      }, GEMINI_MODELS, 240000);
+      }, GEMINI_MODELS, 240000, safeGeminiMime.startsWith('image/'));
     } catch (geminiError: any) {
       const geminiStatus = Number(geminiError?.statusCode || geminiError?.status || geminiError?.response?.status);
       const geminiMessage = String(geminiError?.message || '');
