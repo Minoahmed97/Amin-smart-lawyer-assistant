@@ -279,7 +279,7 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
 }
 
 /** 
- * دالة استخراج النص الخاصة بـ Groq الاحتياطي عندما تفشل كل محاولات Gemini 
+ * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini 
  */
 async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>, deadlineAt = Date.now() + 90000): Promise<any> {
   const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
@@ -287,16 +287,24 @@ async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, mod
     throw new Error('احتياطي Groq لـ OCR غير مفعل أو لم يتم حفظ مفتاحه.');
   }
 
-  console.log('🔄 جاري تشغيل بديل Groq لـ OCR نظراً لفشل جميع محاولات Gemini...');
+  console.log('🔄 جاري تشغيل بديل Groq المباشر لـ OCR...');
   
   const remainingMs = Math.max(1000, deadlineAt - Date.now());
-  const client = createOpenRouterCompatibleClient(Math.min(60000, remainingMs), deadlineAt, 'https://api.groq.com/openai/v1', fallbackConfig.apiKey);
+  
+  // الاتصال المباشر بخوادم Groq لمنع أخطاء الـ 402 الخاصة بـ OpenRouter
+  const client = createOpenRouterCompatibleClient(
+    Math.min(60000, remainingMs), 
+    deadlineAt, 
+    'https://api.groq.com/openai/v1', 
+    fallbackConfig.apiKey
+  );
+  
   const modelToUse = fallbackConfig.model || 'meta-llama/llama-3.2-11b-vision-preview';
   
   return await action(client as unknown as GoogleGenAI, fallbackConfig.apiKey, modelToUse);
 }
 
-/** تدوير OCR المكثف عبر مفاتيح Gemini أولاً، وعند فشلها تماماً يتم الانتقال التلقائي لـ Groq */
+/** تدوير OCR المكثف عبر مفاتيح Gemini أولاً، وعند فشلها يتم الانتقال التلقائي لـ Groq المباشر */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -353,7 +361,7 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
       }
     }
 
-    console.warn(`⚠️ فشلت محاولات Gemini لـ OCR في الجولة ${round + 1}. جاري تجربة Groq الاحتياطي...`);
+    console.warn(`⚠️ فشلت محاولات Gemini لـ OCR في الجولة ${round + 1}. جاري تجربة Groq المباشر الاحتياطي...`);
     try {
       if (roundEnd - Date.now() < 10000) {
         lastError = lastError || new Error('لم يتبق وقت كاف لتجربة Groq في هذه الجولة.');
@@ -361,13 +369,13 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
       }
       const groqResult = await executeGroqOCRFallback(action, roundEnd);
       if (groqResult) {
-        console.log(`✅ تم إتمام استخراج النص بنجاح عبر Groq في الجولة ${round + 1}!`);
+        console.log(`✅ تم إتمام استخراج النص بنجاح عبر Groq المباشر في الجولة ${round + 1}!`);
         return groqResult;
       }
       lastError = new Error('أعاد Groq نتيجة فارغة لاستخراج النص.');
     } catch (groqError: any) {
       lastError = groqError;
-      console.error(`❌ فشل Groq في الجولة ${round + 1}:`, groqError?.message);
+      console.error(`❌ فشل Groq المباشر في الجولة ${round + 1}:`, groqError?.message);
     }
 
     if (Date.now() >= deadlineAt || deadlineAt - Date.now() < 10000) break;
