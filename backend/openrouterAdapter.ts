@@ -84,10 +84,10 @@ function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
   return error;
 }
 
-async function request(options: any, model: string, stream: boolean, baseUrl?: string, apiKeyOverride?: string): Promise<OpenRouterRequest> {
-  const apiKey = (apiKeyOverride || process.env.OPENROUTER_API_KEY || '').trim();
+async function request(options: any, model: string, stream: boolean): Promise<OpenRouterRequest> {
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) {
-    const error: any = new Error(baseUrl ? 'مفتاح المزوّد الاحتياطي غير مضبوط.' : 'اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
+    const error: any = new Error('اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
     error.statusCode = 503;
     throw error;
   }
@@ -117,28 +117,17 @@ async function request(options: any, model: string, stream: boolean, baseUrl?: s
     timer = undefined;
   };
   resetTimeout();
-  const normalizedBaseUrl = String(baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-  const requestHeaders: Record<string, string> = {
-    Authorization: `Bearer ${apiKey}`,
-    'Content-Type': 'application/json',
-  };
-  if (!baseUrl || normalizedBaseUrl.includes('openrouter.ai')) {
-    requestHeaders['HTTP-Referer'] = process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app';
-    requestHeaders['X-Title'] = 'Amin Smart Lawyer Assistant';
-  }
   let response: Response;
   try {
-    response = await fetch(`${normalizedBaseUrl}/chat/completions`, {
+    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
-      headers: requestHeaders,
-      body: JSON.stringify((() => {
-        const payload: any = buildPayload(options, model, stream);
-        if (normalizedBaseUrl.includes('api.groq.com')) {
-          payload.max_completion_tokens = Math.min(payload.max_tokens, 8192);
-          delete payload.max_tokens;
-        }
-        return payload;
-      })()),
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app',
+        'X-Title': 'Amin Smart Lawyer Assistant',
+      },
+      body: JSON.stringify(buildPayload(options, model, stream)),
       signal: controller.signal,
     });
   } catch (error: any) {
@@ -157,8 +146,7 @@ async function request(options: any, model: string, stream: boolean, baseUrl?: s
       if (timedOut) throw createTimeoutError(activeTimeoutMs, stream);
     }
     clearRequestTimeout();
-    const providerName = normalizedBaseUrl.includes('api.groq.com') ? 'Groq' : 'OpenRouter';
-    const error: any = new Error(`${providerName} request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
+    const error: any = new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
     error.status = response.status;
     error.statusCode = response.status;
     throw error;
@@ -172,7 +160,7 @@ async function request(options: any, model: string, stream: boolean, baseUrl?: s
   };
 }
 
-export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number, baseUrl?: string, apiKeyOverride?: string) {
+export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number) {
   const applyDefaultTimeout = (options: any) => ({
     ...options,
     requestTimeoutMs: Number(options?.requestTimeoutMs) >= 1000
@@ -186,7 +174,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
         const timedOptions = applyDefaultTimeout(options);
         let pending: OpenRouterRequest | null = null;
         try {
-          pending = await request(timedOptions, timedOptions.model, false, baseUrl, apiKeyOverride);
+          pending = await request(timedOptions, timedOptions.model, false);
           const data: any = await pending.response.json();
           const text = data?.choices?.[0]?.message?.content;
           const finishReason = data?.choices?.[0]?.finish_reason;
@@ -210,7 +198,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
       },
       generateContentStream: async (options: any) => {
         const timedOptions = applyDefaultTimeout(options);
-        const pending = await request(timedOptions, timedOptions.model, true, baseUrl, apiKeyOverride);
+        const pending = await request(timedOptions, timedOptions.model, true);
         const response = pending.response;
         if (!response.body) {
           pending.clearTimeout();
@@ -292,15 +280,23 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
 }
 
 export function getOpenRouterModels(): string[] {
-  const configured = (process.env.OPENROUTER_MODELS || '').split(/[;,\n]/).map((x) => x.trim()).filter(Boolean);
-  // This project is configured for free-tier routing: reject non-free model IDs
-  // so a Vercel environment typo cannot silently route legal requests to paid models.
-  const configuredFree = configured.filter((model) => model === 'openrouter/free' || model.endsWith(':free'));
-  // Prefer OpenRouter's live free router, then current independently addressable free models.
-  return configuredFree.length ? [...new Set(configuredFree)] : [
-    'openrouter/free',
+  const configured = (process.env.OPENROUTER_MODELS || '')
+    .split(/[;,\n]/)
+    .map((x) => x.trim().replace(/^['\"]|['\"]$/g, ''))
+    .filter(Boolean);
+
+  // Keep this fallback free-only. In particular, reject the paid slug
+  // "qwen/qwen3.8-27b" and accept it only if the free variant is explicitly named.
+  const configuredFree = configured.filter((model) =>
+    model === 'openrouter/free' || /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/i.test(model)
+  );
+  const knownFreeFallbacks = [
     'nvidia/nemotron-3-ultra-550b-a55b:free',
     'nvidia/nemotron-3.5-lightning:free',
     'qwen/qwen3.8-27b:free',
   ];
+
+  // The dynamic router selects from currently available free models, avoiding
+  // reliance on one hard-coded slug when provider availability changes.
+  return [...new Set(['openrouter/free', ...(configuredFree.length ? configuredFree.filter((m) => m !== 'openrouter/free') : knownFreeFallbacks)])];
 }
