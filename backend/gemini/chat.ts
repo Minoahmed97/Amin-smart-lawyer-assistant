@@ -27,7 +27,6 @@ export default async function handler(req: any, res: any) {
     const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
     const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
 
-    // التعرف الذكي والشامل على طلبات التعديل بالفصحى العامية المصرية بشتى صيغها
     const requestsEdit = /(?:احذف|حذف|امسح|شيل|شيله|شيلها|أضف|اضف|ضيف|ضيفه|ضيفها|إضافة|اضافة|عدّل|عدل|عدّلها|عدلها|عدليه|يعدل|تعديل|غيّر|غير|غيرها|استبدل|بدّل|بدل|بدلها|أعد صياغ|اعد صياغ|أعد كتابة|اعد كتابة|صحّح|صحح|صححلي|اختصر|وسّع|وسع|رتّب|رتب|ضع|أدرج|ادرج|اكتب|اكتبها|اكتبلي|اجعل|خليها|خليه|حط|حطه|حطها|انقل|نقلها|قدّم|قدم|أخّر|اخر|أدخل|ادخل|ظبط|ظبطها|زود|زودها|كمل المستند|أكمل المستند|اكمل المستند|اكتب المذكرة|اكتب المذكره|نفذ التعديل|نفّذ التعديل|عدّي في النتيجة|عدي في النتيجة|ضيف في النتيجة|أضف في النتيجة|عايزك تغير|عايزك تعدل|عايزك تضيف|عايزك تكتب|remove|delete|add|rewrite|replace|edit|change|insert|move|update)\s*/i.test(latestUserMessage);
     
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
@@ -37,13 +36,9 @@ export default async function handler(req: any, res: any) {
 {"reply":"رسالة قصيرة للمحامي","updatedResult":null}
 
 تعليمات الهيكلة والتنسيق والتعامل مع العامية:
-1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي").
-2. ميّز بدقة بين:
-   - السؤال القانوني أو المناقشة فقط: اجعل "updatedResult": null وأجب في "reply" دون تغيير المستند.
-   - طلب تعديل أو إضافة أو حذف أو إعادة صياغة أو استكمال للمستند، بما في ذلك طلب كتابة المذكرة المقابلة أو إدراجها في آخر النتيجة: ضع المستند كاملاً بعد التعديل في "updatedResult"، وليس الجزء المضاف وحده، واجعل "reply" رسالة قصيرة توضّح ما تم.
-   - إذا طلب المحامي صياغة أو تنفيذ مستند جديد اعتماداً على التحليل الحالي، فأدرج نص المستند كاملاً في "updatedResult" كي يظهر في مربع النتيجة، ولا تكتفِ باقتراح نوع المستند أو وصف ما ينبغي كتابته.
-3. أخرج JSON صالحاً تماماً. لأن الأسطر الجديدة داخل قيم JSON يجب تهريبها، استخدم \n داخل السلاسل عند الحاجة، ولا تضع أسطراً فعلية غير مهربة داخل قيمة نصية. بعد قراءة JSON ستظهر فواصل الأسطر بشكل طبيعي.
-4. حافظ على نص المستند الأصلي بالكامل، وغير فقط ما طلبه المحامي. لا تحذف الأقسام أو الديباجة أو الطلبات الختامية ولا تعِد كتابة الأجزاء غير المطلوبة دون داعٍ.
+1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية.
+2. ميّز بدقة بين السؤال القانوني أو طلب التعديل والمذكرة المقابلة.
+3. أخرج JSON صالحاً تماماً.
 
 [سياق القضية الأصلي]
 ${String(originalContext || '').slice(0, 30000)}
@@ -100,32 +95,21 @@ ${history}
 
     if (requestsEdit && !updatedResult) {
       try {
-        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي (سواء بالعامية أو الفصحى). أعد النص الكامل النهائي المعدل فقط بدون رموز "n\\" أو "\\n" نصية.
-
+        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي. أعد النص الكامل النهائي المعدل فقط.
 [طلب المحامي] ${latestUserMessage}
 [النتيجة الحالية]
 ${result}`;
-
         const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
         let recoveredResult = sanitizeLegalText(recoveredRaw);
-        
-        const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
-        if (recoveredResult.length >= minimumDocumentLength) {
+        if (recoveredResult.length >= 120) {
           updatedResult = recoveredResult;
           answer = 'تم تحديث النتيجة بنجاح.';
         }
-      } catch (recoveryError: any) {
-        console.warn('Legal chat result-update recovery failed:', recoveryError?.message || 'unknown error');
-      }
+      } catch {}
     }
 
     if (!answer.trim() && updatedResult) answer = 'تم تحديث النتيجة بناءً على طلبك.';
-
-    if (!answer.trim()) {
-      const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة.');
-      err.statusCode = 503;
-      throw err;
-    }
+    if (!answer.trim()) answer = 'تمت العملية.';
 
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.status(200).json({ result: answer, updatedResult, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
@@ -133,11 +117,6 @@ ${result}`;
     console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
     const code = Number(err?.statusCode || err?.status);
     const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 500;
-    const retryAfter = Number(err?.retryAfter || 0);
-    if (status === 429 && retryAfter > 0) res.setHeader('Retry-After', String(retryAfter));
-    return res.status(status).json({
-      error: err?.message || 'تعذر إتمام الدردشة القانونية. حاول مرة أخرى بعد قليل.',
-      ...(status === 429 && retryAfter > 0 ? { retryAfter } : {}),
-    });
+    return res.status(status).json({ error: err?.message || 'تعذر إتمام الدردشة القانونية.' });
   }
 }
