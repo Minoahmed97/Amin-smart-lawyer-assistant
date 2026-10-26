@@ -84,10 +84,10 @@ function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
   return error;
 }
 
-async function request(options: any, model: string, stream: boolean): Promise<OpenRouterRequest> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+async function request(options: any, model: string, stream: boolean, baseUrl?: string, apiKeyOverride?: string): Promise<OpenRouterRequest> {
+  const apiKey = (apiKeyOverride || process.env.OPENROUTER_API_KEY || '').trim();
   if (!apiKey) {
-    const error: any = new Error('اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
+    const error: any = new Error(baseUrl ? 'مفتاح المزوّد الاحتياطي غير مضبوط.' : 'اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
     error.statusCode = 503;
     throw error;
   }
@@ -117,17 +117,28 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
     timer = undefined;
   };
   resetTimeout();
+  const normalizedBaseUrl = String(baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+  const requestHeaders: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  };
+  if (!baseUrl || normalizedBaseUrl.includes('openrouter.ai')) {
+    requestHeaders['HTTP-Referer'] = process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app';
+    requestHeaders['X-Title'] = 'Amin Smart Lawyer Assistant';
+  }
   let response: Response;
   try {
-    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    response = await fetch(`${normalizedBaseUrl}/chat/completions`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app',
-        'X-Title': 'Amin Smart Lawyer Assistant',
-      },
-      body: JSON.stringify(buildPayload(options, model, stream)),
+      headers: requestHeaders,
+      body: JSON.stringify((() => {
+        const payload: any = buildPayload(options, model, stream);
+        if (normalizedBaseUrl.includes('api.groq.com')) {
+          payload.max_completion_tokens = Math.min(payload.max_tokens, 8192);
+          delete payload.max_tokens;
+        }
+        return payload;
+      })()),
       signal: controller.signal,
     });
   } catch (error: any) {
@@ -146,7 +157,8 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
       if (timedOut) throw createTimeoutError(activeTimeoutMs, stream);
     }
     clearRequestTimeout();
-    const error: any = new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
+    const providerName = normalizedBaseUrl.includes('api.groq.com') ? 'Groq' : 'OpenRouter';
+    const error: any = new Error(`${providerName} request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
     error.status = response.status;
     error.statusCode = response.status;
     throw error;
@@ -160,7 +172,7 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   };
 }
 
-export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number) {
+export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number, baseUrl?: string, apiKeyOverride?: string) {
   const applyDefaultTimeout = (options: any) => ({
     ...options,
     requestTimeoutMs: Number(options?.requestTimeoutMs) >= 1000
@@ -174,7 +186,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
         const timedOptions = applyDefaultTimeout(options);
         let pending: OpenRouterRequest | null = null;
         try {
-          pending = await request(timedOptions, timedOptions.model, false);
+          pending = await request(timedOptions, timedOptions.model, false, baseUrl, apiKeyOverride);
           const data: any = await pending.response.json();
           const text = data?.choices?.[0]?.message?.content;
           const finishReason = data?.choices?.[0]?.finish_reason;
@@ -198,7 +210,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
       },
       generateContentStream: async (options: any) => {
         const timedOptions = applyDefaultTimeout(options);
-        const pending = await request(timedOptions, timedOptions.model, true);
+        const pending = await request(timedOptions, timedOptions.model, true, baseUrl, apiKeyOverride);
         const response = pending.response;
         if (!response.body) {
           pending.clearTimeout();
