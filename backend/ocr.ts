@@ -3,7 +3,6 @@ import { executeWithDedicatedOCRKeyRotation, checkDedicatedOCRGeminiReadiness, G
 
 import { requireActiveSession, consumeOperation } from './auth.ts';
 import { fetchServerCloudOCRGroqFallbackConfig } from './supabaseSync.ts';
-import { extractTextWithGroqOCR } from './groqOcr.ts';
 import { validateBase64Payload, limitBodyString } from './security.ts';
 export const config = {
   api: {
@@ -144,26 +143,11 @@ export default async function handler(req: any, res: any) {
           });
         }
         return text;
-      }, GEMINI_MODELS, 240000, safeGeminiMime.startsWith('image/'));
+      }, GEMINI_MODELS, 240000);
     } catch (geminiError: any) {
-      const geminiStatus = Number(geminiError?.statusCode || geminiError?.status || geminiError?.response?.status);
-      const geminiMessage = String(geminiError?.message || '');
-      const quotaExhausted = geminiStatus === 429 || /نفدت الحصة|تجاوز.*الحصة|وصلت مؤقتاً إلى حدود الاستخدام|حدود الطلبات في مفاتيح|resource_exhausted|quota exceeded|rate.?limit|too many requests|http.?429/i.test(geminiMessage);
-      if (!quotaExhausted) throw geminiError;
-
-      const groqFallback = await fetchServerCloudOCRGroqFallbackConfig().catch((configError: any) => {
-        throw new Error(`نفدت حصة Gemini ولم يمكن قراءة إعداد احتياطي Groq من التخزين المركزي: ${String(configError?.message || 'خطأ في الإعدادات').slice(0, 160)}`);
-      });
-      if (!groqFallback.enabled || !groqFallback.apiKey) throw geminiError;
-
-      // Groq's configured vision model accepts image inputs. It does not accept a
-      // raw application/pdf payload through this endpoint, so PDF requests retain
-      // a clear error rather than sending an unsupported payload.
-      if (!safeGeminiMime.startsWith('image/')) {
-        throw new Error('نفدت حصة Gemini. احتياطي Groq Vision مفعل لكنه يدعم الصور فقط وليس ملف PDF مباشرةً؛ جرّب رفع صفحات الـ PDF كصور أو انتظر تجدد الحصة.');
-      }
-      console.warn('[OCR] Gemini quota exhausted; using configured Groq vision fallback for image OCR.');
-      extractedText = await extractTextWithGroqOCR(compactBase64, safeGeminiMime, fileName || 'المستند');
+      // executeWithDedicatedOCRKeyRotation already performs two complete
+      // Gemini-key/model -> Groq rounds. Do not trigger an extra third Groq call here.
+      throw geminiError;
     }
 
     if (extractedText) {
