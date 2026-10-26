@@ -278,7 +278,6 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
-/** تدوير OCR مع الدمج التلقائي لاحتياطي Groq عند فشل كل مفاتيح وحصص Gemini */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -375,6 +374,14 @@ async function getAvailableGeminiKeys(timeoutMs?: number): Promise<string[]> {
     if (keys.length === 0) throw error;
   }
   return keys;
+}
+
+export async function getManagedGeminiKeyByIndex(index: number): Promise<string> {
+  if (!Number.isInteger(index) || index < 0) throw new Error('رقم المفتاح غير صحيح.');
+  const keys = await getAvailableGeminiKeys();
+  const key = keys[index];
+  if (!key) throw new Error('المفتاح غير موجود في إعدادات Gemini الحالية.');
+  return key;
 }
 
 export function getKeysStatus() {
