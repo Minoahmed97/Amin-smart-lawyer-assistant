@@ -138,10 +138,14 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     } catch {}
     if (!jobId) return () => { active = false; };
     setIsLoading(true);
-    setAnalysisResult('');
     setDeconstructError('');
     void resumeSavedAiTask('deconstruct', jobId, (chunk) => {
-      if (active) setAnalysisResult((current) => current + chunk);
+      if (active) setAnalysisResult((current) => {
+        if (!current) return chunk;
+        if (chunk.startsWith(current)) return chunk;
+        if (current.startsWith(chunk)) return current;
+        return current + chunk;
+      });
     }, userId).then((result) => {
       if (!active) return;
       setAnalysisResult(result);
@@ -158,7 +162,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     e.preventDefault();
     if (isUploadingDoc) return;
     if (!opponentBriefText.trim()) {
-      setDeconstructError('يرجى لصق نص مذكرة الخصم أو رفع مستند وورد أو ملف بي دي إف.');
+      setDeconstructError('يرجى لصف نص مذكرة الخصم أو رفع مستند وورد أو ملف بي دي إف.');
       return;
     }
 
@@ -310,7 +314,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-300 mt-1">
-                الصح المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيقوم المساعد بتفنيد محتواه واستخراج نقاط ضعف وإعداد الرد القانوني المناسب.
+                الاصق المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيقوم المساعد بتفنيد محتواه واستخراج نقاط ضعف وإعداد الرد القانوني المناسب.
               </p>
             </div>
           </div>
@@ -407,7 +411,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 rows={8}
                 value={opponentBriefText}
                 onChange={(e) => setOpponentBriefText(e.target.value)}
-                placeholder="الصق نص مذكرة الخصم هنا أو ارفع ملف وورد أو ملف بي دي إف أعلاه..."
+                placeholder="الاصق نص مذكرة الخصم هنا أو ارفع ملف وورد أو ملف بي دي إف أعلاه..."
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-xs sm:text-sm font-sans leading-relaxed focus:outline-none focus:border-[#b45309]"
               ></textarea>
             </div>
@@ -423,7 +427,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                يفحص المساعد خزنة الحساب الحالي تلقائياً بحثاً عن نموذج مطابق أو قريب ومفيد. وإذا لم يجد نموذجا مناسباً، ينشئ التفنيد والرد من الصفر دون توقف ودون طلب اختيار نموذج.
+                يفحص المساعد خزنة الحساب الحالي تلقائياً بحثاً عن نموذج مطابق أو قريب ومفيد. وإذا لم يجد نموذجاً مناسباً، ينشئ التفنيد والرد من الصفر دون توقف ودون طلب اختيار نموذج.
               </p>
               <div className="mt-3">
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -762,7 +766,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     تقرير التفنيد والرد والمذكرة المقابلة سيظهر هنا
                   </h4>
                   <p className="text-xs max-w-md leading-relaxed text-slate-400">
-                    الصق مذكرة الخصم أو ارفع ملف وورد أو ملف بي دي إف على اليمين ثم اضغط زر التفنيد والرد.
+                    الاصق مذكرة الخصم أو ارفع ملف وورد أو ملف بي دي إف على اليمين ثم اضغط زر التفنيد والرد.
                   </p>
                 </div>
               )}
