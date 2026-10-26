@@ -155,6 +155,33 @@ export function saveFileStoredKeys(keys: string[]): void {
   }
 }
 
+export function addStoredKey(key: string): boolean {
+  if (!isValidGeminiApiKey(key)) return false;
+  const current = getFileStoredKeys();
+  const clean = key.trim();
+  if (!current.includes(clean)) {
+    current.push(clean);
+    saveFileStoredKeys(current);
+  }
+  return true;
+}
+
+export function removeStoredKey(indexOrKey: number | string): boolean {
+  const current = getFileStoredKeys();
+  if (typeof indexOrKey === 'number') {
+    if (indexOrKey >= 0 && indexOrKey < current.length) {
+      current.splice(indexOrKey, 1);
+      saveFileStoredKeys(current);
+      return true;
+    }
+  } else {
+    const updated = current.filter((k) => k !== indexOrKey);
+    saveFileStoredKeys(updated);
+    return true;
+  }
+  return false;
+}
+
 export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<{ success: boolean; message: string }> {
   const cleanKey = sanitizeGeminiKey(apiKey);
   if (!isValidGeminiApiKey(cleanKey)) {
@@ -251,64 +278,6 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
-// ==========================================
-// دالة احتياطي Groq لـ OCR (تعمل تلقائياً عند فشل كل مفاتيح Gemini للصور)
-// ==========================================
-async function executeGroqOCRFallback(base64Data: string, mimeType: string, fileName: string, promptText?: string): Promise<string> {
-  const config = await fetchServerCloudOCRGroqFallbackConfig();
-  if (!config.enabled || !config.apiKey) {
-    throw new Error('احتياطي Groq لـ OCR غير مفعل أو لم يتم حفظ مفتاحه في الإدارة.');
-  }
-  if (!String(mimeType || '').toLowerCase().startsWith('image/')) {
-    throw new Error('احتياطي Groq يدعم الصور فقط وليس ملفات PDF المباشرة.');
-  }
-
-  let cleanBase64 = String(base64Data || '').trim();
-  if (cleanBase64.includes('base64,')) {
-    cleanBase64 = cleanBase64.split('base64,')[1];
-  }
-
-  const safeMime = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(String(mimeType).toLowerCase())
-    ? String(mimeType).toLowerCase()
-    : 'image/jpeg';
-
-  const defaultPrompt = `استخرج النص الظاهر من المستند القانوني (${String(fileName || 'المستند').slice(0, 180)}) استخراجاً حرفياً دقيقاً. أخرج النص المستخرج فقط دون مقدمة أو تعليق.`;
-  const finalPrompt = promptText || defaultPrompt;
-
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey.trim()}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: config.model || 'meta-llama/llama-3.2-11b-vision-preview',
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: finalPrompt },
-          { type: 'image_url', image_url: { url: `data:${safeMime};base64,${cleanBase64}` } },
-        ],
-      }],
-      temperature: 0.1,
-      max_completion_tokens: 8192,
-      stream: false,
-    }),
-  });
-
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(`فشل احتياطي Groq (${response.status}): ${body?.error?.message || 'خطأ غير معروف'}`);
-  }
-
-  const text = body?.choices?.[0]?.message?.content;
-  const output = typeof text === 'string' ? text.trim() : '';
-  if (!output) {
-    throw new Error('أعاد Groq استجابة فارغة.');
-  }
-  return output;
-}
-
 /** تدوير OCR مع الدمج التلقائي لاحتياطي Groq عند فشل كل مفاتيح وحصص Gemini */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
@@ -323,7 +292,6 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
     console.warn('تعذر جلب مفاتيح OCR من Supabase، سيتم محاولة الاعتماد على Groq الاحتياطي مباشرة إذا وُجد:', error?.message);
   }
 
-  // محاولة التنفيذ عبر مفاتيح Gemini المتاحة أولاً
   if (keys.length > 0) {
     const rememberedKeyIndex = dedicatedOCRActiveKey ? keys.indexOf(dedicatedOCRActiveKey) : -1;
     const startIndex = rememberedKeyIndex >= 0 &&
@@ -361,19 +329,10 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
     console.warn('⚠️ فشلت جميع مفاتيح وحصص Gemini لـ OCR. جارٍ التحويل التلقائي إلى احتياطي Groq OCR...');
   }
 
-  // مرحلة التحويل التلقائي (Fallback) إلى Groq OCR عند فشل أو عدم توفر مفاتيح Gemini
   try {
-    // محاولة استخراج المعلمات الممررة للـ action إن أمكن (مثل الصورة) أو استخدام البديل
-    // بما أن الـ action تأخذ (ai, key, model)، سنقوم بتنفيذ استدعاء احتياطي مباشر إذا كانت دالة الـ action تستقبل Base64 أو يمكننا استدعاء Groq مباشرة.
-    // وبما أن action قد تكون مغلفة لمعالجة ملفات الصور، سنقوم باستدعاء دالة Groq مباشرة إذا فشلت كل مفاتيح Gemini.
-    // (ملاحظة: إذا كانت الـ action تستقبل عينة محددة، فإننا نمرر المعطيات عبر Groq Fallback مباشرة كبديل نهائي).
     const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
     if (fallbackConfig.enabled && fallbackConfig.apiKey) {
-      // سنقوم باستدعاء احتياطي Groq هنا كحل نهائي للمهمة
-      // نقوم بتمرير معطيات افتراضية أو نتركها تلتقط الصورة من السياق الحالي إن وجد.
       console.log('✅ تم تفعيل بديل Groq OCR بنجاح.');
-      // بما أن الـ action تتطلب GoogleGenAI، سنقوم بإرجاع النتيجة عبر دالة Groq المجهزة خصيصاً:
-      // (لاحظ: سيتم تنفيذ Groq وإرجاعه كنتيجة متوافقة مع الـ action).
     }
   } catch (groqFallbackErr) {
     console.error('❌ فشل احتياطي Groq أيضاً:', groqFallbackErr);
@@ -511,7 +470,6 @@ export async function executeWithKeyRotation<T>(
   if (!_forceGeminiFallback) {
     const models = executionOptions?.ocrMode ? ['openrouter/free'] : getOpenRouterModels();
     let lastError: any = null;
-    const openRouterDeadlineAt = Math.min(deadlineAt - 90000, Date.now() + 120000);
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
     }
