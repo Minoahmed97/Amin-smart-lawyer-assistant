@@ -23,9 +23,9 @@ export function isValidGeminiApiKey(key: any): boolean {
 }
 
 export const GEMINI_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
 ];
 
 let activeKeyIndex = 0;
@@ -41,8 +41,8 @@ let nextGeneralKeyStart = 0;
 let nextOCRKeyStart = 0;
 const KEY_QUOTA_COOLDOWN_MS = 60_000;
 const MODEL_BUSY_COOLDOWN_MS = 30_000;
-const CONNECTION_COOLDOWN_MS = 12_000;
-const MODEL_PAIR_COOLDOWN_MS = 15_000;
+const CONNECTION_COOLDOWN_MS = 15_000;
+const MODEL_PAIR_COOLDOWN_MS = 20_000;
 const MAX_MODELS_PER_KEY_PER_REQUEST = 2;
 
 function rotationPairKey(key: string, model: string): string {
@@ -69,7 +69,7 @@ function markRotationFailure(key: string, model: string, error: any, pool: 'gene
   const now = Date.now();
   if (kind === 'invalid') {
     invalidKeys.add(key);
-    keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
+    keyCooldowns.set(key, now + 300_000); // حظر مؤقت لفترة أطول بدلاً من الحظر الأبدي المطلق
   } else if (kind === 'quota' || status === 429) {
     if (pool === 'ocr') keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
     pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
@@ -127,6 +127,14 @@ function shouldFallbackFromOpenRouter(error: any): boolean {
   return status === 401 || status === 402 || status === 403 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 ||
     (status === 400 && /max_tokens|context.?length|model|unsupported|parameter/.test(message)) ||
     /quota|rate.?limit|free.*(limit|unavailable|exhaust)|no free models|temporarily unavailable|service unavailable|timed out|timeout/.test(message);
+}
+
+function shouldFallbackFromGemini(error: any): boolean {
+  if (error?.allGeminiQuotasExhausted === true || error?.allGeminiAttemptsExhausted === true) return true;
+  const status = Number(error?.status || error?.statusCode || error?.response?.status);
+  const message = String(error?.message || error?.error?.message || '').toLowerCase();
+  return status === 401 || status === 403 || status === 404 || status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504 ||
+    /quota|resource_exhausted|rate.?limit|too many requests|api key not valid|invalid api key|temporarily unavailable|service unavailable|high demand|timed out|timeout/.test(message);
 }
 
 const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
@@ -230,7 +238,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
 
       const errorText = `${data?.error?.status || ''} ${apiMessage}`;
       if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/i.test(errorText)) {
-        return { success: false, message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغى (${status}).` };
+        return { success: false, message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغي (${status}).` };
       }
 
       if (status === 403 || status === 404 || status === 400) continue;
@@ -278,29 +286,24 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
-/** 
- * دالة استخراج النص الخاصة بـ Groq الاحتياطي عندما تفشل كل محاولات Gemini 
- */
 async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>): Promise<any> {
   const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
   if (!fallbackConfig.enabled || !fallbackConfig.apiKey) {
     throw new Error('احتياطي Groq لـ OCR غير مفعل أو لم يتم حفظ مفتاحه.');
   }
 
-  console.log('🔄 جارٍ تشغيل بديل Groq لـ OCR نظراً لفشل جميع محاولات Gemini...');
-  
-  // بناء عميل متوافق مع Groq (OpenAI Compatible) لإتمام الطلب بنفس هيكلية الـ action أو استدعاء مباشر
+  console.log('🔄 جاري تشغيل بديل Groq لـ OCR نظراً لفشل جميع محاولات Gemini...');
   const client = createOpenRouterCompatibleClient(60000, Date.now() + 90000, 'https://api.groq.com/openai/v1', fallbackConfig.apiKey);
-  const modelToUse = fallbackConfig.model || 'meta-llama/llama-3.2-11b-vision-preview';
+  const modelToUse = fallbackConfig.model || 'qwen/qwen-2.5-coder-32b-instruct';
   
   return await action(client as unknown as GoogleGenAI, fallbackConfig.apiKey, modelToUse);
 }
 
-/** تدوير OCR المكثف عبر مفاتيح Gemini أولاً، وعند فشلها تماماً يتم الانتقال التلقائي لـ Groq */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
   timeoutMs = 240000,
+  allowGroqImageFallback = true,
 ): Promise<T> {
   const deadlineAt = Date.now() + Math.max(15000, timeoutMs);
   let keys: string[] = [];
@@ -310,7 +313,6 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
     console.warn('تعذر جلب مفاتيح OCR من Supabase:', error?.message);
   }
 
-  // 1. محاولة التنفيذ عبر مفاتيح Gemini أولاً إذا كانت متوفرة
   if (keys.length > 0) {
     const rememberedKeyIndex = dedicatedOCRActiveKey ? keys.indexOf(dedicatedOCRActiveKey) : -1;
     const startIndex = rememberedKeyIndex >= 0 &&
@@ -338,7 +340,7 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
             if (remainingMs < 10000) break ocrKeyLoop;
             const model = keyModels[modelIndex];
             try {
-              const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
+              const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(30000, remainingMs)));
               const result = await action(ai, key, model);
               if (Date.now() >= deadlineAt) throw Object.assign(new Error('انتهت مهلة استخراج النص عبر مجموعة OCR.'), { status: 504, statusCode: 504 });
               dedicatedOCRActiveKey = key;
@@ -351,12 +353,15 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
         }
       }
     }
-    console.warn('⚠️ فشلت جميع محاولات Gemini لـ OCR. جارٍ التحويل التلقائي والفوري إلى احتياطي Groq...');
+    console.warn('⚠️ فشلت جميع محاولات Gemini لـ OCR. جاري التحول التلقائي الفوري إلى احتياطي Groq...');
   } else {
-    console.warn('⚠️ لا توجد مفاتيح Gemini مضافة لـ OCR. جارٍ التوجيه المباشر لاحتياطي Groq...');
+    console.warn('⚠️ لا توجد مفاتيح Gemini مضافة لـ OCR. جاري التوجيه المباشر لاحتياطي Groq...');
   }
 
-  // 2. التحويل التلقائي لـ Groq عندما تفشل جميع محاولات Gemini أو لا توجد مفاتيح
+  if (!allowGroqImageFallback) {
+    throw new Error('تعذر استخراج النص عبر Gemini. احتياطي Groq يدعم الصور فقط وليس ملف PDF مباشرةً؛ جرب رفع صفحات PDF كصور أو أعد المحاولة عند توفر Gemini.');
+  }
+
   try {
     const groqResult = await executeGroqOCRFallback(action);
     if (groqResult) {
@@ -488,7 +493,7 @@ export async function executeWithKeyRotation<T>(
         providerAttempt: 'gemini-primary',
       });
     } catch (geminiError: any) {
-      if (geminiError?.allGeminiQuotasExhausted !== true) throw geminiError || timeoutError();
+      if (!shouldFallbackFromGemini(geminiError)) throw geminiError || timeoutError();
       if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
       try {
         return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
@@ -514,7 +519,7 @@ export async function executeWithKeyRotation<T>(
     for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
       try {
         const result = await action(
-          withAdaptiveAnswerLength(createOpenRouterCompatibleClient(12000, deadlineAt)) as unknown as GoogleGenAI,
+          withAdaptiveAnswerLength(createOpenRouterCompatibleClient(15000, deadlineAt)) as unknown as GoogleGenAI,
           'openrouter',
           model,
         );
@@ -528,12 +533,24 @@ export async function executeWithKeyRotation<T>(
       if (deadlineAt - Date.now() < 10000) throw timeoutError();
       return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
     }
-    throw lastError || new Error('تعذر الاتصال بنماذج OpenRouter.');
+    throw lastError || new Error('تعذر الاتصال بنمادج OpenRouter.');
   }
 
-  const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
+  let keys: string[];
+  try {
+    keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
+  } catch (error: any) {
+    if (getVercelGeminiKeys().filter((key) => !permanentlyInvalidKeys.has(key)).length === 0) {
+      error.allGeminiAttemptsExhausted = true;
+    }
+    throw error;
+  }
   if (keys.length === 0) {
-    throw new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
+    const error: any = new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
+    error.status = 503;
+    error.statusCode = 503;
+    error.allGeminiAttemptsExhausted = true;
+    throw error;
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
@@ -561,7 +578,8 @@ export async function executeWithKeyRotation<T>(
           break geminiKeyLoop;
         }
         const model = keyModels[m];
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(30000, remainingMs)));
+        // زيادة المهلة هنا إلى 45 ثانية لدعم الاستجابات الكبيرة
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(45000, remainingMs)));
         try {
           const result = await action(ai, currentKey, model);
           if (Date.now() >= deadlineAt) throw timeoutError();
@@ -579,11 +597,16 @@ export async function executeWithKeyRotation<T>(
   }
 
   const finalKind = getGeminiErrorKind(lastError);
+  const allKeysUnavailable = keys.length > 0 && keys.every((key) => ['quota', 'invalid', 'temporary'].includes(keyFailureKinds.get(key) || ''));
   if (finalKind === 'quota') {
     const quotaError: any = new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام.');
+    quotaError.status = 429;
+    quotaError.statusCode = 429;
     quotaError.allGeminiQuotasExhausted = keys.length > 0 && keys.every((key) => keyFailureKinds.get(key) === 'quota');
+    quotaError.allGeminiAttemptsExhausted = allKeysUnavailable;
     throw quotaError;
   }
+  if (lastError && allKeysUnavailable) lastError.allGeminiAttemptsExhausted = true;
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
@@ -610,7 +633,7 @@ export async function executeWithKeyRotationStream(
       });
       return;
     } catch (geminiError: any) {
-      if (geminiError?.allGeminiQuotasExhausted !== true) throw geminiError || timeoutError();
+      if (!shouldFallbackFromGemini(geminiError)) throw geminiError || timeoutError();
       await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
         ...executionOptions,
         providerAttempt: 'openrouter-fallback',
@@ -619,9 +642,56 @@ export async function executeWithKeyRotationStream(
     }
   }
 
-  const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
-  if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
+  if (!_forceGeminiFallback && executionOptions?.providerAttempt === 'openrouter-fallback') {
+    const models = getOpenRouterModels();
+    let lastError: any = null;
+    if (!process.env.OPENROUTER_API_KEY?.trim()) {
+      lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
+    }
+    for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
+      let emittedAnyChunk = false;
+      try {
+        const stream = await action(
+          withAdaptiveAnswerLength(createOpenRouterCompatibleClient(15000, deadlineAt)) as unknown as GoogleGenAI,
+          'openrouter',
+          model,
+        );
+        for await (const chunk of stream) {
+          const text = typeof chunk?.text === 'string' ? chunk.text : '';
+          if (text) {
+            emittedAnyChunk = true;
+            onChunk(text);
+          }
+        }
+        if (!emittedAnyChunk) throw Object.assign(new Error(`لم يُرجع OpenRouter نصاً عبر النموذج ${model}.`), { status: 503, statusCode: 503 });
+        return;
+      } catch (err: any) {
+        if (emittedAnyChunk) throw err;
+        lastError = err;
+      }
+    }
+    throw lastError || new Error('تعذر الاتصال بنمادج OpenRouter.');
+  }
 
+  let keys: string[];
+  try {
+    keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
+  } catch (error: any) {
+    if (getVercelGeminiKeys().filter((key) => !permanentlyInvalidKeys.has(key)).length === 0) {
+      error.allGeminiAttemptsExhausted = true;
+    }
+    throw error;
+  }
+  if (keys.length === 0) {
+    const error: any = new Error('لم يتم العثور على مفتاح Gemini صالح.');
+    error.status = 503;
+    error.statusCode = 503;
+    error.allGeminiAttemptsExhausted = true;
+    throw error;
+  }
+
+  let lastGeminiError: any = null;
+  const keyFailureKinds = new Map<string, string>();
   for (let cycle = 0; cycle < 2; cycle++) {
     const startIdx = reserveStartIndex(keys.length, 'general');
     for (let offset = 0; offset < keys.length; offset++) {
@@ -630,7 +700,8 @@ export async function executeWithKeyRotationStream(
       const keyModels = selectModelsForKey(preferredModels, currentKey, 'general');
 
       for (let m = 0; m < keyModels.length; m++) {
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
+        // تم رفع الـ Timeout هنا إلى 45 ثانية بدلاً من 18 ثانية لمنع قطع البث أثناء الكتابة الطويلة
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 45000));
         let emittedAnyChunk = false;
         try {
           const stream = await action(ai, currentKey, keyModels[m]);
@@ -645,13 +716,25 @@ export async function executeWithKeyRotationStream(
           return;
         } catch (err: any) {
           if (emittedAnyChunk) throw err;
-          markRotationFailure(currentKey, keyModels[m], err, 'general');
+          lastGeminiError = err;
+          keyFailureKinds.set(currentKey, markRotationFailure(currentKey, keyModels[m], err, 'general'));
           break;
         }
       }
     }
   }
-  throw new Error('فشلت جميع محاولات تدوير البث.');
+  const finalKind = getGeminiErrorKind(lastGeminiError);
+  const allKeysUnavailable = keys.length > 0 && keys.every((key) => ['quota', 'invalid', 'temporary'].includes(keyFailureKinds.get(key) || ''));
+  if (finalKind === 'quota') {
+    const quotaError: any = new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام.');
+    quotaError.status = 429;
+    quotaError.statusCode = 429;
+    quotaError.allGeminiQuotasExhausted = keys.length > 0 && keys.every((key) => keyFailureKinds.get(key) === 'quota');
+    quotaError.allGeminiAttemptsExhausted = allKeysUnavailable;
+    throw quotaError;
+  }
+  if (lastGeminiError && allKeysUnavailable) lastGeminiError.allGeminiAttemptsExhausted = true;
+  throw lastGeminiError || new Error('فشلت جميع محاولات تدوير البث.');
 }
 
 export default function handler(req: any, res: any) {
