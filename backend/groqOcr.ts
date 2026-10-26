@@ -1,7 +1,7 @@
 import { fetchServerCloudOCRGroqFallbackConfig } from './supabaseSync.ts';
 
-// استخدم أحد نماذج الرؤية المعتمدة رسمياً من Groq مثل llama-3.2-11b-vision-preview أو 90b
-export const GROQ_OCR_VISION_MODEL = 'meta-llama/llama-3.2-11b-vision-preview';
+// نموذج الرؤية الحالي المعتمد لاستخراج النصوص عبر Groq.
+export const GROQ_OCR_VISION_MODEL = 'qwen/qwen3.8-27b';
 
 function groqErrorMessage(status: number, body: any): string {
   // طباعة الاستجابة الكاملة في وحدة التحكم لتسهيل الـ Debugging
