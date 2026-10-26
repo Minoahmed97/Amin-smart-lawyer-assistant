@@ -278,6 +278,25 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
+/** 
+ * دالة استخراج النص الخاصة بـ Groq الاحتياطي عندما تفشل كل محاولات Gemini 
+ */
+async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>): Promise<any> {
+  const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
+  if (!fallbackConfig.enabled || !fallbackConfig.apiKey) {
+    throw new Error('احتياطي Groq لـ OCR غير مفعل أو لم يتم حفظ مفتاحه.');
+  }
+
+  console.log('🔄 جارٍ تشغيل بديل Groq لـ OCR نظراً لفشل جميع محاولات Gemini...');
+  
+  // بناء عميل متوافق مع Groq (OpenAI Compatible) لإتمام الطلب بنفس هيكلية الـ action أو استدعاء مباشر
+  const client = createOpenRouterCompatibleClient(60000, Date.now() + 90000, 'https://api.groq.com/openai/v1', fallbackConfig.apiKey);
+  const modelToUse = fallbackConfig.model || 'meta-llama/llama-3.2-11b-vision-preview';
+  
+  return await action(client as unknown as GoogleGenAI, fallbackConfig.apiKey, modelToUse);
+}
+
+/** تدوير OCR المكثف عبر مفاتيح Gemini أولاً، وعند فشلها تماماً يتم الانتقال التلقائي لـ Groq */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -288,9 +307,10 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
   try {
     keys = await fetchServerCloudOCRGeminiKeys(Math.min(8000, Math.max(1000, deadlineAt - Date.now() - 2000)));
   } catch (error: any) {
-    console.warn('تعذر جلب مفاتيح OCR من Supabase، سيتم محاولة الاعتماد على Groq الاحتياطي مباشرة إذا وُجد:', error?.message);
+    console.warn('تعذر جلب مفاتيح OCR من Supabase:', error?.message);
   }
 
+  // 1. محاولة التنفيذ عبر مفاتيح Gemini أولاً إذا كانت متوفرة
   if (keys.length > 0) {
     const rememberedKeyIndex = dedicatedOCRActiveKey ? keys.indexOf(dedicatedOCRActiveKey) : -1;
     const startIndex = rememberedKeyIndex >= 0 &&
@@ -299,45 +319,56 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
         ? rememberedKeyIndex
         : reserveStartIndex(keys.length, 'ocr');
         
-    let lastError: any = null;
+    let lastGeminiError: any = null;
     const usableOCRKeys = keys.filter((candidate) => !permanentlyInvalidOCRKeys.has(candidate));
     
     if (usableOCRKeys.length && !usableOCRKeys.every((candidate) => isCooling(ocrKeyCooldownUntil, candidate))) {
-      ocrKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
-        const keyIndex = (startIndex + offset) % keys.length;
-        const key = keys[keyIndex];
-        if (isCooling(ocrKeyCooldownUntil, key) || permanentlyInvalidOCRKeys.has(key)) continue;
-        const keyModels = selectModelsForKey(preferredModels, key, 'ocr');
-        for (let modelIndex = 0; modelIndex < keyModels.length; modelIndex++) {
-          const remainingMs = deadlineAt - Date.now();
-          if (remainingMs < 10000) break ocrKeyLoop;
-          const model = keyModels[modelIndex];
-          try {
-            const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
-            const result = await action(ai, key, model);
-            if (Date.now() >= deadlineAt) throw Object.assign(new Error('انتهت مهلة استخراج النص عبر مجموعة OCR.'), { status: 504, statusCode: 504 });
-            dedicatedOCRActiveKey = key;
-            return result;
-          } catch (error: any) {
-            lastError = error;
-            markRotationFailure(key, model, error, 'ocr');
+      const MAX_CYCLES = 2;
+      for (let cycle = 0; cycle < MAX_CYCLES; cycle++) {
+        if (cycle > 0) await new Promise((r) => setTimeout(r, 2000));
+
+        ocrKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
+          const keyIndex = (startIndex + offset) % keys.length;
+          const key = keys[keyIndex];
+          if (isCooling(ocrKeyCooldownUntil, key) || permanentlyInvalidOCRKeys.has(key)) continue;
+          const keyModels = selectModelsForKey(preferredModels, key, 'ocr');
+          
+          for (let modelIndex = 0; modelIndex < keyModels.length; modelIndex++) {
+            const remainingMs = deadlineAt - Date.now();
+            if (remainingMs < 10000) break ocrKeyLoop;
+            const model = keyModels[modelIndex];
+            try {
+              const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
+              const result = await action(ai, key, model);
+              if (Date.now() >= deadlineAt) throw Object.assign(new Error('انتهت مهلة استخراج النص عبر مجموعة OCR.'), { status: 504, statusCode: 504 });
+              dedicatedOCRActiveKey = key;
+              return result;
+            } catch (error: any) {
+              lastGeminiError = error;
+              markRotationFailure(key, model, error, 'ocr');
+            }
           }
         }
       }
     }
-    console.warn('⚠️ فشلت جميع مفاتيح وحصص Gemini لـ OCR. جارٍ التحويل التلقائي إلى احتياطي Groq OCR...');
+    console.warn('⚠️ فشلت جميع محاولات Gemini لـ OCR. جارٍ التحويل التلقائي والفوري إلى احتياطي Groq...');
+  } else {
+    console.warn('⚠️ لا توجد مفاتيح Gemini مضافة لـ OCR. جارٍ التوجيه المباشر لاحتياطي Groq...');
   }
 
+  // 2. التحويل التلقائي لـ Groq عندما تفشل جميع محاولات Gemini أو لا توجد مفاتيح
   try {
-    const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
-    if (fallbackConfig.enabled && fallbackConfig.apiKey) {
-      console.log('✅ تم تفعيل بديل Groq OCR بنجاح.');
+    const groqResult = await executeGroqOCRFallback(action);
+    if (groqResult) {
+      console.log('✅ تم إتمام استخراج النص بنجاح عبر احتياطي Groq!');
+      return groqResult;
     }
-  } catch (groqFallbackErr) {
-    console.error('❌ فشل احتياطي Groq أيضاً:', groqFallbackErr);
+  } catch (groqError: any) {
+    console.error('❌ فشل احتياطي Groq أيضاً:', groqError?.message);
+    throw new Error(`فشلت محاولات Gemini وفشل بديل Groq. خطأ Groq الأخير: ${groqError?.message}`);
   }
 
-  throw new Error('فشلت جميع محاولات مفاتيح مجموعة الصور والمستندات (OCR) عبر Gemini واحتياطي Groq.');
+  throw new Error('فشلت جميع محاولات مجموعة الصور والمستندات (OCR) عبر Gemini واحتياطي Groq.');
 }
 
 export function getVercelGeminiKeys(): string[] {
