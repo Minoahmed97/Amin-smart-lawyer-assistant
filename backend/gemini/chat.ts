@@ -28,7 +28,7 @@ export default async function handler(req: any, res: any) {
     const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
 
     // التعرف الذكي والشامل على طلبات التعديل بالفصحى العامية المصرية بشتى صيغها
-    const requestsEdit = /(?:احذف|حذف|امسح|شيل|شيله|شيلها|أضف|اضف|ضيف|ضيفه|ضيفها|إضافة|اضافة|عدّل|عدل|عدّلها|عدلها|عدليه|يعدل|تعديل|غيّر|غير|غيرها|استبدل|بدّل|بدل|بدلها|أعد صياغ|اعد صياغ|أعد كتابة|اعد كتابة|صحّح|صحح|صححلي|اختصر|وسّع|وسع|رتّب|رتب|ضع|أدرج|ادرج|اكتب|اكتبها|اكتبلي|اجعل|خليها|خليه|حط|حطه|حطها|انقل|نقلها|قدّم|قدم|أخّر|اخر|أدخل|ادخل|ظبط|ظبطها|زود|زودها|كمل المستند|أكمل المستند|اكمل المستند|اكتب المذكرة|اكتب المذكره|نفذ التعديل|نفّذ التعديل|عدّي في النتيجة|عدي في النتيجة|ضيف في النتيجة|أضف في النتيجة|عايزك تغير|عايزك تعدل|عايزك تضيف|عايزك تكتب|remove|delete|add|rewrite|replace|edit|change|insert|move|update)\s*/i.test(latestUserMessage);
+    const requestsEdit = /(?:احذف|حذف|امسح|شيل|شيله|شيلها|أضف|اضف|ضيف|ضيفه|ضيفها|إضافة|اضافة|عدّل|عدل|عدلها|عدليه|تعديل|غيّر|غير|غيرها|استبدل|بدّل|بدل|بدلها|أعد صياغ|اعد صياغ|أعد كتابة|اعد كتابة|صحّح|صحح|صححلي|اختصر|وسّع|وسع|رتّب|رتب|ضع|أدرج|ادرج|اكتب|اكتبها|اجعل|خليها|خليه|حط|حطه|حطها|انقل|نقلها|قدّم|قدم|أخّر|اخر|أدخل|ادخل|ظبط|ظبطها|زود|زودها|عايزك تغير|عايزك تعدل|remove|delete|add|rewrite|replace|edit|change|insert|move|update)\s*/i.test(latestUserMessage);
     
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
 
@@ -39,11 +39,10 @@ export default async function handler(req: any, res: any) {
 تعليمات الهيكلة والتنسيق والتعامل مع العامية:
 1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي").
 2. ميّز بدقة بين:
-   - السؤال القانوني أو المناقشة فقط: اجعل "updatedResult": null وأجب في "reply" دون تغيير المستند.
-   - طلب تعديل أو إضافة أو حذف أو إعادة صياغة أو استكمال للمستند، بما في ذلك طلب كتابة المذكرة المقابلة أو إدراجها في آخر النتيجة: ضع المستند كاملاً بعد التعديل في "updatedResult"، وليس الجزء المضاف وحده، واجعل "reply" رسالة قصيرة توضّح ما تم.
-   - إذا طلب المحامي صياغة أو تنفيذ مستند جديد اعتماداً على التحليل الحالي، فأدرج نص المستند كاملاً في "updatedResult" كي يظهر في مربع النتيجة، ولا تكتفِ باقتراح نوع المستند أو وصف ما ينبغي كتابته.
-3. أخرج JSON صالحاً تماماً. لأن الأسطر الجديدة داخل قيم JSON يجب تهريبها، استخدم \n داخل السلاسل عند الحاجة، ولا تضع أسطراً فعلية غير مهربة داخل قيمة نصية. بعد قراءة JSON ستظهر فواصل الأسطر بشكل طبيعي.
-4. حافظ على نص المستند الأصلي بالكامل، وغير فقط ما طلبه المحامي. لا تحذف الأقسام أو الديباجة أو الطلبات الختامية ولا تعِد كتابة الأجزاء غير المطلوبة دون داعٍ.
+   - طلبات التعديل على المستند (تغيير، إضافة، حذف، تعديل تاريخ أو نص): ضع النسخة المعدلة كاملة في "updatedResult" واجعل الرد مختصراً في "reply".
+   - الأسئلة والمناقشات والاستفسارات المجردة: اجعل "updatedResult": null وأجب على السؤال في "reply".
+3. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً.
+4. حافظ على نص المستند الأصلي بالكامل وغير فقط ما طلبه المحامي دون إعادة كتابة الترويسات بلا داعٍ.
 
 [سياق القضية الأصلي]
 ${String(originalContext || '').slice(0, 100000)}
@@ -60,26 +59,18 @@ ${history}
     let answer = '';
     let updatedResult: string | null = null;
 
-    // تنظيف النص بعد فك JSON فقط؛ لا نحذف أغلفة الحقول من نص قانوني عادي.
+    // دالة تنظيف النصوص ومعالجة رموز الأسطر الملتصقة لضمان صفاء النص تماماً
     const sanitizeLegalText = (text: string) => {
       if (!text) return '';
       return text
         .replace(/^```(?:json|text|markdown)?\s*/i, '')
         .replace(/\s*```$/, '')
-        .replace(/\\r?\\n/g, '\n')
-        .replace(/(?:n\\)+/g, '\n')
+        .replace(/^\{\s*"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
+        .replace(/^"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
+        .replace(/\"\}\s*$/, '')
+        .replace(/(?:\\n|n\\)+/g, '\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
-    };
-
-    const readJsonStringField = (source: string, field: string): string => {
-      const match = source.match(new RegExp('"' + field + '"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"', 's'));
-      if (!match) return '';
-      try {
-        return String(JSON.parse('"' + match[1].replace(/\n/g, '\\n') + '"'));
-      } catch {
-        return match[1].replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-      }
     };
 
     try {
@@ -92,14 +83,22 @@ ${history}
       answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
     } catch {
-      // إذا أعاد النموذج JSON غير صالح بسبب أسطر/علامات اقتباس، استخرج الحقول
-      // منفردة بدلاً من عرض غلاف JSON للمحامي أو استبدال المستند به.
-      answer = readJsonStringField(rawAnswer, 'reply') || sanitizeLegalText(rawAnswer);
-      updatedResult = readJsonStringField(rawAnswer, 'updatedResult') || null;
+      const plainAnswer = sanitizeLegalText(rawAnswer);
+      const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
+      if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
+        updatedResult = plainAnswer;
+        answer = 'تم تعديل المطلوب في المستند.';
+      } else {
+        answer = plainAnswer;
+      }
     }
 
-    if (updatedResult) updatedResult = sanitizeLegalText(updatedResult);
-    if (answer) answer = sanitizeLegalText(answer);
+    if (updatedResult) {
+      updatedResult = sanitizeLegalText(updatedResult);
+    }
+    if (answer) {
+      answer = sanitizeLegalText(answer);
+    }
 
     if (requestsEdit && !updatedResult) {
       try {
@@ -121,8 +120,6 @@ ${result}`;
         console.warn('Legal chat result-update recovery failed:', recoveryError?.message || 'unknown error');
       }
     }
-
-    if (!answer.trim() && updatedResult) answer = 'تم تحديث النتيجة بناءً على طلبك.';
 
     if (!answer.trim()) {
       const err: any = new Error('لم تُنتج خدمة الذكاء الاصطناعي إجابة هذه المرة.');
