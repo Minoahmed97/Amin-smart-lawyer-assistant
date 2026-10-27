@@ -15,7 +15,7 @@ function hitOutputTokenLimit(reason: unknown): boolean {
   return normalized === 'MAX_TOKENS' || normalized === 'MAX_OUTPUT_TOKENS' || normalized === 'LENGTH';
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; continueUntilMarker?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -106,11 +106,24 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             throw noTextError;
           }
 
-          // Main document generation must not silently accept a truncated result
-          // merely because a provider reports STOP instead of an output-token limit.
-          const continueForMissingMarker = options.continueUntilMarker === true && !completed;
-          if (completed || continuationCount >= 3 || (!hitOutputTokenLimit(finishReason) && !continueForMissingMarker)) {
-            break;
+          if (completed) break;
+
+          // A normal STOP without the completion marker is not a complete legal
+          // document. Continue from the accumulated text; fail closed rather than
+          // letting the job publish a truncated result after exhausting retries.
+          const canContinue = hitOutputTokenLimit(finishReason) ||
+            finishReason === 'STOP' || !finishReason || finishReason === 'UNKNOWN';
+          if (!canContinue) {
+            const incompleteError: any = new Error(`توقف التوليد قبل اكتمال المستند (finishReason: ${finishReason}).`);
+            incompleteError.status = 502;
+            incompleteError.statusCode = 502;
+            throw incompleteError;
+          }
+          if (continuationCount >= 8) {
+            const incompleteError: any = new Error('لم يكتمل المستند بعد محاولات الاستكمال التلقائي؛ لم تُعتمد النتيجة الناقصة.');
+            incompleteError.status = 502;
+            incompleteError.statusCode = 502;
+            throw incompleteError;
           }
 
           continuationCount += 1;
@@ -128,8 +141,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
     let currentPrompt = optimizedPrompt;
     let fullText = '';
+    let completed = false;
 
-    for (let attempt = 0; attempt <= 3; attempt += 1) {
+    for (let attempt = 0; attempt <= 8; attempt += 1) {
       const response = await ai.models.generateContent({
         model,
         contents: currentPrompt,
@@ -146,15 +160,36 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       const markerIndex = rawText.indexOf(completionMarker);
       const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
       fullText += visibleText;
-
-      const continueForMissingMarker = options.continueUntilMarker === true && markerIndex < 0;
-      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3 || (!hitOutputTokenLimit(finishReason) && !continueForMissingMarker)) {
+      if (markerIndex >= 0) {
+        completed = true;
         break;
       }
+      if (!rawText.trim()) {
+        const emptyError: any = new Error('لم يُنتج النموذج نصاً قابلاً للاستخدام.');
+        emptyError.status = 503;
+        emptyError.statusCode = 503;
+        throw emptyError;
+      }
 
-      currentPrompt = `${optimizedPrompt} [استكمال بسبب عدم ظهور علامة الاكتمال أو بلوغ حد الإخراج] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason}.`;
+      const canContinue = hitOutputTokenLimit(finishReason) ||
+        finishReason === 'STOP' || !finishReason || finishReason === 'UNKNOWN';
+      if (!canContinue) {
+        const incompleteError: any = new Error(`توقف التوليد قبل اكتمال المستند (finishReason: ${finishReason}).`);
+        incompleteError.status = 502;
+        incompleteError.statusCode = 502;
+        throw incompleteError;
+      }
+      if (attempt >= 8) break;
+
+      currentPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده حتى الآن، وهو جزء من النتيجة نفسها: ${fullText} تابع مباشرة من آخر حرف دون إعادة أو تلخيص، وأكمل جميع الأجزاء المتبقية حتى النهاية. أضف علامة الاكتمال فقط بعد إتمام المستند بالكامل. سبب الاستكمال التقني: ${finishReason || 'انتهى الرد دون علامة اكتمال'}.`;
     }
 
+    if (!completed) {
+      const incompleteError: any = new Error('لم يكتمل المستند بعد محاولات الاستكمال التلقائي؛ لم تُعتمد النتيجة الناقصة.');
+      incompleteError.status = 502;
+      incompleteError.statusCode = 502;
+      throw incompleteError;
+    }
     return fullText.trim();
   });
 }
@@ -246,7 +281,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, continueUntilMarker: true });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -262,7 +297,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, continueUntilMarker: true });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
