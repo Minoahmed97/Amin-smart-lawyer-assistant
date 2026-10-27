@@ -359,7 +359,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
           const event = JSON.parse(candidate);
           if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
-            if (fullText.length - persistedLength >= 120) {
+            if (fullText.length - persistedLength >= 800) {
               persistedLength = fullText.length;
               const snapshot = fullText;
               pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
