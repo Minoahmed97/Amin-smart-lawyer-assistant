@@ -297,7 +297,7 @@ async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, mod
     fallbackConfig.apiKey
   );
   
-  const modelToUse = fallbackConfig.model || 'meta-llama/llama-3.2-11b-vision-preview';
+  const modelToUse = fallbackConfig.model || 'qwen/qwen3.8-27b';
   
   return await action(client as unknown as GoogleGenAI, fallbackConfig.apiKey, modelToUse);
 }
