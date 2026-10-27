@@ -266,6 +266,17 @@ async function requestSavedJob<T extends Record<string, any>>(
 
       if (data.status === 'completed') {
         const result = String(data.result || lastText);
+
+        // The server persists progress in batches, so the final result can
+        // contain a tail that was never present in partialResult. Always flush
+        // that tail to the live UI callback before resolving the task.
+        if (onChunk && result.startsWith(lastText) && result.length > lastText.length) {
+          onChunk(result.slice(lastText.length));
+        } else if (onChunk && !lastText && result) {
+          onChunk(result);
+        }
+        lastText = result;
+
         if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'completed');
         else if (storage) storage.removeItem(key);
         return result;
@@ -363,6 +374,7 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
         const isSse = (response.headers.get('content-type') || '').toLowerCase().includes('text/event-stream');
         let buffer = '';
         let fullText = '';
+        let sawDone = false;
 
         const processEvent = (raw: string) => {
           const lines = raw.split(/\r?\n/);
@@ -382,6 +394,8 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
             streamStarted = true;
             fullText += event.text;
             onChunk(event.text);
+          } else if (event.type === 'done') {
+            sawDone = true;
           } else if (event.type === 'error') {
             throw new Error(event.error || 'فشلت الاستجابة المتدفقة.');
           }
@@ -399,6 +413,13 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
 
         buffer += decoder.decode();
         if (buffer.trim()) processEvent(buffer);
+
+        // Do not silently report a truncated stream as a successful response.
+        if (!sawDone) {
+          const incomplete: any = new Error('انتهى الاتصال قبل اكتمال بث الإجابة. أعد المحاولة لاسترجاع النتيجة كاملة.');
+          incomplete.streamIncomplete = true;
+          throw incomplete;
+        }
 
         return { result: fullText };
       }
