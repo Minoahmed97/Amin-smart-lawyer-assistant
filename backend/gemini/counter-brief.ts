@@ -8,14 +8,14 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
-/** Continue only when the provider confirms that its output-token cap was reached. */
+/** Detect provider-reported output-token limits; completion is ultimately determined by the explicit marker. */
 function hitOutputTokenLimit(reason: unknown): boolean {
   const normalized = String(reason || '').trim().toUpperCase();
   // Gemini reports MAX_TOKENS; OpenRouter-compatible models report LENGTH.
   return normalized === 'MAX_TOKENS' || normalized === 'MAX_OUTPUT_TOKENS' || normalized === 'LENGTH';
 }
 
-async function generateDeepLegalResponseLegacy( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -106,12 +106,21 @@ async function generateDeepLegalResponseLegacy( prompt: string, onChunk?: (text:
             throw noTextError;
           }
 
-          if (completed || continuationCount >= 3 || !hitOutputTokenLimit(finishReason)) {
-            break;
+          // Never treat an unmarked response as a complete legal document.
+          // Providers sometimes omit/normalize finishReason, so a missing or
+          // unfamiliar reason must not silently disable continuation.
+          if (completed) break;
+          if (continuationCount >= 8) {
+            const incompleteError: any = new Error(
+              `توقف التوليد قبل علامة اكتمال المستند بعد ${continuationCount + 1} أجزاء (finishReason: ${finishReason || 'UNKNOWN'}). لم تُعتمد النتيجة الناقصة كمستند مكتمل.`,
+            );
+            incompleteError.status = 503;
+            incompleteError.statusCode = 503;
+            throw incompleteError;
           }
 
           continuationCount += 1;
-          nextPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تصل إلى علامة الاكتمال] هذا هو النص الذي أخرجته حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك النتيجة النهائية والطلبات الختامية إن كانت مطلوبة. لا تعتبر النص السابق مكتملاً، ولا تضع علامة الاكتمال إلا بعد إتمام كل المطلوب. سبب الاستكمال التقني: ${finishReason || 'انتهى البث دون علامة اكتمال'}.`;
+          nextPrompt = `${optimizedPrompt}\n\n[استكمال إلزامي لنفس المستند — لا تبدأ مستنداً جديداً] النص السابق كاملاً حتى الآن (للسياق فقط، لا تعِد طباعته):\n${accumulatedText}\n\nتابع مباشرة من آخر موضع وصل إليه النص السابق، واكتب الجزء المتبقي فقط دون إعادة أو تلخيص أي فقرة سابقة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أقسامه وطلباته الختامية، ثم أخرج علامة الاكتمال الداخلية المحددة في التعليمات الأصلية في نهاية المستند فقط. سبب بدء الاستكمال: ${hitOutputTokenLimit(finishReason) ? 'بلوغ حد الإخراج' : `لم تظهر علامة الاكتمال (finishReason: ${finishReason || 'UNKNOWN'})`}.`;
         }
       })();
     }, onChunk);
@@ -126,7 +135,7 @@ async function generateDeepLegalResponseLegacy( prompt: string, onChunk?: (text:
     let currentPrompt = optimizedPrompt;
     let fullText = '';
 
-    for (let attempt = 0; attempt <= 3; attempt += 1) {
+    for (let attempt = 0; attempt <= 8; attempt += 1) {
       const response = await ai.models.generateContent({
         model,
         contents: currentPrompt,
@@ -139,200 +148,24 @@ async function generateDeepLegalResponseLegacy( prompt: string, onChunk?: (text:
       });
 
       const rawText = typeof response.text === 'string' ? response.text : '';
-      const finishReason = String(response?.candidates?.[0]?.finishReason || response?.choices?.[0]?.finish_reason || response?.finishReason || '').toUpperCase();
+      const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
       const markerIndex = rawText.indexOf(completionMarker);
       const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
-      fullText += visibleText;
+      if (visibleText) fullText += visibleText;
 
-      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3 || !hitOutputTokenLimit(finishReason)) {
-        break;
-      }
-
-      currentPrompt = `${optimizedPrompt} [استكمال بسبب بلوغ حد الإخراج فقط] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason}.`;
-    }
-
-    return fullText.trim();
-  });
-}
-
-const COUNTER_BRIEF_SYSTEM_INSTRUCTION = `${EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION}
-
-=== قاعدة إخراج خاصة بوظيفة تفنيد الخصم — أولوية لهذه الوظيفة ===
-أخرج النتيجة في ثلاثة أجزاء متتابعة داخل الاستجابة نفسها:
-1) «الخلاصة القانونية والنقاط الجوهرية»: من 3 إلى 6 نقاط قصيرة بحد أقصى، تقتصر على أهم الوقائع المؤثرة، وأقوى أوجه الرد، وأبرز دليل أو نقص أو مخاطرة حقيقية. لا تكرر الوقائع ولا تكتب تحليلاً مطولاً أو حشواً، ولا تعرض سلسلة التفكير الداخلية.
-2) «نوع المستند»: اذكر النوع المطلوب إذا حدده المحامي، وإلا فاذكر النوع الأنسب للوقائع والطلبات في عبارة موجزة. لا تفترض أن كل نتيجة مذكرة دفاع.
-3) اكتب المستند القانوني كاملاً بصياغته المهنية، مع جميع أقسامه ودفوعه وطلباته اللازمة لنوع المستند المختار، وبصمة المحامي والقيود الواردة في الطلب. لا تجعل الخلاصة المختصرة بديلاً عن المستند ولا تختصر المستند نفسه اختصاراً يخل بجوهره.
-هذه القاعدة الخاصة بهذه الوظيفة تعدّل فقط طريقة ترتيب الإخراج العام الذي قد يطلب الاقتصار على المستند؛ ولا تغيّر المنطق القانوني أو الوقائع أو الطلبات أو القالب الأسلوبي.
-`;
-
-async function generateCounterBriefResponse(
-  prompt: string,
-  onChunk?: (text: string) => void,
-  options: { legalResearch?: boolean } = {},
-): Promise<string> {
-  const researchInstruction = options.legalResearch
-    ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n'
-    : '';
-  const completionMarker = '[[AMIN_COUNTER_BRIEF_COMPLETE_61D8B4]]';
-  const optimizedPrompt = `${prompt}${researchInstruction}
-
-[تعليمات كفاءة الإخراج والبث المباشر]
-- نفّذ التحليل القانوني اللازم داخلياً مرة واحدة، ثم أخرج الخلاصة المختصرة ونوع المستند والمستند كاملاً وفق تعليمات الوظيفة.
-- اجعل الخلاصة مركزة على النقاط المؤثرة فقط، ولا تكررها داخل المستند إلا بقدر ما تتطلبه الصياغة القانونية.
-- الأولوية لإكمال المستند نفسه بجميع أقسامه ودفوعه وطلباته الجوهرية؛ لا تستهلك مساحة الإخراج في تكرار التحليل أو المقدمات.
-- أخرج النص تدريجياً فور توليده، ولا تنتظر اكتمال الإجابة لتبدأ عرضها.
-- إذا توقفت قبل اكتمال النتيجة لأي سبب، فتابع من آخر موضع دون إعادة كتابة ما سبق.
-- لا تعرض سلسلة التفكير الداخلية أو خطوات المراجعة الخفية، ولا تختلق وقائع أو أسانيد قانونية.
-- لا تعتبر الإجابة مكتملة إلا بعد إنهاء المستند والطلبات الختامية. في آخر النص فقط، أضف علامة الاكتمال الداخلية التالية حرفياً: ${completionMarker}. لا تعرض العلامة للمستخدم ولا تشرحها.`;
-
-  const MAX_CONTINUATIONS = 6;
-  const CONTINUATION_CONTEXT_CHARS = 10000;
-  const makeContinuationPrompt = (fullText: string, finishReason: string) => {
-    const tail = fullText.slice(-CONTINUATION_CONTEXT_CHARS);
-    return `${optimizedPrompt}\n\n[استكمال تقني إلزامي — لا تبدأ مستنداً جديداً]\nالنص السابق لم يصل إلى علامة الاكتمال، لذلك لا تعتبره مكتملاً. سبب التوقف المرصود: ${finishReason || 'لم تصل علامة الاكتمال'}. هذا مقتطف من نهاية النص السابق للسياق فقط، وليس لإعادة نسخه:\n--- بداية المقتطف ---\n${tail}\n--- نهاية المقتطف ---\nتابع مباشرة من بعد آخر كلمة في المقتطف، دون إعادة أي جملة منه أو تلخيصه. أكمل الأقسام والدفوع والطلبات الختامية الناقصة. بعد إكمال العمل كله أضف علامة الاكتمال الداخلية المطلوبة في التعليمات.`;
-  };
-
-  if (onChunk) {
-    await executeWithKeyRotationStream(async (ai, key, model) => {
-      const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-        ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-        : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
-
-      return (async function* () {
-        let accumulatedText = '';
-        let currentPrompt = optimizedPrompt;
-        let continuationCount = 0;
-        let completed = false;
-
-        while (!completed) {
-          let passGeneratedText = '';
-          let pendingMarkerTail = '';
-          let finishReason = '';
-          const stream = await ai.models.generateContentStream({
-            model,
-            contents: currentPrompt,
-            config: {
-              systemInstruction: COUNTER_BRIEF_SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              maxOutputTokens: 32768,
-              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-              thinkingConfig: { thinkingLevel: 'low' },
-            },
-          });
-
-          for await (const chunk of stream) {
-            const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-            if (chunkText) {
-              passGeneratedText += chunkText;
-              const candidateText = pendingMarkerTail + chunkText;
-              const markerIndex = candidateText.indexOf(completionMarker);
-              if (markerIndex >= 0) {
-                const visibleText = candidateText.slice(0, markerIndex);
-                if (visibleText) {
-                  accumulatedText += visibleText;
-                  yield { ...chunk, text: visibleText };
-                }
-                pendingMarkerTail = '';
-                completed = true;
-              } else {
-                const keepLength = completionMarker.length - 1;
-                const visibleLength = Math.max(0, candidateText.length - keepLength);
-                const visibleText = candidateText.slice(0, visibleLength);
-                pendingMarkerTail = candidateText.slice(visibleLength);
-                if (visibleText) {
-                  accumulatedText += visibleText;
-                  yield { ...chunk, text: visibleText };
-                }
-              }
-            }
-            const candidateReason = chunk?.candidates?.[0]?.finishReason
-              || chunk?.choices?.[0]?.finish_reason
-              || chunk?.finishReason;
-            if (candidateReason) finishReason = String(candidateReason).toUpperCase();
-            if (completed) break;
-          }
-
-          if (completed) break;
-          if (pendingMarkerTail) {
-            accumulatedText += pendingMarkerTail;
-            yield { text: pendingMarkerTail };
-            pendingMarkerTail = '';
-          }
-          if (!passGeneratedText.trim()) {
-            const noTextError: any = new Error(
-              `توقف التوليد دون نص جديد أثناء الاستكمال (finishReason: ${finishReason || 'UNKNOWN'}).`,
-            );
-            noTextError.status = 503;
-            noTextError.statusCode = 503;
-            throw noTextError;
-          }
-          if (continuationCount >= MAX_CONTINUATIONS) {
-            const incompleteError: any = new Error(
-              'لم تصل الاستجابة إلى علامة اكتمال المستند بعد 3 محاولات استكمال. احتُفظ بالنص الجزئي ولم تُعتمد النتيجة كعمل مكتمل.',
-            );
-            incompleteError.status = 502;
-            incompleteError.statusCode = 502;
-            incompleteError.outputTruncated = true;
-            throw incompleteError;
-          }
-          continuationCount += 1;
-          currentPrompt = makeContinuationPrompt(accumulatedText, finishReason);
-        }
-      })();
-    }, onChunk);
-    return '';
-  }
-
-  return executeWithKeyRotation(async (ai, key, model) => {
-    const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-      ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-      : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
-    let fullText = '';
-    let currentPrompt = optimizedPrompt;
-    let continuationCount = 0;
-
-    while (true) {
-      const response = await ai.models.generateContent({
-        model,
-        contents: currentPrompt,
-        config: {
-          systemInstruction: COUNTER_BRIEF_SYSTEM_INSTRUCTION,
-          temperature: 0.15,
-          maxOutputTokens: 32768,
-          ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-        },
-      });
-      const rawText = typeof response.text === 'string' ? response.text : '';
-      const finishReason = String(response?.candidates?.[0]?.finishReason || response?.choices?.[0]?.finish_reason || '').toUpperCase();
-      if (!rawText.trim()) throw new Error('استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام.');
-      const markerIndex = rawText.indexOf(completionMarker);
-      fullText += markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
       if (markerIndex >= 0) break;
-      if (continuationCount >= MAX_CONTINUATIONS) {
-        const incompleteError: any = new Error('لم تصل الاستجابة إلى علامة اكتمال المستند بعد 3 محاولات استكمال؛ لم تُعتمد النتيجة كعمل مكتمل.');
-        incompleteError.status = 502;
-        incompleteError.statusCode = 502;
-        incompleteError.outputTruncated = true;
-        throw incompleteError;
+      if (!rawText.trim()) {
+        throw new Error(`انتهى طلب التوليد دون نص (finishReason: ${finishReason || 'UNKNOWN'}).`);
       }
-      continuationCount += 1;
-      currentPrompt = makeContinuationPrompt(fullText, finishReason);
+      if (attempt >= 8) {
+        throw new Error(`توقف التوليد قبل اكتمال المستند بعد 9 أجزاء (finishReason: ${finishReason || 'UNKNOWN'}).`);
+      }
+
+      currentPrompt = `${optimizedPrompt}\n\n[استكمال إلزامي لنفس المستند — لا تبدأ مستنداً جديداً] النص السابق كاملاً حتى الآن (للسياق فقط، لا تعِد طباعته):\n${fullText}\n\nتابع مباشرة من آخر موضع وصل إليه النص السابق، واكتب الجزء المتبقي فقط دون إعادة أو تلخيص أي فقرة سابقة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أقسامه وطلباته الختامية، ثم أخرج علامة الاكتمال الداخلية المحددة في التعليمات الأصلية في نهاية المستند فقط. سبب بدء الاستكمال: ${hitOutputTokenLimit(finishReason) ? 'بلوغ حد الإخراج' : `لم تظهر علامة الاكتمال (finishReason: ${finishReason || 'UNKNOWN'})`}.`;
     }
+
     return fullText.trim();
   });
-}
-
-export async function generateDeepLegalResponse(
-  prompt: string,
-  onChunk?: (text: string) => void,
-  options: { legalResearch?: boolean; counterBriefOutput?: boolean } = {},
-): Promise<string> {
-  if (options.counterBriefOutput) {
-    return generateCounterBriefResponse(prompt, onChunk, options);
-  }
-  // Preserve the established multi-stage behavior for chat, deconstruction,
-  // qualification, and refinement; the single-pass path is scoped to counter-brief.
-  return generateDeepLegalResponseLegacy(prompt, onChunk, options);
 }
 
 export default async function handler(req: any, res: any) {
@@ -422,7 +255,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, counterBriefOutput: true });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -438,7 +271,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, counterBriefOutput: true });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
