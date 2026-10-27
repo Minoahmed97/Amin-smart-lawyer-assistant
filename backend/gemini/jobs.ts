@@ -331,6 +331,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   let persistedLength = 0;
   let streamError = '';
   let handlerJson: any = null;
+  let streamBuffer = '';
   
   const heartbeat = setInterval(() => {
     void patchJob(jobId, userId, {}).catch(() => {});
@@ -352,9 +353,15 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     },
     write(raw: string) {
       this.headersSent = true;
-      const lines = String(raw).split(/\r?\n/).filter(Boolean);
-      for (const line of lines) {
-        const candidate = line.startsWith('data:') ? line.slice(5).trim() : line.trim();
+      // A response write is not guaranteed to align with an SSE/NDJSON event.
+      // Buffer incomplete lines and parse only complete records.
+      streamBuffer += String(raw);
+      const lines = streamBuffer.split(/\r?\n/);
+      streamBuffer = lines.pop() || '';
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const candidate = line.startsWith('data:') ? line.slice(5).trim() : line;
         try {
           const event = JSON.parse(candidate);
           if (event.type === 'chunk' && typeof event.text === 'string') {
@@ -367,7 +374,9 @@ async function processJob(jobId: string, userId: string, token: string, taskType
           } else if (event.type === 'error') {
             streamError = String(event.error || 'فشلت المهمة.');
           }
-        } catch {}
+        } catch {
+          // Ignore non-JSON protocol lines such as SSE comments/heartbeats.
+        }
       }
       return true;
     },
@@ -383,6 +392,16 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       body: { ...payload, stream: true },
     };
     await TASK_HANDLERS[taskType](fakeReq, fakeRes);
+    if (streamBuffer.trim()) {
+      const tail = streamBuffer.trim();
+      const candidate = tail.startsWith('data:') ? tail.slice(5).trim() : tail;
+      try {
+        const event = JSON.parse(candidate);
+        if (event.type === 'chunk' && typeof event.text === 'string') fullText += event.text;
+        else if (event.type === 'error') streamError = String(event.error || 'فشلت المهمة.');
+      } catch {}
+      streamBuffer = '';
+    }
     await pendingWrite;
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
       fullText = handlerJson.text.trim();
