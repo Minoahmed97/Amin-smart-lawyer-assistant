@@ -72,10 +72,10 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
           'Content-Type': 'application/json',
           Authorization: `Bearer ${sessionToken}`,
         },
-        body: JSON.stringify({ taskType, originalContext, result, messages: nextMessages }),
+        body: JSON.stringify({ taskType, originalContext, result, messages: nextMessages, stream: true }),
       });
-      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
         const retryAfter = Number(response.headers.get('Retry-After') || data?.retryAfter || 0);
         const serverMessage = String(data?.error || '');
         if (response.status === 429) {
@@ -85,6 +85,36 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
           throw new Error(serverMessage || 'تعذر على خدمة الذكاء الاصطناعي إكمال الرد. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
         }
         throw new Error(serverMessage || 'تعذر إرسال السؤال حالياً.');
+      }
+
+      let data: any = {};
+      if ((response.headers.get('Content-Type') || '').toLowerCase().includes('application/x-ndjson')) {
+        if (!response.body) throw new Error('بدأ الاتصال لكن لم يصل تدفق الرد من الخادم.');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let receivedFinalResponse = false;
+        const handleLine = (line: string) => {
+          const trimmed = line.trim();
+          if (!trimmed) return;
+          let event: any;
+          try { event = JSON.parse(trimmed); } catch { return; }
+          if (event?.type === 'error') throw new Error(String(event.error || 'تعذر إتمام مناقشة النتيجة.'));
+          if (event?.type === 'done') { data = event; receivedFinalResponse = true; }
+        };
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() || '';
+          for (const line of lines) handleLine(line);
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) handleLine(buffer);
+        if (!receivedFinalResponse) throw new Error('انقطع الاتصال قبل وصول إجابة مكتملة. لم يتغير المستند؛ أعد المحاولة.');
+      } else {
+        data = await response.json().catch(() => ({}));
       }
       const answer = String(data?.result || '').trim();
       if (!answer) throw new Error('لم تصل إجابة صالحة. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
@@ -99,7 +129,10 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         return last?.role === 'user' && last.content === question ? current.slice(0, -1) : current;
       });
       setDraft(question);
-      setError(err?.message || 'تعذر الاتصال بالمساعد القانوني. تحقق من الاتصال ثم أعد المحاولة.');
+      const errorMessage = String(err?.message || '');
+      setError(/failed to fetch|network request failed|load failed/i.test(errorMessage)
+        ? 'انقطع الاتصال بخدمة مناقشة النتيجة قبل استلام الرد. لم يتغير المستند؛ أعد المحاولة، وإذا تكرر الخطأ افحص طلب /api/gemini/chat في سجل Vercel.'
+        : (errorMessage || 'تعذر الاتصال بالمساعد القانوني. تحقق من الاتصال ثم أعد المحاولة.'));
     } finally {
       setLoading(false);
     }
