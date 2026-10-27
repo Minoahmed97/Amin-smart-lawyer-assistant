@@ -256,7 +256,7 @@ async function generateCounterBriefResponse( prompt: string, onChunk?: (text: st
 }
 
 
-async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; counterBriefOutput?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; counterBriefOutput?: boolean } = {}, ): Promise<string> {
   if (options.counterBriefOutput) {
     return generateCounterBriefResponse(prompt, onChunk, options);
   }
