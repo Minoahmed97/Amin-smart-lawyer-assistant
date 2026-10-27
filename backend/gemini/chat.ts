@@ -59,12 +59,15 @@ ${history}
     let answer = '';
     let updatedResult: string | null = null;
 
-    // تنظيف نص المحتوى فقط؛ لا نحذف غلاف JSON من الرد قبل محاولة تحليله.
+    // دالة تنظيف النصوص ومعالجة رموز الأسطر الملتصقة لضمان صفاء النص تماماً
     const sanitizeLegalText = (text: string) => {
       if (!text) return '';
       return text
         .replace(/^```(?:json|text|markdown)?\s*/i, '')
         .replace(/\s*```$/, '')
+        .replace(/^\{\s*"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
+        .replace(/^"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
+        .replace(/\"\}\s*$/, '')
         .replace(/(?:\\n|n\\)+/g, '\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
@@ -76,26 +79,17 @@ ${history}
       const jsonEnd = trimmedAnswer.lastIndexOf('}');
       const cleaned = jsonStart >= 0 && jsonEnd > jsonStart ? trimmedAnswer.slice(jsonStart, jsonEnd + 1) : trimmedAnswer;
       const parsed = JSON.parse(cleaned);
-
+      
       answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
     } catch {
-      // Recover the reply field if the model wrapped JSON in prose or emitted
-      // a JSON string with formatting damage; the HTTP response remains JSON.
-      const raw = rawAnswer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-      const replyMatch = raw.match(/"reply"\s*:\s*("(?:\\.|[^"\\])*")/s);
-      if (replyMatch) {
-        try { answer = String(JSON.parse(replyMatch[1]) || '').trim(); } catch {}
-      }
-      if (!answer) {
-        const plainAnswer = sanitizeLegalText(rawAnswer);
-        const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
-        if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
-          updatedResult = plainAnswer;
-          answer = 'تم تعديل المطلوب في المستند.';
-        } else if (!plainAnswer.startsWith('{')) {
-          answer = plainAnswer;
-        }
+      const plainAnswer = sanitizeLegalText(rawAnswer);
+      const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
+      if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
+        updatedResult = plainAnswer;
+        answer = 'تم تعديل المطلوب في المستند.';
+      } else {
+        answer = plainAnswer;
       }
     }
 
