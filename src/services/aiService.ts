@@ -305,7 +305,7 @@ async function requestSavedJob<T extends Record<string, any>>(
         throw failure;
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await new Promise((resolve) => setTimeout(resolve, 700));
   }
   const failure: any = new Error('المهمة ما زالت قيد المعالجة. ارجع لاحقًا لاستعادة النتيجة المحفوظة دون بدء توليد جديد.');
   failure.savedJobPending = type === 'ocr';
