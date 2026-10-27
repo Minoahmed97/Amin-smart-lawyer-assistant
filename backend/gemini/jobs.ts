@@ -366,10 +366,19 @@ async function processJob(jobId: string, userId: string, token: string, taskType
           const event = JSON.parse(candidate);
           if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
-            if (fullText.length - persistedLength >= 800) {
+            // Persist smaller snapshots so the client can display the response
+            // while the background worker is still generating it. The previous
+            // 800-character threshold hid short early chunks from the client.
+            if (fullText.length - persistedLength >= 120) {
               persistedLength = fullText.length;
               const snapshot = fullText;
-              pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
+              pendingWrite = pendingWrite
+                .then(() => patchJob(jobId, userId, { partial_result: snapshot }))
+                .catch((error: any) => {
+                  // Do not interrupt generation because one progress write failed;
+                  // the final write below will still attempt to save the complete result.
+                  console.warn('Partial AI job update failed:', safeDiagnosticMessage(error?.message || error));
+                });
             }
           } else if (event.type === 'error') {
             streamError = String(event.error || 'فشلت المهمة.');
@@ -403,6 +412,13 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       streamBuffer = '';
     }
     await pendingWrite;
+    // Flush the last partial snapshot before deciding the final job status.
+    // This covers streams whose final chunk is smaller than the persistence threshold.
+    if (fullText.length > persistedLength) {
+      const finalSnapshot = fullText;
+      await patchJob(jobId, userId, { partial_result: finalSnapshot });
+      persistedLength = fullText.length;
+    }
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
       fullText = handlerJson.text.trim();
     }
