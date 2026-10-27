@@ -185,8 +185,8 @@ async function generateCounterBriefResponse(
 - لا تعرض سلسلة التفكير الداخلية أو خطوات المراجعة الخفية، ولا تختلق وقائع أو أسانيد قانونية.
 - لا تعتبر الإجابة مكتملة إلا بعد إنهاء المستند والطلبات الختامية. في آخر النص فقط، أضف علامة الاكتمال الداخلية التالية حرفياً: ${completionMarker}. لا تعرض العلامة للمستخدم ولا تشرحها.`;
 
-  const MAX_CONTINUATIONS = 3;
-  const CONTINUATION_CONTEXT_CHARS = 6000;
+  const MAX_CONTINUATIONS = 6;
+  const CONTINUATION_CONTEXT_CHARS = 10000;
   const makeContinuationPrompt = (fullText: string, finishReason: string) => {
     const tail = fullText.slice(-CONTINUATION_CONTEXT_CHARS);
     return `${optimizedPrompt}\n\n[استكمال تقني إلزامي — لا تبدأ مستنداً جديداً]\nالنص السابق لم يصل إلى علامة الاكتمال، لذلك لا تعتبره مكتملاً. سبب التوقف المرصود: ${finishReason || 'لم تصل علامة الاكتمال'}. هذا مقتطف من نهاية النص السابق للسياق فقط، وليس لإعادة نسخه:\n--- بداية المقتطف ---\n${tail}\n--- نهاية المقتطف ---\nتابع مباشرة من بعد آخر كلمة في المقتطف، دون إعادة أي جملة منه أو تلخيصه. أكمل الأقسام والدفوع والطلبات الختامية الناقصة. بعد إكمال العمل كله أضف علامة الاكتمال الداخلية المطلوبة في التعليمات.`;
