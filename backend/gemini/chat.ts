@@ -4,24 +4,42 @@ import { rateLimit, limitBodyString } from '../security.ts';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+  
   try {
     let body = req.body;
-    if (typeof body === 'string') { try { body = JSON.parse(body); } catch {} }
+    if (typeof body === 'string') { 
+      try { 
+        body = JSON.parse(body); 
+      } catch {} 
+    }
+
     const { taskType, originalContext, result, messages } = body || {};
-    if (!['deconstruct', 'qualify', 'draft'].includes(taskType)) return res.status(400).json({ error: 'نوع المهمة غير صالح للدردشة القانونية.' });
-    if (typeof result !== 'string' || !result.trim()) return res.status(400).json({ error: 'لا توجد نتيجة أصلية لمناقشتها.' });
-    if (!Array.isArray(messages) || !messages.length || messages.length > 40) return res.status(400).json({ error: 'سجل المحادثة غير صالح.' });
+    
+    if (!['deconstruct', 'qualify', 'draft'].includes(taskType)) {
+      return res.status(400).json({ error: 'نوع المهمة غير صالح للدردشة القانونية.' });
+    }
+    if (typeof result !== 'string' || !result.trim()) {
+      return res.status(400).json({ error: 'لا توجد نتيجة أصلية لمناقشتها.' });
+    }
+    if (!Array.isArray(messages) || !messages.length || messages.length > 40) {
+      return res.status(400).json({ error: 'سجل المحادثة غير صالح.' });
+    }
     
     limitBodyString(originalContext, 30000, 'سياق القضية');
     limitBodyString(result, 40000, 'النتيجة الأصلية');
     
     for (const message of messages) {
-      if (!message || !['user', 'assistant'].includes(message.role) || typeof message.content !== 'string') return res.status(400).json({ error: 'رسالة محادثة غير صالحة.' });
+      if (!message || !['user', 'assistant'].includes(message.role) || typeof message.content !== 'string') {
+        return res.status(400).json({ error: 'رسالة محادثة غير صالحة.' });
+      }
       limitBodyString(message.content, 10000, 'رسالة المحادثة');
     }
-    if (messages[messages.length - 1]?.role !== 'user') return res.status(400).json({ error: 'يجب أن تنتهي المحادثة بسؤال من المستخدم.' });
+    
+    if (messages[messages.length - 1]?.role !== 'user') {
+      return res.status(400).json({ error: 'يجب أن تنتهي المحادثة بسؤال من المستخدم.' });
+    }
 
-    rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
+    rateLimit(req, 'gemini-legal-chat', 25, 10 * 60 * 1000);
     await enforceAiCooldown(req);
 
     const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
@@ -32,13 +50,13 @@ export default async function handler(req: any, res: any) {
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
 
     const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة ${taskLabel}.
-المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة:
-{"reply":"رسالة قصيرة للمحامي","updatedResult":null}
+المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة دقيقة:
+{"reply":"رسالة قصيرة للمحامي تشرح ما تم","updatedResult":null}
 
-تعليمات الهيكلة والتنسيق والتعامل مع العامية:
+تعليمات الهيكلة والتنسيق:
 1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية.
-2. ميّز بدقة بين السؤال القانوني أو طلب التعديل والمذكرة المقابلة.
-3. أخرج JSON صالحاً تماماً.
+2. إذا طلب تعديلاً على المذكرة، ضع النص الكامل المعدل داخل حقل "updatedResult". وإذا كان مجرد سؤال أو استفسار عام، اجعل "updatedResult" بقيمة null وضع الإجابة في "reply".
+3. أخرج كائن JSON صالحاً تماماً.
 
 [سياق القضية الأصلي]
 ${String(originalContext || '').slice(0, 30000)}
@@ -93,23 +111,24 @@ ${history}
     if (updatedResult) updatedResult = sanitizeLegalText(updatedResult);
     if (answer) answer = sanitizeLegalText(answer);
 
+    // آلية استرجاع ذكية إذا طلب المحامي تعديلاً ولم يرجعه النموذج كـ JSON مباشر
     if (requestsEdit && !updatedResult) {
       try {
-        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي. أعد النص الكامل النهائي المعدل فقط.
-[طلب المحامي] ${latestUserMessage}
-[النتيجة الحالية]
+        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي بدقة. أعد النص الكامل النهائي المعدل فقط دون أي مقدمات.
+[طلب المحامي]: ${latestUserMessage}
+[النتيجة الحالية]:
 ${result}`;
         const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
         let recoveredResult = sanitizeLegalText(recoveredRaw);
-        if (recoveredResult.length >= 120) {
+        if (recoveredResult.length >= 80) {
           updatedResult = recoveredResult;
-          answer = 'تم تحديث النتيجة بنجاح.';
+          answer = 'تم تحديث المذكرة والنتيجة بنجاح بناءً على طلبك.';
         }
       } catch {}
     }
 
     if (!answer.trim() && updatedResult) answer = 'تم تحديث النتيجة بناءً على طلبك.';
-    if (!answer.trim()) answer = 'تمت العملية.';
+    if (!answer.trim()) answer = 'تمت العملية بنجاح.';
 
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.status(200).json({ result: answer, updatedResult, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
