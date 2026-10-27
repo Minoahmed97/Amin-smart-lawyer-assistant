@@ -161,100 +161,124 @@ async function generateCounterBriefResponse( prompt: string, onChunk?: (text: st
   const researchInstruction = options.legalResearch
     ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n'
     : '';
-  const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج والبث المباشر] - نفّذ التحليل القانوني اللازم داخلياً مرة واحدة، ثم أخرج الخلاصة المختصرة ونوع المستند والمستند كاملاً وفق تعليمات الوظيفة. - اجعل الخلاصة مركزة على النقاط المؤثرة فقط، ولا تكررها داخل المستند إلا بقدر ما تتطلبه الصياغة القانونية. - الأولوية لإكمال المستند نفسه بجميع أقسامه ودفوعه وطلباته الجوهرية؛ لا تستهلك مساحة الإخراج في تكرار التحليل أو المقدمات. - أخرج النص تدريجياً فور توليده، ولا تنتظر اكتمال الإجابة لتبدأ عرضها. - أنجز النتيجة في طلب توليد واحد، ولا تنشئ طلب استكمال لاحقاً ولا تعِد إرسال النص السابق للنموذج. - لا تعرض سلسلة التفكير الداخلية أو خطوات المراجعة الخفية، ولا تختلق وقائع أو أسانيد قانونية.`;
+  const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج والبث المباشر] - نفّذ التحليل القانوني اللازم داخلياً مرة واحدة، ثم أخرج الخلاصة المختصرة ونوع المستند والمستند كاملاً وفق تعليمات الوظيفة. - اجعل الخلاصة مركزة على النقاط المؤثرة فقط، ولا تكررها داخل المستند إلا بقدر ما تتطلبه الصياغة القانونية. - الأولوية لإكمال المستند نفسه بجميع أقسامه ودفوعه وطلباته الجوهرية؛ لا تستهلك مساحة الإخراج في تكرار التحليل أو المقدمات. - أخرج النص تدريجياً فور توليده، ولا تنتظر اكتمال الإجابة لتبدأ عرضها. - إذا بلغ النموذج حد الإخراج التقني قبل إكمال المستند، فتابع من آخر موضع في استكمال تقني محدود، دون إعادة كتابة المستند من أوله. - لا تعرض سلسلة التفكير الداخلية أو خطوات المراجعة الخفية، ولا تختلق وقائع أو أسانيد قانونية.`;
+
+  // Continue only when the provider explicitly reports an output-token cutoff.
+  // The continuation is bounded and carries only the end of the prior response,
+  // not the entire generated document, to avoid repeatedly resending all output.
+  const MAX_CONTINUATIONS = 3;
+  const CONTINUATION_CONTEXT_CHARS = 6000;
+  const makeContinuationPrompt = (fullText: string, finishReason: string) => {
+    const tail = fullText.slice(-CONTINUATION_CONTEXT_CHARS);
+    return `${optimizedPrompt}\n\n[استكمال تقني إلزامي — لا تبدأ مستنداً جديداً] انتهى الإخراج السابق لأن مزود النموذج بلغ حد الإخراج التقني (${finishReason || 'MAX_TOKENS'}). النص التالي مقتطف من نهاية ما كُتب حتى الآن، وهو للسياق فقط وليس لإعادة نسخه: --- بداية مقتطف النهاية --- ${tail} --- نهاية مقتطف النهاية --- تابع من الموضع الذي يلي آخر كلمة في المقتطف مباشرةً، دون إعادة أي جملة منه أو تلخيص ما سبق. أكمل الأقسام والدفوع والطلبات الختامية الناقصة حتى تنتهي النتيجة. حافظ على اللغة والأسلوب نفسيهما، ولا تختلق وقائع أو أسانيد.`;
+  };
 
   if (onChunk) {
-    await executeWithKeyRotationStream(async (ai, _key, model) => {
-      // Keep search-provider settings independent for each provider attempt.
-      const providerSearchEnabled = options.legalResearch && (_key === 'openrouter'
+    await executeWithKeyRotationStream(async (ai, key, model) => {
+      const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
         ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
         : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
 
-      // One model stream per attempt: emit each actual text chunk immediately.
-      // Key rotation remains available if the current provider/key fails.
       return (async function* () {
-        let streamedText = '';
-        let finishReason = '';
-        const stream = await ai.models.generateContentStream({
-          model,
-          contents: optimizedPrompt,
-          config: {
-            systemInstruction: COUNTER_BRIEF_SYSTEM_INSTRUCTION,
-            temperature: 0.15,
-            maxOutputTokens: 32768,
-            ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-            thinkingConfig: { thinkingLevel: 'low' },
-          },
-        });
+        let accumulatedText = '';
+        let currentPrompt = optimizedPrompt;
+        let continuationCount = 0;
 
-        for await (const chunk of stream) {
-          const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-          if (chunkText) {
-            streamedText += chunkText;
-            // Do not buffer text to wait for a completion marker.
-            yield { ...chunk, text: chunkText };
-          } else {
-            yield chunk;
+        while (true) {
+          let passText = '';
+          let finishReason = '';
+          const stream = await ai.models.generateContentStream({
+            model,
+            contents: currentPrompt,
+            config: {
+              systemInstruction: COUNTER_BRIEF_SYSTEM_INSTRUCTION,
+              temperature: 0.15,
+              maxOutputTokens: 32768,
+              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+              thinkingConfig: { thinkingLevel: 'low' },
+            },
+          });
+
+          for await (const chunk of stream) {
+            const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+            if (chunkText) {
+              passText += chunkText;
+              accumulatedText += chunkText;
+              yield { ...chunk, text: chunkText };
+            } else {
+              yield chunk;
+            }
+            const candidateReason = chunk?.candidates?.[0]?.finishReason
+              || chunk?.choices?.[0]?.finish_reason
+              || chunk?.finishReason;
+            if (candidateReason) finishReason = String(candidateReason).toUpperCase();
           }
 
-          const candidateReason = chunk?.candidates?.[0]?.finishReason || chunk?.choices?.[0]?.finish_reason || chunk?.finishReason;
-          if (candidateReason) finishReason = String(candidateReason).toUpperCase();
-        }
+          if (!passText.trim()) {
+            const noTextError: any = new Error(
+              `استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام (finishReason: ${finishReason || 'UNKNOWN'}).`,
+            );
+            noTextError.status = 503;
+            noTextError.statusCode = 503;
+            throw noTextError;
+          }
 
-        if (!streamedText.trim()) {
-          const noTextError: any = new Error(
-            `استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام (finishReason: ${finishReason || 'UNKNOWN'}).`,
-          );
-          noTextError.status = 503;
-          noTextError.statusCode = 503;
-          throw noTextError;
-        }
-        if (hitOutputTokenLimit(finishReason)) {
-          const incompleteError: any = new Error(
-            'توقف النموذج عند الحد الأقصى لطول الإجابة. لم تُرسل محاولة استكمال تلقائية؛ راجع النص الجزئي أو قلّل حجم المدخلات قبل إعادة المحاولة.',
-          );
-          incompleteError.status = 502;
-          incompleteError.statusCode = 502;
-          incompleteError.outputTruncated = true;
-          throw incompleteError;
+          if (!hitOutputTokenLimit(finishReason)) break;
+          if (continuationCount >= MAX_CONTINUATIONS) {
+            const incompleteError: any = new Error(
+              'توقف النموذج بعد عدة استكمالات تقنية عند حد الإخراج. احتُفظ بالنص الجزئي، ولم تُعتمد النتيجة كعمل مكتمل.',
+            );
+            incompleteError.status = 502;
+            incompleteError.statusCode = 502;
+            incompleteError.outputTruncated = true;
+            throw incompleteError;
+          }
+
+          continuationCount += 1;
+          currentPrompt = makeContinuationPrompt(accumulatedText, finishReason);
         }
       })();
     }, onChunk);
     return '';
   }
 
-  return executeWithKeyRotation(async (ai, _key, model) => {
-    const providerSearchEnabled = options.legalResearch && (_key === 'openrouter'
+  return executeWithKeyRotation(async (ai, key, model) => {
+    const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
       ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
       : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+    let fullText = '';
+    let currentPrompt = optimizedPrompt;
+    let continuationCount = 0;
 
-    // Non-streaming callers also use exactly one generation request.
-    const response = await ai.models.generateContent({
-      model,
-      contents: optimizedPrompt,
-      config: {
-        systemInstruction: COUNTER_BRIEF_SYSTEM_INSTRUCTION,
-        temperature: 0.15,
-        maxOutputTokens: 32768,
-        ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-      },
-    });
-
-    const rawText = typeof response.text === 'string' ? response.text : '';
-    const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
-    if (hitOutputTokenLimit(finishReason)) {
-      const incompleteError: any = new Error(
-        'توقف النموذج عند الحد الأقصى لطول الإجابة. لم تُرسل محاولة استكمال تلقائية؛ قلّل حجم المدخلات قبل إعادة المحاولة.',
-      );
-      incompleteError.status = 502;
-      incompleteError.statusCode = 502;
-      incompleteError.outputTruncated = true;
-      throw incompleteError;
+    while (true) {
+      const response = await ai.models.generateContent({
+        model,
+        contents: currentPrompt,
+        config: {
+          systemInstruction: COUNTER_BRIEF_SYSTEM_INSTRUCTION,
+          temperature: 0.15,
+          maxOutputTokens: 32768,
+          ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+        },
+      });
+      const text = typeof response.text === 'string' ? response.text : '';
+      const finishReason = String(response?.candidates?.[0]?.finishReason || response?.choices?.[0]?.finish_reason || '').toUpperCase();
+      if (!text.trim()) throw new Error('استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام.');
+      fullText += text;
+      if (!hitOutputTokenLimit(finishReason)) break;
+      if (continuationCount >= MAX_CONTINUATIONS) {
+        const incompleteError: any = new Error('توقف النموذج بعد عدة استكمالات تقنية عند حد الإخراج؛ لم تُعتمد النتيجة كعمل مكتمل.');
+        incompleteError.status = 502;
+        incompleteError.statusCode = 502;
+        incompleteError.outputTruncated = true;
+        throw incompleteError;
+      }
+      continuationCount += 1;
+      currentPrompt = makeContinuationPrompt(fullText, finishReason);
     }
-    return rawText.trim();
+    return fullText.trim();
   });
 }
-
 
 export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; counterBriefOutput?: boolean } = {}, ): Promise<string> {
   if (options.counterBriefOutput) {
