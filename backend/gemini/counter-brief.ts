@@ -45,53 +45,78 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
         while (true) {
           const textLengthBeforeStream = accumulatedText.length;
-          const stream = await ai.models.generateContentStream({
-            model,
-            contents: nextPrompt,
-            config: {
-              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              maxOutputTokens: 32768,
-              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-              thinkingConfig: { thinkingLevel: 'low' },
-            },
-          });
-
           let finishReason = '';
-            for await (const chunk of stream) {
-            const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-            if (chunkText) {
-              const candidateText = pendingMarkerTail + chunkText;
-              const markerIndex = candidateText.indexOf(completionMarker);
+          let streamError: any = null;
+          try {
+            const stream = await ai.models.generateContentStream({
+              model,
+              contents: nextPrompt,
+              config: {
+                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                temperature: 0.15,
+                maxOutputTokens: 32768,
+                ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+                thinkingConfig: { thinkingLevel: 'low' },
+              },
+            });
 
-              if (markerIndex >= 0) {
-                const visibleText = candidateText.slice(0, markerIndex);
-                accumulatedText += visibleText;
-                pendingMarkerTail = '';
-                completed = true;
-                yield { ...chunk, text: visibleText };
-              } else {
-                const keepLength = Math.max(0, completionMarker.length - 1);
-                const splitAt = Math.max(0, candidateText.length - keepLength);
-                const visibleText = candidateText.slice(0, splitAt);
-                pendingMarkerTail = candidateText.slice(splitAt);
-                if (visibleText) {
-                    accumulatedText += visibleText;
+            for await (const chunk of stream) {
+              const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+              if (chunkText) {
+                const candidateText = pendingMarkerTail + chunkText;
+                const markerIndex = candidateText.indexOf(completionMarker);
+
+                if (markerIndex >= 0) {
+                  const visibleText = candidateText.slice(0, markerIndex);
+                  accumulatedText += visibleText;
+                  pendingMarkerTail = '';
+                  completed = true;
                   yield { ...chunk, text: visibleText };
+                } else {
+                  const keepLength = Math.max(0, completionMarker.length - 1);
+                  const splitAt = Math.max(0, candidateText.length - keepLength);
+                  const visibleText = candidateText.slice(0, splitAt);
+                  pendingMarkerTail = candidateText.slice(splitAt);
+                  if (visibleText) {
+                    accumulatedText += visibleText;
+                    yield { ...chunk, text: visibleText };
+                  }
                 }
+              } else {
+                yield chunk;
               }
-            } else {
-              yield chunk;
+              const candidates = chunk?.candidates;
+              const candidateReason = candidates?.[0]?.finishReason;
+              if (candidateReason) finishReason = String(candidateReason).toUpperCase();
             }
-            const candidates = chunk?.candidates;
-            const candidateReason = candidates?.[0]?.finishReason;
-            if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+          } catch (error: any) {
+            const errorMessage = String(error?.message || error || '').toLowerCase();
+            const status = Number(error?.status || error?.statusCode || 0);
+            const interruptedStream = error?.name === 'AbortError' ||
+              status === 408 || status === 504 ||
+              /abort|timed out|timeout|network|fetch failed|connection reset|socket|econn|stream.*closed|premature close/.test(errorMessage);
+
+            // A provider may abort after sending useful text. Resume from that
+            // partial output instead of turning it into a terminal job failure.
+            // Empty streams and unrelated errors retain the existing rotation path.
+            if (!interruptedStream || !accumulatedText.trim()) throw error;
+            streamError = error;
           }
 
           if (!completed && pendingMarkerTail) {
             accumulatedText += pendingMarkerTail;
             yield { text: pendingMarkerTail };
             pendingMarkerTail = '';
+          }
+
+          // If the stream was interrupted after producing text, resume from the
+          // last received character rather than marking the whole job as failed.
+          if (streamError && !completed) {
+            if (continuationCount >= 3) throw streamError;
+            continuationCount += 1;
+            const interruptionReason = String(streamError?.message || 'انقطع البث قبل اكتمال النتيجة');
+            nextPrompt = `${optimizedPrompt} [استكمال إلزامي بعد انقطاع البث] هذا هو النص الذي وصل بالفعل، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك النتيجة النهائية والطلبات الختامية إن كانت مطلوبة. لا تعتبر النص السابق مكتملاً، ولا تضع علامة الاكتمال إلا بعد إتمام كل المطلوب. سبب الاستكمال التقني: ${interruptionReason}.`;
+            continue;
           }
 
           // Treat an empty model stream as a failed attempt, not as success.
@@ -106,12 +131,18 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             throw noTextError;
           }
 
-          if (completed || continuationCount >= 3 || !hitOutputTokenLimit(finishReason)) {
+          // A normal STOP is not enough to declare completion: the explicit
+          // completion marker must have arrived. Otherwise continue from the
+          // received text, even when the provider omitted a useful finish reason.
+          if (completed || continuationCount >= 3) {
             break;
           }
 
           continuationCount += 1;
-          nextPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تصل إلى علامة الاكتمال] هذا هو النص الذي أخرجته حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك النتيجة النهائية والطلبات الختامية إن كانت مطلوبة. لا تعتبر النص السابق مكتملاً، ولا تضع علامة الاكتمال إلا بعد إتمام كل المطلوب. سبب الاستكمال التقني: ${finishReason || 'انتهى البث دون علامة اكتمال'}.`;
+          const continuationReason = hitOutputTokenLimit(finishReason)
+            ? finishReason
+            : (finishReason ? `انتهى البث دون علامة اكتمال (${finishReason})` : 'انتهى البث دون علامة اكتمال');
+          nextPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تصل إلى علامة الاكتمال] هذا هو النص الذي أخرجته حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك النتيجة النهائية والطلبات الختامية إن كانت مطلوبة. لا تعتبر النص السابق مكتملاً، ولا تضع علامة الاكتمال إلا بعد إتمام كل المطلوب. سبب الاستكمال التقني: ${continuationReason}.`;
         }
       })();
     }, onChunk);
@@ -144,11 +175,14 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
       fullText += visibleText;
 
-      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3 || !hitOutputTokenLimit(finishReason)) {
+      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3) {
         break;
       }
 
-      currentPrompt = `${optimizedPrompt} [استكمال بسبب بلوغ حد الإخراج فقط] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason}.`;
+      const continuationReason = hitOutputTokenLimit(finishReason)
+        ? finishReason
+        : (finishReason ? `انتهى الرد دون علامة اكتمال (${finishReason})` : 'انتهى الرد دون علامة اكتمال');
+      currentPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تصل إلى علامة الاكتمال] هذا هو النص الذي تم توليده حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${fullText} أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه، واستمر حتى اكتمال جميع أجزاء العمل المطلوب والطلبات الختامية اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${continuationReason}.`;
     }
 
     return fullText.trim();
