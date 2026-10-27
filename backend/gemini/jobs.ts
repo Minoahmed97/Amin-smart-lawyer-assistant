@@ -359,9 +359,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
           const event = JSON.parse(candidate);
           if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
-            // Counter-brief results must not be exposed until the completion
-            // marker has been received and all continuation parts are assembled.
-            if (taskType !== 'counter-brief' && fullText.length - persistedLength >= 800) {
+            if (fullText.length - persistedLength >= 800) {
               persistedLength = fullText.length;
               const snapshot = fullText;
               pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
@@ -392,7 +390,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
 
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
       const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
-      await patchJob(jobId, userId, { status: 'failed', error, partial_result: taskType === 'counter-brief' ? '' : fullText, payload: {} });
+      await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
       await sendCompletionPush(userId, jobId, taskType, 'failed');
       return;
     }
@@ -409,7 +407,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     await pendingWrite.catch(() => {});
     const message = String(err?.message || 'تعذر إكمال العملية.').slice(0, 1000);
     try {
-      await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: taskType === 'counter-brief' ? '' : fullText, payload: {} });
+      await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
       await sendCompletionPush(userId, jobId, taskType, 'failed');
     } catch {}
   } finally {
