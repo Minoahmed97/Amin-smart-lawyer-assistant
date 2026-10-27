@@ -4,8 +4,6 @@ import { rateLimit, limitBodyString } from '../security.ts';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-  let streamStarted = false;
-  let keepAlive: ReturnType<typeof setInterval> | null = null;
   try {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch {} }
@@ -57,32 +55,16 @@ ${history}
 
 أرجع JSON فقط:`;
 
-    // Keep the browser connection alive while the model handles the full
-    // document context. The client receives only the final structured answer.
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    if (typeof res.flushHeaders === 'function') res.flushHeaders();
-    streamStarted = true;
-    keepAlive = setInterval(() => {
-      if (!res.writableEnded) res.write(JSON.stringify({ type: 'keepalive' }) + '\n');
-    }, 15000);
-
     const rawAnswer = await generateDeepLegalResponse(prompt);
     let answer = '';
     let updatedResult: string | null = null;
 
-    // دالة تنظيف النصوص ومعالجة رموز الأسطر الملتصقة لضمان صفاء النص تماماً
+    // تنظيف نص المحتوى فقط؛ لا نحذف غلاف JSON من الرد قبل محاولة تحليله.
     const sanitizeLegalText = (text: string) => {
       if (!text) return '';
       return text
         .replace(/^```(?:json|text|markdown)?\s*/i, '')
         .replace(/\s*```$/, '')
-        .replace(/^\{\s*"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
-        .replace(/^"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
-        .replace(/\"\}\s*$/, '')
         .replace(/(?:\\n|n\\)+/g, '\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
@@ -94,17 +76,26 @@ ${history}
       const jsonEnd = trimmedAnswer.lastIndexOf('}');
       const cleaned = jsonStart >= 0 && jsonEnd > jsonStart ? trimmedAnswer.slice(jsonStart, jsonEnd + 1) : trimmedAnswer;
       const parsed = JSON.parse(cleaned);
-      
+
       answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
     } catch {
-      const plainAnswer = sanitizeLegalText(rawAnswer);
-      const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
-      if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
-        updatedResult = plainAnswer;
-        answer = 'تم تعديل المطلوب في المستند.';
-      } else {
-        answer = plainAnswer;
+      // Recover the reply field if the model wrapped JSON in prose or emitted
+      // a JSON string with formatting damage; the HTTP response remains JSON.
+      const raw = rawAnswer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+      const replyMatch = raw.match(/"reply"\s*:\s*("(?:\\.|[^"\\])*")/s);
+      if (replyMatch) {
+        try { answer = String(JSON.parse(replyMatch[1]) || '').trim(); } catch {}
+      }
+      if (!answer) {
+        const plainAnswer = sanitizeLegalText(rawAnswer);
+        const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
+        if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
+          updatedResult = plainAnswer;
+          answer = 'تم تعديل المطلوب في المستند.';
+        } else if (!plainAnswer.startsWith('{')) {
+          answer = plainAnswer;
+        }
       }
     }
 
@@ -143,36 +134,16 @@ ${result}`;
     }
 
     const usage = await consumeOperation(req, 'gemini-operation');
-    res.write(JSON.stringify({
-      type: 'result',
-      result: answer,
-      updatedResult,
-      remainingCredits: usage.remainingCredits,
-      trialRemaining: usage.trialRemaining,
-    }) + '\n');
-    res.end();
-    return res;
+    return res.status(200).json({ result: answer, updatedResult, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
     console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
     const code = Number(err?.statusCode || err?.status);
     const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 500;
     const retryAfter = Number(err?.retryAfter || 0);
-    if (keepAlive) clearInterval(keepAlive);
-    if (streamStarted) {
-      res.write(JSON.stringify({
-        type: 'error',
-        error: err?.message || 'تعذر إتمام الدردشة القانونية. حاول مرة أخرى بعد قليل.',
-        ...(status === 429 && retryAfter > 0 ? { retryAfter } : {}),
-      }) + '\n');
-      res.end();
-      return res;
-    }
     if (status === 429 && retryAfter > 0) res.setHeader('Retry-After', String(retryAfter));
     return res.status(status).json({
       error: err?.message || 'تعذر إتمام الدردشة القانونية. حاول مرة أخرى بعد قليل.',
       ...(status === 429 && retryAfter > 0 ? { retryAfter } : {}),
     });
-  } finally {
-    if (keepAlive) clearInterval(keepAlive);
   }
 }
