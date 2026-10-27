@@ -15,7 +15,7 @@ function hitOutputTokenLimit(reason: unknown): boolean {
   return normalized === 'MAX_TOKENS' || normalized === 'MAX_OUTPUT_TOKENS' || normalized === 'LENGTH';
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; continueUntilMarker?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -106,7 +106,10 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             throw noTextError;
           }
 
-          if (completed || continuationCount >= 3 || !hitOutputTokenLimit(finishReason)) {
+          // Main document generation must not silently accept a truncated result
+          // merely because a provider reports STOP instead of an output-token limit.
+          const continueForMissingMarker = options.continueUntilMarker === true && !completed;
+          if (completed || continuationCount >= 3 || (!hitOutputTokenLimit(finishReason) && !continueForMissingMarker)) {
             break;
           }
 
@@ -144,11 +147,12 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
       fullText += visibleText;
 
-      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3 || !hitOutputTokenLimit(finishReason)) {
+      const continueForMissingMarker = options.continueUntilMarker === true && markerIndex < 0;
+      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3 || (!hitOutputTokenLimit(finishReason) && !continueForMissingMarker)) {
         break;
       }
 
-      currentPrompt = `${optimizedPrompt} [استكمال بسبب بلوغ حد الإخراج فقط] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason}.`;
+      currentPrompt = `${optimizedPrompt} [استكمال بسبب عدم ظهور علامة الاكتمال أو بلوغ حد الإخراج] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason}.`;
     }
 
     return fullText.trim();
@@ -242,7 +246,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, continueUntilMarker: true });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -258,7 +262,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, continueUntilMarker: true });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
