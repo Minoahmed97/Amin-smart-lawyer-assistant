@@ -685,7 +685,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       let emittedOpenRouterText = false;
       try {
         const ai = withAdaptiveAnswerLength(
-          createOpenRouterCompatibleClient(12000, deadlineAt),
+          createOpenRouterCompatibleClient(30000, deadlineAt),
         ) as unknown as GoogleGenAI;
         const stream = await action(ai, 'openrouter', model);
         for await (const chunk of stream) {
@@ -722,7 +722,12 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       const keyModels = selectModelsForKey(preferredModels, currentKey, 'general');
 
       for (let m = 0; m < keyModels.length; m++) {
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
+        // A fixed 18-second HTTP timeout was aborting long legal streams and
+        // their continuation requests. Give each request a longer bounded window;
+        // the existing background-job deadline remains responsible for the task.
+        const remainingProviderMs = Math.max(1000, deadlineAt - Date.now());
+        const requestTimeoutMs = Math.min(60000, remainingProviderMs);
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, requestTimeoutMs));
         let emittedAnyChunk = false;
         try {
           const stream = await action(ai, currentKey, keyModels[m]);
