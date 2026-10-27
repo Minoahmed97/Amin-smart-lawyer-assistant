@@ -4,13 +4,11 @@ import { rateLimit, limitBodyString } from '../security.ts';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-  let streamMode = false;
   let streamStarted = false;
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let keepAlive: ReturnType<typeof setInterval> | null = null;
   try {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch {} }
-    streamMode = body?.stream === true;
     const { taskType, originalContext, result, messages } = body || {};
     if (!['deconstruct', 'qualify', 'draft'].includes(taskType)) return res.status(400).json({ error: 'نوع المهمة غير صالح للدردشة القانونية.' });
     if (typeof result !== 'string' || !result.trim()) return res.status(400).json({ error: 'لا توجد نتيجة أصلية لمناقشتها.' });
@@ -59,30 +57,20 @@ ${history}
 
 أرجع JSON فقط:`;
 
-    // The chat request can take longer than a normal JSON fetch allows when the
-    // model is reviewing a long result. In stream mode, keep the same response
-    // connection alive and send only the final parsed answer to the browser.
-    const startResponseStream = () => {
-      if (!streamMode || streamStarted) return;
-      res.statusCode = 200;
-      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('X-Accel-Buffering', 'no');
-      res.flushHeaders?.();
-      streamStarted = true;
-      res.write(JSON.stringify({ type: 'start' }) + '\n');
-      heartbeat = setInterval(() => {
-        if (!res.writableEnded) res.write(JSON.stringify({ type: 'keepalive' }) + '\n');
-      }, 5000);
-    };
-    const generateAnswer = async (inputPrompt: string): Promise<string> => {
-      if (streamMode) startResponseStream();
-      // Keep the existing non-streaming model-generation path unchanged; the
-      // heartbeat is only a transport safeguard for the browser connection.
-      return String(await generateDeepLegalResponse(inputPrompt) || '');
-    };
+    // Keep the browser connection alive while the model handles the full
+    // document context. The client receives only the final structured answer.
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    streamStarted = true;
+    keepAlive = setInterval(() => {
+      if (!res.writableEnded) res.write(JSON.stringify({ type: 'keepalive' }) + '\n');
+    }, 15000);
 
-    const rawAnswer = await generateAnswer(prompt);
+    const rawAnswer = await generateDeepLegalResponse(prompt);
     let answer = '';
     let updatedResult: string | null = null;
 
@@ -135,7 +123,7 @@ ${history}
 [النتيجة الحالية]
 ${result}`;
 
-        const recoveredRaw = String(await generateAnswer(recoveryPrompt) || '').trim();
+        const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
         let recoveredResult = sanitizeLegalText(recoveredRaw);
         
         const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
@@ -155,32 +143,36 @@ ${result}`;
     }
 
     const usage = await consumeOperation(req, 'gemini-operation');
-    const responseBody = { result: answer, updatedResult, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining };
-    if (streamStarted) {
-      if (heartbeat) clearInterval(heartbeat);
-      heartbeat = null;
-      res.write(JSON.stringify({ type: 'done', ...responseBody }) + '\n');
-      return res.end();
-    }
-    return res.status(200).json(responseBody);
+    res.write(JSON.stringify({
+      type: 'result',
+      result: answer,
+      updatedResult,
+      remainingCredits: usage.remainingCredits,
+      trialRemaining: usage.trialRemaining,
+    }) + '\n');
+    res.end();
+    return res;
   } catch (err: any) {
     console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
     const code = Number(err?.statusCode || err?.status);
     const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 500;
     const retryAfter = Number(err?.retryAfter || 0);
-    if (status === 429 && retryAfter > 0) res.setHeader('Retry-After', String(retryAfter));
-    const errorMessage = err?.message || 'تعذر إتمام الدردشة القانونية. حاول مرة أخرى بعد قليل.';
-    if (streamStarted && !res.writableEnded) {
-      if (heartbeat) clearInterval(heartbeat);
-      heartbeat = null;
-      res.write(JSON.stringify({ type: 'error', error: errorMessage, ...(status === 429 && retryAfter > 0 ? { retryAfter } : {}) }) + '\n');
-      return res.end();
+    if (keepAlive) clearInterval(keepAlive);
+    if (streamStarted) {
+      res.write(JSON.stringify({
+        type: 'error',
+        error: err?.message || 'تعذر إتمام الدردشة القانونية. حاول مرة أخرى بعد قليل.',
+        ...(status === 429 && retryAfter > 0 ? { retryAfter } : {}),
+      }) + '\n');
+      res.end();
+      return res;
     }
+    if (status === 429 && retryAfter > 0) res.setHeader('Retry-After', String(retryAfter));
     return res.status(status).json({
-      error: errorMessage,
+      error: err?.message || 'تعذر إتمام الدردشة القانونية. حاول مرة أخرى بعد قليل.',
       ...(status === 429 && retryAfter > 0 ? { retryAfter } : {}),
     });
   } finally {
-    if (heartbeat) clearInterval(heartbeat);
+    if (keepAlive) clearInterval(keepAlive);
   }
 }
