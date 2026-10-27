@@ -1,78 +1,12 @@
-import { executeWithKeyRotation, executeWithKeyRotationStream } from '../keyRotation.ts';
+import { generateDeepLegalResponse } from './counter-brief.ts';
+
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
-
-export const EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION = `أنت «أمين»؛ مساعد قانوني قضائي مصري شديد الذكاء والانتباه والدقة، تعمل كمساعد مهني للمحامي المصري في تحليل القضايا والمستندات وصياغة الأعمال القضائية، لا كمجرد مولّد نصوص. === تحليل المستندات وتقارير الخبراء ودعاوى الخصم — إلزامي === قم بفحص وتحليل كافة المستندات المقدمة، ومذكرات الخصوم، وصحف الدعاوى، وتقارير الخبراء هندسياً وحسابياً وقانونياً بعمق شديد. استخرج التناقضات، ونقاط العوار في تقارير الخبراء، ودلالة كل مستند وما يثبته وما لا يثبته، وابنِ عليها الرد الموضوعي والقانوني السليم وتفنيد دفوع الخصم بنداً بنداً. نطاق عملك شامل بحسب وقائع كل مهمة، ويشمل الأعمال المدنية والجنائية والإدارية ومجلس الدولة والتجارية والعمالية والأحوال الشخصية والتنفيذ والتحقيقات والعقود والإعلانات والدعاوى والمذكرات والدفوع والتفنيد والرد على المستندات والاستئناف والنقض والطعون وسائر الأعمال القانونية والقضائية ذات الصلة. === معيار التنقيب عن الثغرات والأمانة المهنية — إلزامي === افحص بعمق كل ما قد يؤثر فعلاً في المركز القانوني أو الإثبات أو الإجراءات أو النتيجة، بما في ذلك التناقضات المباشرة وغير المباشرة، والتسلسل الزمني، والأرقام والحسابات، والصفة والمصلحة والاختصاص والقبول والمواعيد والإعلانات والتوقيعات وحجية المستندات ونقص الأدلة وأوجه مخالفة القانون. إذا لم تجد بعد الفحص دفوعاً أو ثغرات جوهرية حقيقية مدعومة، فقل صراحةً: «لا توجد دفوع جوهرية إضافية بناءً على الأوراق المتاحة». === خزانة المحامي والقوالب الأسلوبية — إلزامي === عند وجود سياق بعنوان «خزانة المحامي والقوالب الأسلوبية» في الطلب، اعتبره أساساً إلزامياً للبناء: حافظ على هيكله وترتيب أقسامه والدفوع والبنود والمصطلحات القانونية وديباجته وخاتمته. لاتقل في المخرج إنك «استخدمت الخزانة». ابدأ مباشرة بأول سطر من الديباجة القانونية المناسبة دون تحية أو مقدمة عامة أو عبارات مثل «بصفتي مستشاراً».`;
-
-export async function generateDeepLegalResponse(
-  prompt: string,
-  onChunk?: (text: string) => void,
-  options: { legalResearch?: boolean } = {}
-): Promise<string> {
-  const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
-  const optimizedPrompt = `${prompt}\n\n[تعليمات الصياغة والاستكمال الإلزامية]: صغ المذكرة أو التفنيد كاملاً دون أي اختصار أو اقتطاع. عند الوصول إلى ختام المذكرة والطلبات الختامية فقط، أضف العلامة التالية حرفياً في آخر سطر: ${completionMarker}`;
-
-  return executeWithKeyRotation(async (ai, _key, model) => {
-    let currentPrompt = optimizedPrompt;
-    let fullText = '';
-    let lastLength = 0;
-
-    // حلقة تكرارية للاستكمال التلقائي الضامن لعدم الاقتطاع
-    for (let attempt = 0; attempt <= 6; attempt += 1) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: currentPrompt,
-          config: {
-            systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-            temperature: 0.15,
-            maxOutputTokens: 16384,
-          },
-        });
-
-        const rawText = typeof response?.text === 'string' ? response.text : '';
-        if (!rawText.trim()) break;
-
-        const markerIndex = rawText.indexOf(completionMarker);
-        const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
-
-        fullText += visibleText;
-
-        // إرسال التدفق اللحظي إن وجد
-        if (onChunk && visibleText) {
-          onChunk(fullText);
-        }
-
-        // شرط الانتهاء: ظهور علامة الاكتمال المباشرة
-        if (markerIndex >= 0) {
-          break;
-        }
-
-        // إذا لم تضف استجابة جديدة أو النص المضاف قصير جداً توقف لمنع Loops
-        if (fullText.length - lastLength < 40) {
-          break;
-        }
-        lastLength = fullText.length;
-
-        // تجهيز طلب الاستكمال للنص التالي
-        const lastChunkTail = fullText.slice(-350).trim();
-        currentPrompt = `${prompt}\n\n[تنبيه استكمال إلزامي]: توقفت الصياغة السابقة عند القول: "...${lastChunkTail}"\nتابع الصياغة فوراً ومن نفس نقطة التوقف بدقة وبدون أي تكرار أو مقدمات جديدة حتى النهاية، وضف علامة الاكتمال ${completionMarker} في السطر الأخير فقط.`;
-      } catch (loopErr) {
-        console.warn(`[Auto-Continuation Attempt ${attempt}] Notice:`, loopErr);
-        if (fullText.trim().length > 0) break; // إذا لدينا جزء من النص أرجع المتاح بدلاً من إنهار الطلب
-        throw loopErr;
-      }
-    }
-
-    const finalCleanedText = fullText.replace(new RegExp('\\[\\[AMIN_STREAM_COMPLETE_9F7C2A\\]\\]', 'g'), '').trim();
-    return finalCleanedText;
-  });
-}
-
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
+
 
   try {
     let body = req.body;
@@ -81,43 +15,89 @@ export default async function handler(req: any, res: any) {
         body = JSON.parse(body);
       } catch {}
     }
+    const {
+      opponentBriefText,
+      courtType,
+      caseNature,
+      judicialWorkType,
+      ourPosition,
+      additionalFacts,
+      vaultContext,
+    } = body || {};
 
-    const { message, currentResult, taskType, courtType, circuit, briefType, judicialWorkType, customJudicialWorkType, clientRole, clientName, opponentName, caseNumber, sessionDate, facts, defenses, requests, customInstructions, vaultContext } = body || {};
-
-    if (message && typeof message === 'string') {
-      rateLimit(req, 'gemini-chat-refine', 20, 10 * 60 * 1000);
-      const chatPrompt = `أنت «أمين»؛ مساعد قانوني مصري. بناءً على المستند القانوني الحالي:\n---\n${currentResult || ''}\n---\nطلب المستخدم / سؤاله للتعديل أو الإضافة:\n${message}\n\nقم بتعديل أو الرد على استفسار المحامي بدقة واحترافية قانونية كاملة. أخرج النص المعدل أو الرد مباشرة.`;
-      const chatResult = await generateDeepLegalResponse(chatPrompt, undefined, { legalResearch: false });
-      return res.json({ result: chatResult });
+    if (!opponentBriefText || !opponentBriefText.trim()) {
+      return res.status(400).json({ error: 'يرجى تقديم نص مذكرة الخصم.' });
     }
 
-    if (!facts || !facts.trim()) {
-      return res.status(400).json({ error: 'يرجى كتابة وقائع الدعوى أو المستندات المطلوب تحليلها والرد عليها.' });
-    }
-
-    rateLimit(req, 'gemini-counter-brief', 12, 10 * 60 * 1000);
+    rateLimit(req, 'gemini-deconstruct', 8, 10 * 60 * 1000);
     await enforceAiCooldown(req);
 
-    limitBodyString(facts, 200000, 'الوقائع والمستندات');
+    limitBodyString(opponentBriefText, 200000, 'مذكرة الخصم');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
 
-    const finalWorkType = (customJudicialWorkType && customJudicialWorkType.trim()) || (judicialWorkType && judicialWorkType.trim()) || (briefType && briefType.trim()) || 'مذكرة دفاع أو رد على مستندات وتقارير';
-    const workTypeInstruction = `نوع المستند المطلوب: ${finalWorkType}. قم بفحص وتحليل مستندات الخصم وتقارير الخبراء والرد عليها تفصيلياً حتى نهايتها.`;
+    const workTypeInstruction =
+      judicialWorkType && judicialWorkType.trim()
+        ? `- نوع المستند المقابل المطلوب من المحامي: "${judicialWorkType.trim()}". التزم بهذا النوع ولا تستبدله بنوع آخر.`
+        : `- حدّد بذكاء نوع المستند القضائي الأنسب للرد على المستند محل الفحص، مثل مذكرة رد/دفاع، عريضة أو صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار، تعقيب، أو غير ذلك بحسب الوقائع والطلبات. لا تفترض أن الرد يجب أن يكون مذكرة دفاع.`;
 
-    const prompt = `[مهمة إعداد وتحليل مستندات وصياغة قانونية شاملة]: ${workTypeInstruction} المحكمة: ${courtType || 'المحكمة المختصة'} الدائرة: ${circuit || ''} صفة الموكل: ${clientRole || 'الموكل'} (${clientName || ''}) الخصم: ${opponentName || ''} رقم الدعوى: ${caseNumber || ''} الجلسة: ${sessionDate || ''} الوقائع ومستندات الخصم وتقارير الخبراء المراد تفنيدها وتحليلها: ${facts} ${defenses ? `أوجه الدفاع:\n${defenses}\n` : ''} ${requests ? `الطلبات:\n${requests}\n` : ''} ${customInstructions ? `[تعليمات إضافية]:\n${customInstructions}\n` : ''} ${vaultContext ? `\n[خزانة المحامي — أسلوب وبنية فقط]:\n${vaultContext}\n` : ''}`;
+    const prompt = `[مهمة تفكيك المستند وإعداد الرد القانوني المناسب — فحص شامل]: ${workTypeInstruction} ${courtType ? `- المحكمة: ${courtType}` : ''} ${caseNature ? `- طبيعة الدعوى: ${caseNature}` : ''} ${ourPosition ? `- موقفنا: ${ourPosition}` : ''} ${additionalFacts ? `- وقائع وأدلة إضافية لصالحنا: ${additionalFacts}` : ''} ${vaultContext ? `\n[خزانة المحامي — أسلوب وبنية فقط، لا تستورد منها وقائع]:\n${vaultContext}\n` : ''} ======================================== نص مذكرة الخصم المراد تفكيكها بالكامل: ======================================== ${opponentBriefText} ======================================== نفّذ أولاً فحصاً داخلياً كاملاً ثم أخرج النتيجة مباشرة. اللغة الإلزامية للإخراج هي العربية الفصحى القانونية فقط؛ لا تستخدم الصينية أو اليابانية أو الكورية أو أي أحرف غير عربية إلا الأرقام والاختصارات الأجنبية التي تظهر في المستند الأصلي عند الضرورة. حافظ على النص العربي المقدم كما هو ولا تحوّله إلى لغة أخرى. بعد الخلاصة مباشرة اكتب سطراً واضحاً بعنوان «نوع العمل القضائي المقابل المقترح:» ثم اذكر نوع المستند الذي ينبغي صياغته بناءً على الفحص. إذا حدد المحامي نوعاً صراحةً فاذكره كما هو والتزم به. يجب أن تظل «طبيعة الدعوى» منفصلة عن «نوع المستند المقابل». يجب أن تكون أول فقرة بعنوان «خلاصة الرأي القانوني» وألا تتجاوز خمسة أسطر، وتلخص النتيجة القانونية العملية في القضية بوضوح وعقلانية. بعد الخلاصة أكمل التقرير التفصيلي كاملاً دون اختصار. ابدأ في صلب الموضوع دون تحية أو تعريف بنفسك أو عبارات تمهيدية، ولا تضع خاتمة إنشائية أو عبارات وداع. لا تجعل «الأسانيد القانونية» عنواناً مستقلاً؛ أدخل القواعد والمواد والمبادئ القانونية داخل التحليل والرد في مواضعها الطبيعية. لا تستخدم لغة اختصامية أو هجومية، ووازن بين قوة موقف الموكل وقوة موقف الخصم. ثم يتضمن التقرير، بحسب ما ينطبق: 1- ملخص القضية ومحل النزاع والطلبات الفعلية. 2- تفكيك ادعاءات الخصم نقطة نقطة، مع سند كل ادعاء ومدى ثبوته. 3- مقارنة أقوال الخصم بالمستندات والوقائع والتواريخ وكشف التناقضات. 4- أخطاء أو سوء تطبيق القانون، مع عدم ذكر نص أو حكم غير متحقق منه. 5- قصور الإثبات ونقاط الضعف في حجية أو دلالة المستندات، مع التمييز بين العيب الثابت والاحتمال الذي يحتاج تحققاً. 6- الدفوع الشكلية والإجرائية والموضوعية المحتملة متى كانت مرتبطة. 7- نقاط القوة والضعف لدى موكلنا ولدى الخصم. 8- الثغرات الخفية أو النقاط التي قد يغفلها القارئ السريع. 9- ترتيب أقوى الردود والدفاعات حسب الأثر والأولوية، مع ذكر المستند أو الواقعة التي تدعم كل رد. 10- النقاط التي تحتاج مستنداً أو معلومة إضافية قبل الجزم. 11- استراتيجية الرد النهائية. 12- المذكرة المقابلة المقترحة، مكتوبة بأسلوب المحامي في الخزانة، دون استيراد وقائع من النموذج الاسترشادي. قبل اعتماد أي رد، أنشئ لكل ادعاء جوهري في مذكرة الخصم رابطة واضحة بين: نص الادعاء أو معناه، والمستند أو الواقعة التي يستند إليها، وما يثبته الدليل فعلاً وما لا يثبته، ووجه القصور أو التناقض إن كان ثابتاً، ثم الرد القانوني المقترح والدليل الذي يسنده. ميّز صراحةً بين العيب الثابت والاحتمال الذي يحتاج فحص أصل المستند أو مستنداً مكملاً؛ لا تصف مستنداً بالتزوير أو البطلان أو عدم الحجية دون أساس ظاهر. قيود صارمة على الدفوع والأخطاء والثغرات: لا تذكر أي دفع أو ثغرة أو خطأ إجرائي/موضوعي على أنه قائم إلا إذا استند إلى واقعة محددة أو مستند مرفق فعلاً في سياق القضية الحالية، مع بيان موضعه أو تاريخه أو نصه كلما كان ذلك متاحاً، وشرح ما الذي يثبته تحديداً وأثره القانوني. اربط كل نقطة بهذه السلسلة: (الواقعة أو النص المستندي المحدد) ← (وجه المخالفة أو التناقض) ← (الأثر القانوني) ← (الرد أو الدفع المدعوم). لا تدرج دفوعاً نمطية لمجرد أنها شائعة؛ فلا تفترض عدم الاختصاص أو عدم القبول أو فوات ميعاد أو بطلان إعلان أو انعدام صفة/مصلحة أو تزويراً أو بطلان مستند إلا إذا كانت الأوراق تتضمن دليلاً محدداً يسند ذلك. لا تعتبر عدم إرفاق مستند دليلاً قاطعاً على عدم وجوده، ولا تحوّل احتمالاً أو سؤال تحقق إلى دفع ثابت. راجع التواريخ والأرقام وتسلسل الإجراءات ومواعيدها والمقارنة بين أقوال الأطراف والمستندات، لكن لا تقرر خطأً زمنياً أو إجرائياً دون بيانات كافية وقاعدة قانونية يمكن التحقق منها؛ وإلا صنّفه بوضوح كنقطة تحتاج تحققاً ولا تقدمه كدفع. ميّز بين (ثابت من الأوراق)، و(استنتاج تدعمه قرائن محددة)، و(نقطة تحتاج مستنداً أو تحققاً)، واستبعد أي نقطة لا يسندها دليل فعلي. إذا لم تجد دفوعاً جوهرية إضافية قوية ومدعومة بالأوراق، اكتب حرفياً: «لا توجد دفوع جوهرية إضافية بناءً على الأوراق المتاحة». لا تنشئ دفوعاً لإكمال القائمة أو لإرضاء المستخدم؛ الدقة والامتناع عن التخمين أهم من عدد الدفوع. لا تكتفِ بالتلخيص ولا تعتبر المهمة مكتملة قبل مراجعة شاملة للملف والنتيجة. === شرط إلزامي للمخرج النهائي === يجب أن تتضمن النتيجة جزأين واضحين: (1) تقرير التفنيد والتحليل القانوني الكامل، و(2) في نهاية مربع النتيجة نص العمل القضائي المقابل مكتوباً فعلياً وكاملاً وجاهزاً للمراجعة، وفق نوع المستند الذي حددته أو الذي رجّحته من الأوراق. لا تكتفِ بذكر «يوصى بتقديم مذكرة» أو بعرض خطة/عناوين/دفوع ليكتبها المحامي بنفسه. بعد إنهاء التحليل والاستراتيجية، اكتب عنواناً واضحاً «صياغة الرد القضائي المقترح كاملة» ثم اكتب المستند نفسه من ديباجته حتى طلباته الختامية أو نهايته المناسبة لنوعه. إذا كان الرد الأنسب تعقيباً على تقرير خبير أو صحيفة طعن أو إنذار أو غير ذلك، فصغ ذلك النوع نفسه ولا تستبدله تلقائياً بمذكرة دفاع. إذا كانت البيانات اللازمة لصياغة جزء معين غير متاحة، لا تخترعها؛ استخدم موضعاً واضحاً لاستكمال البيانات أو نبّه إلى النقص، مع إنجاز بقية المستند قدر الإمكان. يجب ألا ينتهي الإخراج عند التحليل أو التوصية، بل بعد النص الفعلي الكامل للمستند المقابل.`;
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch: false });
+    if (body?.stream === true) {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders?.();
+
+      // Keep the Vercel stream alive while Gemini prepares its first token.
+      // Without this, a slow first token can surface in the browser as
+      // "Failed to fetch" even though the backend is still working.
+      res.write(JSON.stringify({ type: 'start' }) + '\n');
+      const heartbeat = setInterval(() => {
+        if (!res.writableEnded) {
+          res.write(JSON.stringify({ type: 'keepalive' }) + '\n');
+        }
+      }, 5000);
+
+      let streamedAny = false;
+      const writeChunk = (text: string) => {
+        if (text) {
+          streamedAny = true;
+          res.write(JSON.stringify({ type: 'chunk', text }) + '\n');
+        }
+      };
+      try {
+        // Forward actual model chunks as they arrive. The generator keeps
+        // handling continuation internally while the client sees live output.
+        await generateDeepLegalResponse(prompt, writeChunk);
+        if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
+        await consumeOperation(req, 'gemini-operation');
+        res.write(JSON.stringify({ type: 'done' }) + '\n');
+        return res.end();
+      } catch (streamErr: any) {
+        if (!res.writableEnded) {
+          res.write(JSON.stringify({ type: 'error', error: streamErr?.message || 'فشلت الاستجابة المتدفقة.' }) + '\n');
+          return res.end();
+        }
+        return;
+      } finally {
+        clearInterval(heartbeat);
+      }
+    }
+
+    const resultText = await generateDeepLegalResponse(prompt);
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
-    
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
-    console.error('Error in /api/gemini/counter-brief:', err);
-    const statusCode = Number(err?.statusCode);
+    console.error('Error in /api/gemini/deconstruct:', err);
+    const statusCode = Number(err?.statusCode || err?.status);
     const status = Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600 ? statusCode : 500;
-    if (!res.headersSent) {
-      if (err?.retryAfter) res.setHeader('Retry-After', String(err.retryAfter));
-      return res.status(status).json({ error: err.message || 'فشلت الصياغة.' });
+    if (!res.headersSent) return res.status(status).json({ error: err.message || 'فشل التفكيك.' });
+    if (!res.writableEnded) {
+      res.write(JSON.stringify({ type: 'error', error: err.message || 'فشل التفكيك.' }) + '\n');
+      return res.end();
     }
   }
 }
