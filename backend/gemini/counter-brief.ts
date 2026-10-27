@@ -8,13 +8,6 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
-/** Detect provider-reported output-token limits; completion is ultimately determined by the explicit marker. */
-function hitOutputTokenLimit(reason: unknown): boolean {
-  const normalized = String(reason || '').trim().toUpperCase();
-  // Gemini reports MAX_TOKENS; OpenRouter-compatible models report LENGTH.
-  return normalized === 'MAX_TOKENS' || normalized === 'MAX_OUTPUT_TOKENS' || normalized === 'LENGTH';
-}
-
 export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
@@ -44,48 +37,55 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         let pendingMarkerTail = '';
 
         while (true) {
-          const textLengthBeforeStream = accumulatedText.length;
-          const stream = await ai.models.generateContentStream({
-            model,
-            contents: nextPrompt,
-            config: {
-              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              maxOutputTokens: 32768,
-              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-              thinkingConfig: { thinkingLevel: 'low' },
-            },
-          });
-
           let finishReason = '';
-            for await (const chunk of stream) {
-            const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-            if (chunkText) {
-              const candidateText = pendingMarkerTail + chunkText;
-              const markerIndex = candidateText.indexOf(completionMarker);
+          let streamInterrupted = false;
+          try {
+            const stream = await ai.models.generateContentStream({
+              model,
+              contents: nextPrompt,
+              config: {
+                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                temperature: 0.15,
+                maxOutputTokens: 32768,
+                ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+                thinkingConfig: { thinkingLevel: 'low' },
+              },
+            });
 
-              if (markerIndex >= 0) {
-                const visibleText = candidateText.slice(0, markerIndex);
-                accumulatedText += visibleText;
-                pendingMarkerTail = '';
-                completed = true;
-                yield { ...chunk, text: visibleText };
-              } else {
-                const keepLength = Math.max(0, completionMarker.length - 1);
-                const splitAt = Math.max(0, candidateText.length - keepLength);
-                const visibleText = candidateText.slice(0, splitAt);
-                pendingMarkerTail = candidateText.slice(splitAt);
-                if (visibleText) {
-                    accumulatedText += visibleText;
+            for await (const chunk of stream) {
+              const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+              if (chunkText) {
+                const candidateText = pendingMarkerTail + chunkText;
+                const markerIndex = candidateText.indexOf(completionMarker);
+
+                if (markerIndex >= 0) {
+                  const visibleText = candidateText.slice(0, markerIndex);
+                  accumulatedText += visibleText;
+                  pendingMarkerTail = '';
+                  completed = true;
                   yield { ...chunk, text: visibleText };
+                } else {
+                  const keepLength = Math.max(0, completionMarker.length - 1);
+                  const splitAt = Math.max(0, candidateText.length - keepLength);
+                  const visibleText = candidateText.slice(0, splitAt);
+                  pendingMarkerTail = candidateText.slice(splitAt);
+                  if (visibleText) {
+                    accumulatedText += visibleText;
+                    yield { ...chunk, text: visibleText };
+                  }
                 }
+              } else {
+                yield chunk;
               }
-            } else {
-              yield chunk;
+              const candidates = chunk?.candidates;
+              const candidateReason = candidates?.[0]?.finishReason;
+              if (candidateReason) finishReason = String(candidateReason).toUpperCase();
             }
-            const candidates = chunk?.candidates;
-            const candidateReason = candidates?.[0]?.finishReason;
-            if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+          } catch (streamError: any) {
+            // Keep useful partial text and continue from it after a stream interruption.
+            if (!accumulatedText.trim()) throw streamError;
+            streamInterrupted = true;
+            finishReason = 'STREAM_INTERRUPTED';
           }
 
           if (!completed && pendingMarkerTail) {
@@ -97,7 +97,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           // Treat an empty model stream as a failed attempt, not as success.
           // This lets the shared provider/key rotation try another model or key
           // before the user receives the final generation error.
-          if (!accumulatedText.trim() || (accumulatedText.length === textLengthBeforeStream && !completed)) {
+          if (!accumulatedText.trim()) {
             const noTextError: any = new Error(
               `استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام (finishReason: ${finishReason || 'UNKNOWN'}).`,
             );
@@ -106,21 +106,23 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             throw noTextError;
           }
 
-          // Never treat an unmarked response as a complete legal document.
-          // Providers sometimes omit/normalize finishReason, so a missing or
-          // unfamiliar reason must not silently disable continuation.
-          if (completed) break;
+          if (completed) {
+            break;
+          }
+
+          // Missing completion marker means the document is incomplete regardless
+          // of whether the provider reports MAX_TOKENS, STOP, or no finish reason.
           if (continuationCount >= 8) {
             const incompleteError: any = new Error(
-              `توقف التوليد قبل علامة اكتمال المستند بعد ${continuationCount + 1} أجزاء (finishReason: ${finishReason || 'UNKNOWN'}). لم تُعتمد النتيجة الناقصة كمستند مكتمل.`,
+              `لم يكتمل المستند بعد 8 محاولات استكمال (finishReason: ${finishReason || 'UNKNOWN'}).`,
             );
-            incompleteError.status = 503;
-            incompleteError.statusCode = 503;
+            incompleteError.status = 502;
+            incompleteError.statusCode = 502;
             throw incompleteError;
           }
 
           continuationCount += 1;
-          nextPrompt = `${optimizedPrompt}\n\n[استكمال إلزامي لنفس المستند — لا تبدأ مستنداً جديداً] النص السابق كاملاً حتى الآن (للسياق فقط، لا تعِد طباعته):\n${accumulatedText}\n\nتابع مباشرة من آخر موضع وصل إليه النص السابق، واكتب الجزء المتبقي فقط دون إعادة أو تلخيص أي فقرة سابقة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أقسامه وطلباته الختامية، ثم أخرج علامة الاكتمال الداخلية المحددة في التعليمات الأصلية في نهاية المستند فقط. سبب بدء الاستكمال: ${hitOutputTokenLimit(finishReason) ? 'بلوغ حد الإخراج' : `لم تظهر علامة الاكتمال (finishReason: ${finishReason || 'UNKNOWN'})`}.`;
+          nextPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تصل إلى علامة الاكتمال] هذا هو النص الذي أخرجته حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك النتيجة النهائية والطلبات الختامية إن كانت مطلوبة. لا تعتبر النص السابق مكتملاً، ولا تضع علامة الاكتمال إلا بعد إتمام كل المطلوب. سبب الاستكمال التقني: ${finishReason || (streamInterrupted ? 'انقطع البث بعد وصول نص' : 'انتهى البث دون علامة اكتمال')}.`;
         }
       })();
     }, onChunk);
@@ -151,17 +153,22 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
       const markerIndex = rawText.indexOf(completionMarker);
       const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
-      if (visibleText) fullText += visibleText;
+      fullText += visibleText;
 
       if (markerIndex >= 0) break;
-      if (!rawText.trim()) {
-        throw new Error(`انتهى طلب التوليد دون نص (finishReason: ${finishReason || 'UNKNOWN'}).`);
+      if (!rawText.trim() && !fullText.trim()) {
+        throw new Error('أعاد مزود الذكاء الاصطناعي استجابة فارغة.');
       }
       if (attempt >= 8) {
-        throw new Error(`توقف التوليد قبل اكتمال المستند بعد 9 أجزاء (finishReason: ${finishReason || 'UNKNOWN'}).`);
+        const incompleteError: any = new Error(
+          `لم يكتمل المستند بعد 8 محاولات استكمال (finishReason: ${finishReason || 'UNKNOWN'}).`,
+        );
+        incompleteError.status = 502;
+        incompleteError.statusCode = 502;
+        throw incompleteError;
       }
 
-      currentPrompt = `${optimizedPrompt}\n\n[استكمال إلزامي لنفس المستند — لا تبدأ مستنداً جديداً] النص السابق كاملاً حتى الآن (للسياق فقط، لا تعِد طباعته):\n${fullText}\n\nتابع مباشرة من آخر موضع وصل إليه النص السابق، واكتب الجزء المتبقي فقط دون إعادة أو تلخيص أي فقرة سابقة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أقسامه وطلباته الختامية، ثم أخرج علامة الاكتمال الداخلية المحددة في التعليمات الأصلية في نهاية المستند فقط. سبب بدء الاستكمال: ${hitOutputTokenLimit(finishReason) ? 'بلوغ حد الإخراج' : `لم تظهر علامة الاكتمال (finishReason: ${finishReason || 'UNKNOWN'})`}.`;
+      currentPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تصل إلى علامة الاكتمال] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason || 'انتهت الاستجابة دون علامة اكتمال'}.`;
     }
 
     return fullText.trim();
