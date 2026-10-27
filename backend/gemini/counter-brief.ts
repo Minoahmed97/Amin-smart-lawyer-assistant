@@ -8,13 +8,6 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
-/** Continue only when the provider confirms that its output-token cap was reached. */
-function hitOutputTokenLimit(reason: unknown): boolean {
-  const normalized = String(reason || '').trim().toUpperCase();
-  // Gemini reports MAX_TOKENS; OpenRouter-compatible models report LENGTH.
-  return normalized === 'MAX_TOKENS' || normalized === 'MAX_OUTPUT_TOKENS' || normalized === 'LENGTH';
-}
-
 export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
@@ -106,8 +99,18 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             throw noTextError;
           }
 
-          if (completed || continuationCount >= 3 || !hitOutputTokenLimit(finishReason)) {
-            break;
+          // A normal STOP (or a missing finishReason) does not prove that the
+          // legal document is complete. Continue whenever the required marker
+          // has not arrived; the marker, not MAX_TOKENS alone, is the completion
+          // signal for this endpoint.
+          if (completed) break;
+          if (continuationCount >= 3) {
+            const incompleteError: any = new Error(
+              `توقف توليد التفنيد قبل علامة الاكتمال بعد ${continuationCount + 1} أجزاء (finishReason: ${finishReason || 'UNKNOWN'}). لم تُعتمد النتيجة المبتورة كمستند مكتمل.`,
+            );
+            incompleteError.status = 503;
+            incompleteError.statusCode = 503;
+            throw incompleteError;
           }
 
           continuationCount += 1;
@@ -144,11 +147,18 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
       fullText += visibleText;
 
-      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3 || !hitOutputTokenLimit(finishReason)) {
-        break;
+      if (markerIndex >= 0) break;
+      if (!rawText.trim()) break;
+      if (attempt >= 3) {
+        const incompleteError: any = new Error(
+          `توقف توليد التفنيد قبل علامة الاكتمال بعد ${attempt + 1} محاولات (finishReason: ${finishReason || 'UNKNOWN'}). لم تُعتمد النتيجة المبتورة كمستند مكتمل.`,
+        );
+        incompleteError.status = 503;
+        incompleteError.statusCode = 503;
+        throw incompleteError;
       }
 
-      currentPrompt = `${optimizedPrompt} [استكمال بسبب بلوغ حد الإخراج فقط] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason}.`;
+      currentPrompt = `${optimizedPrompt} [استكمال إلزامي لأن النتيجة لم تصل إلى علامة الاكتمال، بصرف النظر عن سبب انتهاء الاستجابة] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب انتهاء الجزء السابق: ${finishReason || 'UNKNOWN'}.`;
     }
 
     return fullText.trim();
