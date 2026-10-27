@@ -151,7 +151,7 @@ export function saveFileStoredKeys(keys: string[]): void {
   try {
     fs.writeFileSync(KEYS_FILE, JSON.stringify(inMemoryDynamicKeys, null, 2), 'utf-8');
   } catch (e) {
-    console.warn('خطأ في حفظ تكوين المفاتيح على القرص:', e);
+    console.warn('تحذير أثناء حفظ تكوين المفاتيح على القرص:', e);
   }
 }
 
@@ -197,7 +197,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
   for (const model of GEMINI_MODELS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      lastFailure = 'انتهت المهلة المحددة لفحص مفتاح Gemini.';
+      lastFailure = 'انتهت المهلة المحدد لفحص مفتاح Gemini.';
       break;
     }
 
@@ -245,7 +245,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
     }
   }
 
-  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاح.' };
+  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاِح.' };
 }
 
 let dedicatedOCRActiveKey = '';
@@ -258,7 +258,7 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
     return { ready: false, keyCount: 0, checkedKeys: 0, message: error?.message || 'تعذر قراءة مجموعة مفاتيح الصور والمستندات.' };
   }
   if (!keys.length) {
-    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخانزة (OCR).' };
+    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخانصة (OCR).' };
   }
 
   const deadlineAt = Date.now() + Math.max(1000, totalTimeoutMs);
@@ -278,25 +278,31 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
-/** 
- * دالة استخراج النص الخاصة بـ Groq الاحتياطي عندما تفشل كل محاولات Gemini 
- */
-async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>): Promise<any> {
+/** * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini */
+async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>, deadlineAt = Date.now() + 90000): Promise<any> {
   const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
   if (!fallbackConfig.enabled || !fallbackConfig.apiKey) {
     throw new Error('احتياطي Groq لـ OCR غير مفعل أو لم يتم حفظ مفتاحه.');
   }
 
-  console.log('🔄 جارٍ تشغيل بديل Groq لـ OCR نظراً لفشل جميع محاولات Gemini...');
+  console.log('🔄 جاري تشغيل بديل Groq المباشر لـ OCR...');
   
-  // بناء عميل متوافق مع Groq (OpenAI Compatible) لإتمام الطلب بنفس هيكلية الـ action أو استدعاء مباشر
-  const client = createOpenRouterCompatibleClient(60000, Date.now() + 90000, 'https://api.groq.com/openai/v1', fallbackConfig.apiKey);
+  const remainingMs = Math.max(1000, deadlineAt - Date.now());
+  
+  // الاتصال المباشر بخوادم Groq لمنع أخطاء الـ 402 الخاصة بـ OpenRouter
+  const client = createOpenRouterCompatibleClient(
+    Math.min(60000, remainingMs), 
+    deadlineAt, 
+    'https://api.groq.com/openai/v1', 
+    fallbackConfig.apiKey
+  );
+  
   const modelToUse = fallbackConfig.model || 'meta-llama/llama-3.2-11b-vision-preview';
   
   return await action(client as unknown as GoogleGenAI, fallbackConfig.apiKey, modelToUse);
 }
 
-/** تدوير OCR المكثف عبر مفاتيح Gemini أولاً، وعند فشلها تماماً يتم الانتقال التلقائي لـ Groq */
+/** تدوير OCR المكثف عبر مفاتيح Gemini أولاً، وعند فشلها يتم الانتقال التلقائي لـ Groq المباشر */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -310,65 +316,74 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
     console.warn('تعذر جلب مفاتيح OCR من Supabase:', error?.message);
   }
 
-  // 1. محاولة التنفيذ عبر مفاتيح Gemini أولاً إذا كانت متوفرة
-  if (keys.length > 0) {
-    const rememberedKeyIndex = dedicatedOCRActiveKey ? keys.indexOf(dedicatedOCRActiveKey) : -1;
-    const startIndex = rememberedKeyIndex >= 0 &&
-      !isCooling(ocrKeyCooldownUntil, dedicatedOCRActiveKey) &&
-      !permanentlyInvalidOCRKeys.has(dedicatedOCRActiveKey)
-        ? rememberedKeyIndex
-        : reserveStartIndex(keys.length, 'ocr');
-        
-    let lastGeminiError: any = null;
-    const usableOCRKeys = keys.filter((candidate) => !permanentlyInvalidOCRKeys.has(candidate));
-    
-    if (usableOCRKeys.length && !usableOCRKeys.every((candidate) => isCooling(ocrKeyCooldownUntil, candidate))) {
-      const MAX_CYCLES = 2;
-      for (let cycle = 0; cycle < MAX_CYCLES; cycle++) {
-        if (cycle > 0) await new Promise((r) => setTimeout(r, 2000));
+  let lastError: any = null;
+  const overallStart = Date.now();
+  const totalBudget = Math.max(0, deadlineAt - overallStart);
 
-        ocrKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
-          const keyIndex = (startIndex + offset) % keys.length;
-          const key = keys[keyIndex];
-          if (isCooling(ocrKeyCooldownUntil, key) || permanentlyInvalidOCRKeys.has(key)) continue;
-          const keyModels = selectModelsForKey(preferredModels, key, 'ocr');
-          
-          for (let modelIndex = 0; modelIndex < keyModels.length; modelIndex++) {
-            const remainingMs = deadlineAt - Date.now();
-            if (remainingMs < 10000) break ocrKeyLoop;
-            const model = keyModels[modelIndex];
-            try {
-              const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
-              const result = await action(ai, key, model);
-              if (Date.now() >= deadlineAt) throw Object.assign(new Error('انتهت مهلة استخراج النص عبر مجموعة OCR.'), { status: 504, statusCode: 504 });
-              dedicatedOCRActiveKey = key;
-              return result;
-            } catch (error: any) {
-              lastGeminiError = error;
-              markRotationFailure(key, model, error, 'ocr');
-            }
+  for (let round = 0; round < 2; round++) {
+    const roundStart = overallStart + Math.floor(totalBudget * round / 2);
+    const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
+    const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
+    if (round > 0) await new Promise((r) => setTimeout(r, 1000));
+
+    if (keys.length > 0) {
+      const usableOCRKeys = keys.filter((candidate) => !permanentlyInvalidOCRKeys.has(candidate));
+      const rememberedKeyIndex = dedicatedOCRActiveKey ? usableOCRKeys.indexOf(dedicatedOCRActiveKey) : -1;
+      const startIndex = rememberedKeyIndex >= 0 &&
+        !isCooling(ocrKeyCooldownUntil, dedicatedOCRActiveKey) &&
+        !permanentlyInvalidOCRKeys.has(dedicatedOCRActiveKey)
+          ? rememberedKeyIndex
+          : (usableOCRKeys.length ? reserveStartIndex(usableOCRKeys.length, 'ocr') : 0);
+
+      ocrKeyLoop: for (let offset = 0; offset < usableOCRKeys.length; offset++) {
+        const keyIndex = (startIndex + offset) % usableOCRKeys.length;
+        const key = usableOCRKeys[keyIndex];
+        if (isCooling(ocrKeyCooldownUntil, key) || permanentlyInvalidOCRKeys.has(key)) continue;
+        const keyModels = selectModelsForKey(preferredModels, key, 'ocr');
+
+        for (let modelIndex = 0; modelIndex < keyModels.length; modelIndex++) {
+          const remainingMs = geminiDeadlineAt - Date.now();
+          if (remainingMs < 10000) break ocrKeyLoop;
+          const model = keyModels[modelIndex];
+          try {
+            const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
+            const result = await action(ai, key, model);
+            if (Date.now() >= geminiDeadlineAt) throw Object.assign(new Error('انتهت مهلة محاولة OCR عبر Gemini.'), { status: 504, statusCode: 504 });
+            dedicatedOCRActiveKey = key;
+            return result;
+          } catch (error: any) {
+            lastError = error;
+            markRotationFailure(key, model, error, 'ocr');
           }
         }
       }
     }
-    console.warn('⚠️ فشلت جميع محاولات Gemini لـ OCR. جارٍ التحويل التلقائي والفوري إلى احتياطي Groq...');
-  } else {
-    console.warn('⚠️ لا توجد مفاتيح Gemini مضافة لـ OCR. جارٍ التوجيه المباشر لاحتياطي Groq...');
-  }
 
-  // 2. التحويل التلقائي لـ Groq عندما تفشل جميع محاولات Gemini أو لا توجد مفاتيح
-  try {
-    const groqResult = await executeGroqOCRFallback(action);
-    if (groqResult) {
-      console.log('✅ تم إتمام استخراج النص بنجاح عبر احتياطي Groq!');
-      return groqResult;
+    console.warn(`⚠️ فشلت محاولات Gemini لـ OCR في الجولة ${round + 1}. جاري تجربة Groq المباشر الاحتياطي...`);
+    try {
+      if (roundEnd - Date.now() < 10000) {
+        lastError = lastError || new Error('لم يتبق وقت كاف لتجربة Groq في هذه الجولة.');
+        continue;
+      }
+      const groqResult = await executeGroqOCRFallback(action, roundEnd);
+      if (groqResult) {
+        console.log(`✅ تم إتمام استخراج النص بنجاح عبر Groq المباشر في الجولة ${round + 1}!`);
+        return groqResult;
+      }
+      lastError = new Error('أعاد Groq نتيجة فارغة لاستخراج النص.');
+    } catch (groqError: any) {
+      lastError = groqError;
+      console.error(`❌ فشل Groq المباشر في الجولة ${round + 1}:`, groqError?.message);
     }
-  } catch (groqError: any) {
-    console.error('❌ فشل احتياطي Groq أيضاً:', groqError?.message);
-    throw new Error(`فشلت محاولات Gemini وفشل بديل Groq. خطأ Groq الأخير: ${groqError?.message}`);
+
+    if (Date.now() >= deadlineAt || deadlineAt - Date.now() < 10000) break;
   }
 
-  throw new Error('فشلت جميع محاولات مجموعة الصور والمستندات (OCR) عبر Gemini واحتياطي Groq.');
+  const finalError: any = new Error(`فشلت محاولتان كاملتان لاستخراج النص: Gemini بمفاتيحه ونماذجه ثم Groq. ${String(lastError?.message || '')}`);
+  finalError.status = lastError?.status || lastError?.statusCode || 503;
+  finalError.statusCode = finalError.status;
+  finalError.cause = lastError;
+  throw finalError;
 }
 
 export function getVercelGeminiKeys(): string[] {
@@ -480,29 +495,41 @@ export async function executeWithKeyRotation<T>(
   );
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
-    const geminiDeadlineAt = Math.min(deadlineAt - 120000, Date.now() + 150000);
-    try {
-      return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
-        ...executionOptions,
-        deadlineAt: geminiDeadlineAt,
-        providerAttempt: 'gemini-primary',
-      });
-    } catch (geminiError: any) {
-      if (geminiError?.allGeminiQuotasExhausted !== true) throw geminiError || timeoutError();
-      if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
+    const overallStart = Date.now();
+    const totalBudget = Math.max(0, deadlineAt - overallStart);
+    let lastProviderError: any = null;
+
+    for (let round = 0; round < 2; round++) {
+      const roundStart = overallStart + Math.floor(totalBudget * round / 2);
+      const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
+      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
+      if (deadlineAt - Date.now() < 10000) break;
+      try {
+        return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
+          ...executionOptions,
+          deadlineAt: geminiDeadlineAt,
+          providerAttempt: 'gemini-primary',
+        });
+      } catch (geminiError: any) {
+        lastProviderError = geminiError;
+      }
+      if (roundEnd - Date.now() < 10000) break;
       try {
         return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
           ...executionOptions,
+          deadlineAt: roundEnd,
           providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
+          previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
         });
       } catch (openRouterError: any) {
-        const combined: any = new Error(`تعذر تنفيذ الطلب عبر Gemini ثم OpenRouter الاحتياطي.`);
-        combined.status = 503;
-        combined.statusCode = 503;
-        throw combined;
+        lastProviderError = openRouterError;
       }
     }
+    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
+    combined.status = 503;
+    combined.statusCode = 503;
+    combined.cause = lastProviderError;
+    throw combined;
   }
 
   if (!_forceGeminiFallback) {
@@ -528,7 +555,7 @@ export async function executeWithKeyRotation<T>(
       if (deadlineAt - Date.now() < 10000) throw timeoutError();
       return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
     }
-    throw lastError || new Error('تعذر الاتصال بنماذج OpenRouter.');
+    throw lastError || new Error('تعذر الاتصال بننماذج OpenRouter.');
   }
 
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
@@ -538,7 +565,7 @@ export async function executeWithKeyRotation<T>(
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
 
-  const MAX_ROTATION_CYCLES = 2;
+  const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
   const keyFailureKinds = new Map<string, string>();
 
@@ -572,7 +599,7 @@ export async function executeWithKeyRotation<T>(
           const kind = markRotationFailure(currentKey, model, err, 'general');
           keyFailureKinds.set(currentKey, kind);
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
-          break;
+          if (permanentlyInvalidKeys.has(currentKey)) break;
         }
       }
     }
@@ -587,14 +614,7 @@ export async function executeWithKeyRotation<T>(
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
-export async function executeWithKeyRotationStream(
-  action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>,
-  onChunk: (text: string) => void,
-  preferredModels: string[] = GEMINI_MODELS,
-  _ignoredClientFallbackKey?: string,
-  _forceGeminiFallback = false,
-  executionOptions?: KeyRotationExecutionOptions
-): Promise<void> {
+export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false, executionOptions?: KeyRotationExecutionOptions ): Promise<void> {
   if (!executionOptions?.deadlineAt) {
     executionOptions = { ...executionOptions, deadlineAt: Date.now() + 270000 };
   }
@@ -602,27 +622,99 @@ export async function executeWithKeyRotationStream(
   const timeoutError = () => Object.assign(new Error('انتهت المهلة المتاحة للتوليد.'), { status: 504, statusCode: 504 });
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
-    try {
-      await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, {
-        ...executionOptions,
-        deadlineAt: Math.min(deadlineAt - 120000, Date.now() + 150000),
-        providerAttempt: 'gemini-primary',
-      });
-      return;
-    } catch (geminiError: any) {
-      if (geminiError?.allGeminiQuotasExhausted !== true) throw geminiError || timeoutError();
-      await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
-        ...executionOptions,
-        providerAttempt: 'openrouter-fallback',
-      });
-      return;
+    const overallStart = Date.now();
+    const totalBudget = Math.max(0, deadlineAt - overallStart);
+    let lastProviderError: any = null;
+    for (let round = 0; round < 2; round++) {
+      const roundStart = overallStart + Math.floor(totalBudget * round / 2);
+      const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
+      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
+      if (deadlineAt - Date.now() < 10000) break;
+      let anyProviderEmittedText = false;
+      try {
+        await executeWithKeyRotationStream(action, (chunk) => {
+          if (chunk) anyProviderEmittedText = true;
+          onChunk(chunk);
+        }, preferredModels, _ignoredClientFallbackKey, true, {
+          ...executionOptions,
+          deadlineAt: geminiDeadlineAt,
+          providerAttempt: 'gemini-primary',
+        });
+        return;
+      } catch (geminiError: any) {
+        lastProviderError = geminiError;
+        if (anyProviderEmittedText) throw geminiError;
+      }
+      if (roundEnd - Date.now() < 10000) break;
+      try {
+        await executeWithKeyRotationStream(action, (chunk) => {
+          if (chunk) anyProviderEmittedText = true;
+          onChunk(chunk);
+        }, preferredModels, _ignoredClientFallbackKey, false, {
+          ...executionOptions,
+          deadlineAt: roundEnd,
+          providerAttempt: 'openrouter-fallback',
+          previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
+        });
+        return;
+      } catch (openRouterError: any) {
+        lastProviderError = openRouterError;
+        if (anyProviderEmittedText) throw openRouterError;
+      }
     }
+    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
+    combined.status = 503;
+    combined.statusCode = 503;
+    combined.cause = lastProviderError;
+    throw combined;
+  }
+
+  if (!_forceGeminiFallback && executionOptions?.providerAttempt === 'openrouter-fallback' && !executionOptions?.ocrMode) {
+    const models = getOpenRouterModels();
+    let lastOpenRouterError: any = null;
+
+    if (!process.env.OPENROUTER_API_KEY?.trim()) {
+      const missingKeyError: any = new Error('مفتاح OpenRouter غير مضبوط.');
+      missingKeyError.status = 503;
+      missingKeyError.statusCode = 503;
+      throw missingKeyError;
+    }
+
+    for (const model of models) {
+      if (deadlineAt - Date.now() < 10000) break;
+      let emittedOpenRouterText = false;
+      try {
+        const ai = withAdaptiveAnswerLength(
+          createOpenRouterCompatibleClient(12000, deadlineAt),
+        ) as unknown as GoogleGenAI;
+        const stream = await action(ai, 'openrouter', model);
+        for await (const chunk of stream) {
+          const text = typeof chunk?.text === 'string' ? chunk.text : '';
+          if (text) {
+            emittedOpenRouterText = true;
+            onChunk(text);
+          }
+        }
+        if (!emittedOpenRouterText) {
+          const emptyError: any = new Error(`أعاد موديل OpenRouter (${model}) استجابة فارغة.`);
+          emptyError.status = 503;
+          emptyError.statusCode = 503;
+          throw emptyError;
+        }
+        return;
+      } catch (error: any) {
+        if (emittedOpenRouterText) throw error;
+        lastOpenRouterError = error;
+      }
+    }
+
+    throw lastOpenRouterError || new Error('تعذر الحصول على نتيجة من نماذج OpenRouter الاحتياطية.');
   }
 
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
 
-  for (let cycle = 0; cycle < 2; cycle++) {
+  for (let cycle = 0; cycle < 1; cycle++) {
     const startIdx = reserveStartIndex(keys.length, 'general');
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
@@ -646,7 +738,7 @@ export async function executeWithKeyRotationStream(
         } catch (err: any) {
           if (emittedAnyChunk) throw err;
           markRotationFailure(currentKey, keyModels[m], err, 'general');
-          break;
+          if (permanentlyInvalidKeys.has(currentKey)) break;
         }
       }
     }
