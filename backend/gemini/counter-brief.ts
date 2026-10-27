@@ -155,22 +155,41 @@ async function generateDeepLegalResponseLegacy( prompt: string, onChunk?: (text:
   });
 }
 
-const COUNTER_BRIEF_SYSTEM_INSTRUCTION = `${EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION} === قاعدة إخراج خاصة بوظيفة تفنيد الخصم — أولوية لهذه الوظيفة === أخرج النتيجة في ثلاثة أجزاء متتابعة داخل الاستجابة نفسها: 1) «الخلاصة القانونية والنقاط الجوهرية»: من 3 إلى 6 نقاط قصيرة بحد أقصى، تقتصر على أهم الوقائع المؤثرة، وأقوى أوجه الرد، وأبرز دليل أو نقص أو مخاطرة حقيقية. لا تكرر الوقائع ولا تكتب تحليلاً مطولاً أو حشواً، ولا تعرض سلسلة التفكير الداخلية. 2) «نوع المستند»: اذكر النوع المطلوب إذا حدده المحامي، وإلا فاذكر النوع الأنسب للوقائع والطلبات في عبارة موجزة. لا تفترض أن كل نتيجة مذكرة دفاع. 3) اكتب المستند القانوني كاملاً بصياغته المهنية، مع جميع أقسامه ودفوعه وطلباته اللازمة لنوع المستند المختار، وبصمة المحامي والقيود الواردة في الطلب. لا تجعل الخلاصة المختصرة بديلاً عن المستند ولا تختصر المستند نفسه اختصاراً يخل بجوهره. هذه القاعدة الخاصة بهذه الوظيفة تعدّل فقط طريقة ترتيب الإخراج العام الذي قد يطلب الاقتصار على المستند؛ ولا تغيّر المنطق القانوني أو الوقائع أو الطلبات أو القالب الأسلوبي. `;
+const COUNTER_BRIEF_SYSTEM_INSTRUCTION = `${EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION}
 
-async function generateCounterBriefResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
+=== قاعدة إخراج خاصة بوظيفة تفنيد الخصم — أولوية لهذه الوظيفة ===
+أخرج النتيجة في ثلاثة أجزاء متتابعة داخل الاستجابة نفسها:
+1) «الخلاصة القانونية والنقاط الجوهرية»: من 3 إلى 6 نقاط قصيرة بحد أقصى، تقتصر على أهم الوقائع المؤثرة، وأقوى أوجه الرد، وأبرز دليل أو نقص أو مخاطرة حقيقية. لا تكرر الوقائع ولا تكتب تحليلاً مطولاً أو حشواً، ولا تعرض سلسلة التفكير الداخلية.
+2) «نوع المستند»: اذكر النوع المطلوب إذا حدده المحامي، وإلا فاذكر النوع الأنسب للوقائع والطلبات في عبارة موجزة. لا تفترض أن كل نتيجة مذكرة دفاع.
+3) اكتب المستند القانوني كاملاً بصياغته المهنية، مع جميع أقسامه ودفوعه وطلباته اللازمة لنوع المستند المختار، وبصمة المحامي والقيود الواردة في الطلب. لا تجعل الخلاصة المختصرة بديلاً عن المستند ولا تختصر المستند نفسه اختصاراً يخل بجوهره.
+هذه القاعدة الخاصة بهذه الوظيفة تعدّل فقط طريقة ترتيب الإخراج العام الذي قد يطلب الاقتصار على المستند؛ ولا تغيّر المنطق القانوني أو الوقائع أو الطلبات أو القالب الأسلوبي.
+`;
+
+async function generateCounterBriefResponse(
+  prompt: string,
+  onChunk?: (text: string) => void,
+  options: { legalResearch?: boolean } = {},
+): Promise<string> {
   const researchInstruction = options.legalResearch
     ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n'
     : '';
-  const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج والبث المباشر] - نفّذ التحليل القانوني اللازم داخلياً مرة واحدة، ثم أخرج الخلاصة المختصرة ونوع المستند والمستند كاملاً وفق تعليمات الوظيفة. - اجعل الخلاصة مركزة على النقاط المؤثرة فقط، ولا تكررها داخل المستند إلا بقدر ما تتطلبه الصياغة القانونية. - الأولوية لإكمال المستند نفسه بجميع أقسامه ودفوعه وطلباته الجوهرية؛ لا تستهلك مساحة الإخراج في تكرار التحليل أو المقدمات. - أخرج النص تدريجياً فور توليده، ولا تنتظر اكتمال الإجابة لتبدأ عرضها. - إذا بلغ النموذج حد الإخراج التقني قبل إكمال المستند، فتابع من آخر موضع في استكمال تقني محدود، دون إعادة كتابة المستند من أوله. - لا تعرض سلسلة التفكير الداخلية أو خطوات المراجعة الخفية، ولا تختلق وقائع أو أسانيد قانونية.`;
+  const completionMarker = '[[AMIN_COUNTER_BRIEF_COMPLETE_61D8B4]]';
+  const optimizedPrompt = `${prompt}${researchInstruction}
 
-  // Continue only when the provider explicitly reports an output-token cutoff.
-  // The continuation is bounded and carries only the end of the prior response,
-  // not the entire generated document, to avoid repeatedly resending all output.
+[تعليمات كفاءة الإخراج والبث المباشر]
+- نفّذ التحليل القانوني اللازم داخلياً مرة واحدة، ثم أخرج الخلاصة المختصرة ونوع المستند والمستند كاملاً وفق تعليمات الوظيفة.
+- اجعل الخلاصة مركزة على النقاط المؤثرة فقط، ولا تكررها داخل المستند إلا بقدر ما تتطلبه الصياغة القانونية.
+- الأولوية لإكمال المستند نفسه بجميع أقسامه ودفوعه وطلباته الجوهرية؛ لا تستهلك مساحة الإخراج في تكرار التحليل أو المقدمات.
+- أخرج النص تدريجياً فور توليده، ولا تنتظر اكتمال الإجابة لتبدأ عرضها.
+- إذا توقفت قبل اكتمال النتيجة لأي سبب، فتابع من آخر موضع دون إعادة كتابة ما سبق.
+- لا تعرض سلسلة التفكير الداخلية أو خطوات المراجعة الخفية، ولا تختلق وقائع أو أسانيد قانونية.
+- لا تعتبر الإجابة مكتملة إلا بعد إنهاء المستند والطلبات الختامية. في آخر النص فقط، أضف علامة الاكتمال الداخلية التالية حرفياً: ${completionMarker}. لا تعرض العلامة للمستخدم ولا تشرحها.`;
+
   const MAX_CONTINUATIONS = 3;
   const CONTINUATION_CONTEXT_CHARS = 6000;
   const makeContinuationPrompt = (fullText: string, finishReason: string) => {
     const tail = fullText.slice(-CONTINUATION_CONTEXT_CHARS);
-    return `${optimizedPrompt}\n\n[استكمال تقني إلزامي — لا تبدأ مستنداً جديداً] انتهى الإخراج السابق لأن مزود النموذج بلغ حد الإخراج التقني (${finishReason || 'MAX_TOKENS'}). النص التالي مقتطف من نهاية ما كُتب حتى الآن، وهو للسياق فقط وليس لإعادة نسخه: --- بداية مقتطف النهاية --- ${tail} --- نهاية مقتطف النهاية --- تابع من الموضع الذي يلي آخر كلمة في المقتطف مباشرةً، دون إعادة أي جملة منه أو تلخيص ما سبق. أكمل الأقسام والدفوع والطلبات الختامية الناقصة حتى تنتهي النتيجة. حافظ على اللغة والأسلوب نفسيهما، ولا تختلق وقائع أو أسانيد.`;
+    return `${optimizedPrompt}\n\n[استكمال تقني إلزامي — لا تبدأ مستنداً جديداً]\nالنص السابق لم يصل إلى علامة الاكتمال، لذلك لا تعتبره مكتملاً. سبب التوقف المرصود: ${finishReason || 'لم تصل علامة الاكتمال'}. هذا مقتطف من نهاية النص السابق للسياق فقط، وليس لإعادة نسخه:\n--- بداية المقتطف ---\n${tail}\n--- نهاية المقتطف ---\nتابع مباشرة من بعد آخر كلمة في المقتطف، دون إعادة أي جملة منه أو تلخيصه. أكمل الأقسام والدفوع والطلبات الختامية الناقصة. بعد إكمال العمل كله أضف علامة الاكتمال الداخلية المطلوبة في التعليمات.`;
   };
 
   if (onChunk) {
@@ -183,9 +202,11 @@ async function generateCounterBriefResponse( prompt: string, onChunk?: (text: st
         let accumulatedText = '';
         let currentPrompt = optimizedPrompt;
         let continuationCount = 0;
+        let completed = false;
 
-        while (true) {
-          let passText = '';
+        while (!completed) {
+          let passGeneratedText = '';
+          let pendingMarkerTail = '';
           let finishReason = '';
           const stream = await ai.models.generateContentStream({
             model,
@@ -202,38 +223,58 @@ async function generateCounterBriefResponse( prompt: string, onChunk?: (text: st
           for await (const chunk of stream) {
             const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
             if (chunkText) {
-              passText += chunkText;
-              accumulatedText += chunkText;
-              yield { ...chunk, text: chunkText };
-            } else {
-              yield chunk;
+              passGeneratedText += chunkText;
+              const candidateText = pendingMarkerTail + chunkText;
+              const markerIndex = candidateText.indexOf(completionMarker);
+              if (markerIndex >= 0) {
+                const visibleText = candidateText.slice(0, markerIndex);
+                if (visibleText) {
+                  accumulatedText += visibleText;
+                  yield { ...chunk, text: visibleText };
+                }
+                pendingMarkerTail = '';
+                completed = true;
+              } else {
+                const keepLength = completionMarker.length - 1;
+                const visibleLength = Math.max(0, candidateText.length - keepLength);
+                const visibleText = candidateText.slice(0, visibleLength);
+                pendingMarkerTail = candidateText.slice(visibleLength);
+                if (visibleText) {
+                  accumulatedText += visibleText;
+                  yield { ...chunk, text: visibleText };
+                }
+              }
             }
             const candidateReason = chunk?.candidates?.[0]?.finishReason
               || chunk?.choices?.[0]?.finish_reason
               || chunk?.finishReason;
             if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+            if (completed) break;
           }
 
-          if (!passText.trim()) {
+          if (completed) break;
+          if (pendingMarkerTail) {
+            accumulatedText += pendingMarkerTail;
+            yield { text: pendingMarkerTail };
+            pendingMarkerTail = '';
+          }
+          if (!passGeneratedText.trim()) {
             const noTextError: any = new Error(
-              `استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام (finishReason: ${finishReason || 'UNKNOWN'}).`,
+              `توقف التوليد دون نص جديد أثناء الاستكمال (finishReason: ${finishReason || 'UNKNOWN'}).`,
             );
             noTextError.status = 503;
             noTextError.statusCode = 503;
             throw noTextError;
           }
-
-          if (!hitOutputTokenLimit(finishReason)) break;
           if (continuationCount >= MAX_CONTINUATIONS) {
             const incompleteError: any = new Error(
-              'توقف النموذج بعد عدة استكمالات تقنية عند حد الإخراج. احتُفظ بالنص الجزئي، ولم تُعتمد النتيجة كعمل مكتمل.',
+              'لم تصل الاستجابة إلى علامة اكتمال المستند بعد 3 محاولات استكمال. احتُفظ بالنص الجزئي ولم تُعتمد النتيجة كعمل مكتمل.',
             );
             incompleteError.status = 502;
             incompleteError.statusCode = 502;
             incompleteError.outputTruncated = true;
             throw incompleteError;
           }
-
           continuationCount += 1;
           currentPrompt = makeContinuationPrompt(accumulatedText, finishReason);
         }
@@ -261,13 +302,14 @@ async function generateCounterBriefResponse( prompt: string, onChunk?: (text: st
           ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
         },
       });
-      const text = typeof response.text === 'string' ? response.text : '';
+      const rawText = typeof response.text === 'string' ? response.text : '';
       const finishReason = String(response?.candidates?.[0]?.finishReason || response?.choices?.[0]?.finish_reason || '').toUpperCase();
-      if (!text.trim()) throw new Error('استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام.');
-      fullText += text;
-      if (!hitOutputTokenLimit(finishReason)) break;
+      if (!rawText.trim()) throw new Error('استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام.');
+      const markerIndex = rawText.indexOf(completionMarker);
+      fullText += markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
+      if (markerIndex >= 0) break;
       if (continuationCount >= MAX_CONTINUATIONS) {
-        const incompleteError: any = new Error('توقف النموذج بعد عدة استكمالات تقنية عند حد الإخراج؛ لم تُعتمد النتيجة كعمل مكتمل.');
+        const incompleteError: any = new Error('لم تصل الاستجابة إلى علامة اكتمال المستند بعد 3 محاولات استكمال؛ لم تُعتمد النتيجة كعمل مكتمل.');
         incompleteError.status = 502;
         incompleteError.statusCode = 502;
         incompleteError.outputTruncated = true;
@@ -280,7 +322,11 @@ async function generateCounterBriefResponse( prompt: string, onChunk?: (text: st
   });
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; counterBriefOutput?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse(
+  prompt: string,
+  onChunk?: (text: string) => void,
+  options: { legalResearch?: boolean; counterBriefOutput?: boolean } = {},
+): Promise<string> {
   if (options.counterBriefOutput) {
     return generateCounterBriefResponse(prompt, onChunk, options);
   }
