@@ -197,7 +197,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
   for (const model of GEMINI_MODELS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      lastFailure = 'انتهت المهلة المحددة لفحص مفتاح Gemini.';
+      lastFailure = 'انتهت المهلة المحدد لفحص مفتاح Gemini.';
       break;
     }
 
@@ -245,7 +245,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
     }
   }
 
-  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاح.' };
+  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاِح.' };
 }
 
 let dedicatedOCRActiveKey = '';
@@ -258,7 +258,7 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
     return { ready: false, keyCount: 0, checkedKeys: 0, message: error?.message || 'تعذر قراءة مجموعة مفاتيح الصور والمستندات.' };
   }
   if (!keys.length) {
-    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخاصة (OCR).' };
+    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخانصة (OCR).' };
   }
 
   const deadlineAt = Date.now() + Math.max(1000, totalTimeoutMs);
@@ -278,16 +278,14 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
-/** 
- * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini 
- */
+/** * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini */
 async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>, deadlineAt = Date.now() + 90000): Promise<any> {
   const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
   if (!fallbackConfig.enabled || !fallbackConfig.apiKey) {
     throw new Error('احتياطي Groq لـ OCR غير مفعل أو لم يتم حفظ مفتاحه.');
   }
 
-  console.log('⚙️ جاري تشغيل بديل Groq المباشر لـ OCR...');
+  console.log('🔄 جاري تشغيل بديل Groq المباشر لـ OCR...');
   
   const remainingMs = Math.max(1000, deadlineAt - Date.now());
   
@@ -616,14 +614,7 @@ export async function executeWithKeyRotation<T>(
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
-export async function executeWithKeyRotationStream(
-  action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>,
-  onChunk: (text: string) => void,
-  preferredModels: string[] = GEMINI_MODELS,
-  _ignoredClientFallbackKey?: string,
-  _forceGeminiFallback = false,
-  executionOptions?: KeyRotationExecutionOptions
-): Promise<void> {
+export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false, executionOptions?: KeyRotationExecutionOptions ): Promise<void> {
   if (!executionOptions?.deadlineAt) {
     executionOptions = { ...executionOptions, deadlineAt: Date.now() + 270000 };
   }
@@ -693,9 +684,8 @@ export async function executeWithKeyRotationStream(
       if (deadlineAt - Date.now() < 10000) break;
       let emittedOpenRouterText = false;
       try {
-        const remainingMs = Math.max(1000, deadlineAt - Date.now());
         const ai = withAdaptiveAnswerLength(
-          createOpenRouterCompatibleClient(Math.min(60000, remainingMs), deadlineAt),
+          createOpenRouterCompatibleClient(12000, deadlineAt),
         ) as unknown as GoogleGenAI;
         const stream = await action(ai, 'openrouter', model);
         for await (const chunk of stream) {
@@ -732,9 +722,7 @@ export async function executeWithKeyRotationStream(
       const keyModels = selectModelsForKey(preferredModels, currentKey, 'general');
 
       for (let m = 0; m < keyModels.length; m++) {
-        const remainingMs = Math.max(1000, deadlineAt - Date.now());
-        const streamTimeoutMs = Math.min(120000, remainingMs);
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, streamTimeoutMs));
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
         let emittedAnyChunk = false;
         try {
           const stream = await action(ai, currentKey, keyModels[m]);
