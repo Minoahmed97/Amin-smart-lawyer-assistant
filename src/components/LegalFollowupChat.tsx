@@ -74,8 +74,8 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         },
         body: JSON.stringify({ taskType, originalContext, result, messages: nextMessages }),
       });
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
         const retryAfter = Number(response.headers.get('Retry-After') || data?.retryAfter || 0);
         const serverMessage = String(data?.error || '');
         if (response.status === 429) {
@@ -86,43 +86,6 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         }
         throw new Error(serverMessage || 'تعذر إرسال السؤال حالياً.');
       }
-
-      // The endpoint sends periodic keepalive records and one final result record.
-      // Buffer until the final record so neither chat answers nor edited documents
-      // are applied partially to the UI.
-      let data: any = null;
-      if (response.body?.getReader) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split(/\r?\n/);
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            let event: any;
-            try { event = JSON.parse(line); } catch { continue; }
-            if (event?.type === 'error') throw new Error(String(event.error || 'تعذر إتمام الدردشة القانونية.'));
-            if (event?.type === 'result') data = event;
-          }
-        }
-        buffer += decoder.decode();
-        if (buffer.trim()) {
-          try {
-            const event = JSON.parse(buffer);
-            if (event?.type === 'error') throw new Error(String(event.error || 'تعذر إتمام الدردشة القانونية.'));
-            if (event?.type === 'result') data = event;
-          } catch (parseError: any) {
-            if (parseError instanceof Error && parseError.message !== 'Unexpected end of JSON input') throw parseError;
-          }
-        }
-      } else {
-        data = await response.json().catch(() => ({}));
-      }
-      if (!data) throw new Error('انقطع الاتصال قبل وصول الرد النهائي. أعد المحاولة؛ لم يتم تطبيق أي تعديل جزئي.');
       const answer = String(data?.result || '').trim();
       if (!answer) throw new Error('لم تصل إجابة صالحة. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
       const updatedResult = typeof data?.updatedResult === 'string' ? data.updatedResult.trim() : '';
