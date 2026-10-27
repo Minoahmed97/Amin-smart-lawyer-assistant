@@ -226,7 +226,7 @@ export type OCRGroqFallbackConfig = {
 };
 
 const OCR_GROQ_FALLBACK_SETTING_KEY = 'ocr_groq_fallback';
-const OCR_GROQ_DEFAULT_MODEL = 'qwen/qwen3.6-27b';
+const OCR_GROQ_DEFAULT_MODEL = 'qwen/qwen3.8-27b';
 let cachedOCRGroqFallback: OCRGroqFallbackConfig | null = null;
 let cachedOCRGroqFallbackAt = 0;
 const OCR_GROQ_FALLBACK_CACHE_MS = 15_000;
