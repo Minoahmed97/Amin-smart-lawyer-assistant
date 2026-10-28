@@ -11,8 +11,97 @@ import { checkServerOCRReadiness, extractTextFromAnyFile } from '../utils/fileEx
 import { acknowledgeSavedOcrJob, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 
+
+interface PendingUploadFileRecord {
+  id: string;
+  scope: string;
+  userId: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  lastModified: number;
+  createdAt: string;
+  blob: Blob;
+}
+
+const PENDING_UPLOAD_DB = 'amin-pending-upload-files';
+const PENDING_UPLOAD_STORE = 'files';
+
+function openPendingUploadDb(): Promise<IDBDatabase | null> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof indexedDB === 'undefined') return resolve(null);
+      const request = indexedDB.open(PENDING_UPLOAD_DB, 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(PENDING_UPLOAD_STORE)) {
+          request.result.createObjectStore(PENDING_UPLOAD_STORE, { keyPath: 'id' });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function savePendingUploadFiles(files: File[], scope: string, userId: string): Promise<PendingUploadFileRecord[]> {
+  const db = await openPendingUploadDb();
+  if (!db) return [];
+  const records = files.map((file) => ({
+    id: `${scope}_${userId}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
+    scope, userId, fileName: file.name, mimeType: file.type || 'application/octet-stream',
+    size: file.size, lastModified: file.lastModified, createdAt: new Date(Date.now() + files.indexOf(file)).toISOString(),
+    blob: file.slice(0, file.size, file.type || 'application/octet-stream'),
+  }));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(PENDING_UPLOAD_STORE, 'readwrite');
+      const store = tx.objectStore(PENDING_UPLOAD_STORE);
+      records.forEach((record) => store.put(record));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('تعذر حفظ الملفات مؤقتًا.'));
+      tx.onabort = () => reject(tx.error || new Error('تم إلغاء حفظ الملفات مؤقتًا.'));
+    });
+    return records;
+  } catch (error) {
+    console.warn('Pending upload files could not be persisted:', error);
+    return [];
+  } finally { db.close(); }
+}
+
+async function getPendingUploadFiles(scope: string, userId: string): Promise<PendingUploadFileRecord[]> {
+  const db = await openPendingUploadDb();
+  if (!db) return [];
+  try {
+    const all = await new Promise<PendingUploadFileRecord[]>((resolve, reject) => {
+      const request = db.transaction(PENDING_UPLOAD_STORE, 'readonly').objectStore(PENDING_UPLOAD_STORE).getAll();
+      request.onsuccess = () => resolve((request.result || []) as PendingUploadFileRecord[]);
+      request.onerror = () => reject(request.error || new Error('تعذر استعادة الملفات المؤقتة.'));
+    });
+    return all.filter((row) => row.scope === scope && row.userId === userId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  } catch { return []; }
+  finally { db.close(); }
+}
+
+async function deletePendingUploadFile(id: string): Promise<void> {
+  const db = await openPendingUploadDb();
+  if (!db) return;
+  try {
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(PENDING_UPLOAD_STORE, 'readwrite');
+      tx.objectStore(PENDING_UPLOAD_STORE).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  } finally { db.close(); }
+}
+
+function restoreFileFromRecord(record: PendingUploadFileRecord): File {
+  return new File([record.blob], record.fileName, { type: record.mimeType, lastModified: record.lastModified });
+}
+
 interface FileUploadZoneProps {
-  onTextExtracted: (text: string, fileName: string, fileType?: string, sourceFile?: File) => void;
+  onTextExtracted: (text: string, fileName: string, fileType?: string, sourceFile?: File) => void | Promise<void>;
   title?: string;
   description?: string;
   maxFiles?: number;
@@ -30,6 +119,7 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
+  const processFilesBatchRef = useRef<((filesList: FileList | File[], existingRecords?: PendingUploadFileRecord[]) => Promise<void>) | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
@@ -50,55 +140,79 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Reattach completed or queued OCR work to the correct legal workflow after reopening it.
+  // Restore both already-started OCR jobs and files that were still waiting in a batch
+  // when the page refreshed. This prevents a three-file upload from shrinking to only
+  // the first file whose server job had started before refresh.
   useEffect(() => {
     let active = true;
     const userId = getActiveLawyerUserId();
-    const savedJobs = getSavedOcrJobs(recoveryScope, userId);
-    if (!savedJobs.length) return () => { active = false; };
-
-    setIsProcessing(true);
-    onProcessingChange?.(true);
-    setErrorMsg(null);
-    setWarnings([]);
-
     void (async () => {
+      const [savedJobs, pendingFiles] = await Promise.all([
+        Promise.resolve(getSavedOcrJobs(recoveryScope, userId)),
+        getPendingUploadFiles(recoveryScope, userId),
+      ]);
+      if (!active || (!savedJobs.length && !pendingFiles.length)) return;
+      setIsProcessing(true);
+      onProcessingChange?.(true);
+      setErrorMsg(null);
+      setWarnings([]);
+      const reservedFileIds = new Set<string>();
       let recoveredChars = 0;
       const recoveredNames: string[] = [];
+
       for (let i = 0; i < savedJobs.length; i++) {
         const job = savedJobs[i];
         if (!active) return;
+        // OCR may compress PNG/WebP to JPEG before sending it, so the job MIME
+        // type can differ from the original upload. Match by filename and order.
+        const originalRecord = pendingFiles.find((record) =>
+          !reservedFileIds.has(record.id) && record.fileName === job.fileName
+        );
+        if (originalRecord) reservedFileIds.add(originalRecord.id);
         setBatchProgress({ current: i + 1, total: savedJobs.length, currentFileName: `استعادة: ${job.fileName}` });
         try {
           const text = await resumeSavedOcrTask(job.jobId, recoveryScope, userId);
-          if (!active || !text.trim()) continue;
-          onTextExtracted(text, job.fileName, job.mimeType || undefined);
+          if (!active) return;
+          if (!text.trim()) throw new Error('اكتملت المهمة دون نص مستخرج صالح.');
+          const sourceFile = originalRecord ? restoreFileFromRecord(originalRecord) : undefined;
+          await Promise.resolve(onTextExtracted(text, job.fileName, job.mimeType || undefined, sourceFile));
           recoveredChars += text.length;
           recoveredNames.push(job.fileName);
-          // Acknowledge only after delivering the text to its original workflow callback.
           await new Promise((resolve) => setTimeout(resolve, 50));
-          if (active) acknowledgeSavedOcrJob(recoveryScope, userId, job.jobId);
+          if (active) {
+            acknowledgeSavedOcrJob(recoveryScope, userId, job.jobId);
+            if (originalRecord) await deletePendingUploadFile(originalRecord.id);
+          }
         } catch (error: any) {
           if (!active) return;
-          if (!error?.savedJobPending) acknowledgeSavedOcrJob(recoveryScope, userId, error?.jobId || job.jobId);
-          setWarnings((previous) => [...previous, error?.savedJobPending
-            ? `المهمة الخاصة بالملف ${job.fileName} ما زالت محفوظة على الخادم؛ ارجع لاحقًا لاستعادة نتيجتها.`
+          if (!error?.savedJobPending && !error?.preservePendingUpload) {
+            acknowledgeSavedOcrJob(recoveryScope, userId, error?.jobId || job.jobId);
+            if (originalRecord) await deletePendingUploadFile(originalRecord.id);
+          }
+          setWarnings((previous) => [...previous, (error?.savedJobPending || error?.preservePendingUpload)
+            ? `تعذر إتمام حفظ ${job.fileName}؛ احتُفظ بالملف والمهمة لإعادة المحاولة لاحقًا.`
             : `تعذر استعادة ${job.fileName}: ${error?.message || 'حدث خطأ أثناء استرجاع المهمة.'}`]);
         }
       }
-      if (!active) return;
-      if (recoveredNames.length) {
-        setSuccessInfo({ processedCount: recoveredNames.length, totalChars: recoveredChars, fileNames: recoveredNames });
-      }
-      setIsProcessing(false);
-      onProcessingChange?.(false);
-      setBatchProgress(null);
-    })();
 
+      if (!active) return;
+      if (recoveredNames.length) setSuccessInfo({ processedCount: recoveredNames.length, totalChars: recoveredChars, fileNames: recoveredNames });
+      // Files with no server job yet are the unstarted tail of the original batch.
+      // Requeue them in original order instead of silently dropping them after refresh.
+      const latestPending = await getPendingUploadFiles(recoveryScope, userId);
+      const queuedRecords = latestPending.filter((record) => !reservedFileIds.has(record.id));
+      if (active && queuedRecords.length && processFilesBatchRef.current) {
+        await processFilesBatchRef.current(queuedRecords.map(restoreFileFromRecord), queuedRecords);
+      } else if (active) {
+        setIsProcessing(false);
+        onProcessingChange?.(false);
+        setBatchProgress(null);
+      }
+    })();
     return () => { active = false; };
   }, [recoveryScope]);
 
-  const processFilesBatch = async (filesList: FileList | File[]) => {
+  const processFilesBatch = async (filesList: FileList | File[], existingRecords?: PendingUploadFileRecord[]) => {
     const rawFiles = Array.from(filesList);
     if (rawFiles.length === 0) return;
 
@@ -134,6 +248,16 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
+    }
+
+    const activeUserId = getActiveLawyerUserId();
+    const queueRecords = existingRecords && existingRecords.length === filesToProcess.length
+      ? existingRecords
+      : await savePendingUploadFiles(filesToProcess, recoveryScope, activeUserId);
+    const pendingByIndex = queueRecords.length === filesToProcess.length ? queueRecords : [];
+    const pendingAfterRefresh = new Set<number>();
+    if (pendingByIndex.length !== filesToProcess.length) {
+      setWarnings((previous) => [...previous, 'تعذر حفظ نسخة محلية مؤقتة من كل الملفات؛ ستستمر المعالجة، لكن قد لا يمكن استعادة الملفات التي لم تبدأ مهمتها بعد إذا أُغلقت الصفحة.']);
     }
 
     let totalChars = 0;
@@ -188,6 +312,7 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         if (isDirectOCRFile) hasStartedServerOCR = true;
         console.warn(`Extraction error for ${file.name}:`, err);
         const cleanReason = getCleanFailureReason(file, err);
+        if (err?.savedJobPending) pendingAfterRefresh.add(i);
         if (isImageFile(file) && !err?.savedJobPending) {
           // Retry only definitive OCR failures; a saved pending job must never be charged twice.
           failedImages.push({ file, index: i });
@@ -224,7 +349,8 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         if (retryErr?.jobId && !retryErr?.savedJobPending) acknowledgeSavedOcrJob(recoveryScope, getActiveLawyerUserId(), retryErr.jobId);
         console.warn(`Image extraction retry failed for ${file.name}:`, retryErr);
         const finalReason = getCleanFailureReason(file, retryErr);
-        failedNames.push(`${file.name}: تعذر استخراج النص حتى بعد إعادة المحاولة (${finalReason})`);
+        if (retryErr?.savedJobPending) pendingAfterRefresh.add(originalIndex);
+        failedNames.push(`${file.name}: ${retryErr?.savedJobPending ? 'المهمة محفوظة لاستكمالها بعد الرجوع' : `تعذر استخراج النص حتى بعد إعادة المحاولة (${finalReason})`}`);
       }
     }
 
@@ -234,11 +360,23 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
       if (!entry) continue;
       if (!mountedRef.current) return;
       const { file, result } = entry;
-      processedNames.push(file.name);
-      onTextExtracted(result.text, result.fileName, result.fileType, file);
-      if (result.backgroundJobId) {
-        acknowledgeSavedOcrJob(recoveryScope, getActiveLawyerUserId(), result.backgroundJobId);
+      const queueIndex = filesToProcess.indexOf(file);
+      try {
+        await Promise.resolve(onTextExtracted(result.text, result.fileName, result.fileType, file));
+      } catch (callbackError: any) {
+        pendingAfterRefresh.add(queueIndex);
+        failedNames.push(`${file.name}: ${callbackError?.message || 'تعذر حفظ نتيجة الملف في الوجهة المطلوبة؛ احتُفظ به لإعادة المحاولة.'}`);
+        continue;
       }
+      processedNames.push(file.name);
+      if (result.backgroundJobId) {
+        acknowledgeSavedOcrJob(recoveryScope, activeUserId, result.backgroundJobId);
+      }
+      if (pendingByIndex[queueIndex]) await deletePendingUploadFile(pendingByIndex[queueIndex].id);
+    }
+
+    for (let i = 0; i < pendingByIndex.length; i++) {
+      if (!pendingAfterRefresh.has(i) && !extractedResults[i]) await deletePendingUploadFile(pendingByIndex[i].id);
     }
 
     if (!mountedRef.current) return;
@@ -265,6 +403,8 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
       setErrorMsg('تعذر استخراج نصوص صالحة من الملفات المحددة.');
     }
   };
+
+  processFilesBatchRef.current = processFilesBatch;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
