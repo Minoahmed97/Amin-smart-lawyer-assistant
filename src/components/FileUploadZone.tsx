@@ -179,33 +179,6 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
       ? filesToProcess.map((_, index) => restoredRecordIds[index] || null)
       : new Array(filesToProcess.length).fill(null);
 
-    // Save every selected image/PDF before any network preflight. The actual OCR
-    // requests remain sequential, but the full queue must survive a refresh even
-    // while the first image is the only one submitted to the server.
-    if (!restoredRecordIds) {
-      const persistenceWarnings: string[] = [];
-      const savedFileIds: Array<string | null> = [];
-      // Persist in selection order; this also gives IndexedDB records a stable
-      // creation order for recovery if the page is refreshed mid-batch.
-      for (const file of filesToProcess) {
-        if (!isServerOCRFile(file)) {
-          savedFileIds.push(null);
-          continue;
-        }
-        try {
-          savedFileIds.push(await savePendingOcrFile(file, recoveryScope, getActiveLawyerUserId()));
-        } catch (error) {
-          console.warn(`Could not persist source file ${file.name} for refresh recovery:`, error);
-          persistenceWarnings.push(file.name);
-          savedFileIds.push(null);
-        }
-      }
-      pendingFileIds = savedFileIds;
-      if (persistenceWarnings.length) {
-        setWarnings((previous) => [...previous, `تعذر حفظ النسخة المؤقتة من ${persistenceWarnings.join('، ')}؛ لا تغلق الصفحة قبل اكتمال استخراجها.`]);
-      }
-    }
-
     // Images and PDFs always require the dedicated server OCR route. Check its own keys/models
     // before starting the batch; local TXT/DOCX extraction remains available without OCR keys.
     const hasServerOCRFiles = filesToProcess.some((file) => {
@@ -218,14 +191,29 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
         if (!mountedRef.current) return;
       } catch (error: any) {
         if (!mountedRef.current) return;
-        // Keep the saved source files in IndexedDB. If the user refreshes after
-        // correcting the server configuration, the full selected queue is recoverable.
         setIsProcessing(false);
         onProcessingChange?.(false);
         setBatchProgress(null);
         setErrorMsg(error?.message || 'مجموعة مفاتيح الصور والمستندات (OCR) غير جاهزة.');
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
+      }
+    }
+
+    if (!restoredRecordIds) {
+      const persistenceWarnings: string[] = [];
+      pendingFileIds = await Promise.all(filesToProcess.map(async (file) => {
+        if (!isServerOCRFile(file)) return null;
+        try {
+          return await savePendingOcrFile(file, recoveryScope, getActiveLawyerUserId());
+        } catch (error) {
+          console.warn(`Could not persist source file ${file.name} for refresh recovery:`, error);
+          persistenceWarnings.push(file.name);
+          return null;
+        }
+      }));
+      if (persistenceWarnings.length) {
+        setWarnings((previous) => [...previous, `تعذر حفظ النسخة المؤقتة من ${persistenceWarnings.join('، ')}؛ لا تغلق الصفحة قبل اكتمال استخراجها.`]);
       }
     }
 
