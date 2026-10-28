@@ -60,6 +60,138 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
 
   useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify(messages)); } catch {} }, [messages, storageKey]);
 
+  // If the page is refreshed while a background chat job is running, reconnect
+  // to that same durable job and resume polling instead of abandoning the reply.
+  const resumedJobRef = useRef('');
+  const onResultChangeRef = useRef(onResultChange);
+  onResultChangeRef.current = onResultChange;
+  useEffect(() => {
+    let active = true;
+    const pendingKey = `${storageKey}_pending_job`;
+    const fingerprint = (value: string) => {
+      let hash = 2166136261;
+      for (let i = 0; i < value.length; i += 1) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(36);
+    };
+
+    let pending: any = null;
+    try { pending = JSON.parse(localStorage.getItem(pendingKey) || 'null'); } catch {}
+    const jobId = String(pending?.jobId || '');
+    const question = String(pending?.question || '').trim();
+    if (!question || !/^[0-9a-f-]{36}$/i.test(jobId) || pending?.resultFingerprint !== fingerprint(result)) return;
+    if (resumedJobRef.current === jobId) return;
+    resumedJobRef.current = jobId;
+
+    let savedMessages: ChatMessage[] = [];
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      if (Array.isArray(saved)) savedMessages = saved.filter((item: any) =>
+        item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string'
+      );
+    } catch {}
+    const lastMessage = savedMessages[savedMessages.length - 1];
+    if (!(lastMessage?.role === 'user' && lastMessage.content === question)) {
+      savedMessages.push({ role: 'user', content: question });
+    }
+    try { localStorage.setItem(storageKey, JSON.stringify(savedMessages)); } catch {}
+    setMessages(savedMessages);
+    setLoading(true);
+    setError('');
+
+    void (async () => {
+      try {
+        const sessionToken = getSessionToken();
+        if (!sessionToken) throw new Error('انتهت جلسة الحساب. سجّل الدخول مرة أخرى لاستكمال رد الشات المحفوظ.');
+        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionToken}` };
+
+        // Re-submit with the same idempotency key: if the job already exists,
+        // the server returns it; if refresh happened before creation, this creates it.
+        let createResponse: Response | null = null;
+        let createError: unknown = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            createResponse = await fetch('/api/gemini/jobs', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                taskType: 'legal-chat',
+                jobId,
+                payload: { taskType, originalContext, result, messages: savedMessages },
+              }),
+            });
+            createError = null;
+            break;
+          } catch (err) {
+            createError = err;
+            if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 700));
+          }
+        }
+        if (!createResponse) throw createError instanceof Error ? createError : new Error('تعذر استئناف مهمة الدردشة المحفوظة.');
+        const createData = await createResponse.json().catch(() => ({}));
+        if (!createResponse.ok) throw new Error(String(createData?.error || `تعذر استئناف مهمة الدردشة (${createResponse.status}).`));
+
+        const startedAt = Date.now();
+        let transientFailures = 0;
+        let finalData: any = null;
+        while (active && Date.now() - startedAt < 20 * 60 * 1000) {
+          try {
+            const statusResponse = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
+              method: 'GET', headers, cache: 'no-store',
+            });
+            const statusData = await statusResponse.json().catch(() => ({}));
+            if (!statusResponse.ok) {
+              const failure: any = new Error(String(statusData?.error || `تعذر استرجاع حالة الدردشة (${statusResponse.status}).`));
+              failure.statusCode = statusResponse.status;
+              throw failure;
+            }
+            transientFailures = 0;
+            if (statusData.status === 'completed') {
+              try { finalData = JSON.parse(String(statusData.result || '')); }
+              catch { throw new Error('اكتملت المهمة لكن تعذر قراءة نتيجة الدردشة المحفوظة.'); }
+              break;
+            }
+            if (statusData.status === 'failed') {
+              try { localStorage.removeItem(pendingKey); } catch {}
+              throw new Error(String(statusData.error || 'تعذر إكمال رد الدردشة القانونية.'));
+            }
+          } catch (pollError: any) {
+            if (pollError?.statusCode >= 400 && pollError.statusCode < 500 && pollError.statusCode !== 408 && pollError.statusCode !== 429) throw pollError;
+            transientFailures += 1;
+            if (transientFailures >= 15) throw new Error('الاتصال انقطع مؤقتًا. المهمة ما زالت محفوظة إن كانت قد بدأت؛ أعد فتح الشات لاستكمالها.');
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        }
+        if (!active) return;
+        if (!finalData) throw new Error('ما زالت المهمة قيد المعالجة على الخادم. افتح الشات لاحقًا لاستكمال النتيجة.');
+        try { localStorage.removeItem(pendingKey); } catch {}
+        const answer = String(finalData?.result || '').trim();
+        if (!answer) throw new Error('لم تصل إجابة صالحة من المهمة المحفوظة.');
+        const updatedResult = typeof finalData?.updatedResult === 'string' ? finalData.updatedResult.trim() : '';
+        if (updatedResult && updatedResult !== result.trim()) onResultChangeRef.current?.(updatedResult);
+        setMessages((current) => {
+          const lastQuestionIndex = current.reduce((found, message, index) => message.role === 'user' && message.content === question ? index : found, -1);
+          if (lastQuestionIndex >= 0 && current.slice(lastQuestionIndex + 1).some((message) => message.role === 'assistant')) return current;
+          return [...current, { role: 'assistant', content: answer }];
+        });
+      } catch (err: any) {
+        if (active) {
+          setDraft(question);
+          setError(err?.message || 'تعذر استكمال مهمة الدردشة المحفوظة.');
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (resumedJobRef.current === jobId) resumedJobRef.current = '';
+    };
+  }, [storageKey, taskType, originalContext, result]);
+
   const send = async (event: React.FormEvent) => {
     event.preventDefault();
     const question = draft.trim();
