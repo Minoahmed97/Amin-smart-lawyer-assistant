@@ -4,7 +4,6 @@ export interface LegalVaultOriginalFile {
   fileName: string;
   mimeType: string;
   size: number;
-  lastModified?: number;
   createdAt: string;
   category: string;
   courtType: string;
@@ -60,24 +59,12 @@ export async function saveLegalVaultOriginalFile(file: File, userId: string, ext
     fileName: file.name,
     mimeType: file.type || 'application/octet-stream',
     size: file.size,
-    lastModified: file.lastModified,
     createdAt: new Date().toISOString(),
     ...classified,
     blob: file.slice(0, file.size, file.type || 'application/octet-stream'),
   };
   const db = await openDb();
   try {
-    const existingRecords = await new Promise<LegalVaultOriginalFile[]>((resolve, reject) => {
-      const request = db.transaction(STORE, 'readonly').objectStore(STORE).index('userId').getAll(userId);
-      request.onsuccess = () => resolve((request.result || []) as LegalVaultOriginalFile[]);
-      request.onerror = () => reject(request.error || new Error('تعذر التحقق من الملفات الأصلية الموجودة.'));
-    });
-    const existing = existingRecords.find((item) =>
-      item.fileName === file.name && item.size === file.size && item.mimeType === record.mimeType &&
-      (item.lastModified == null || item.lastModified === file.lastModified)
-    );
-    if (existing) return existing;
-
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite');
       tx.objectStore(STORE).put(record);
