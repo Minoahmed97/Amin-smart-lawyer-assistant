@@ -6,6 +6,7 @@ import counterBriefHandler from './counter-brief.ts';
 import deconstructHandler from './deconstruct.ts';
 import qualifyHandler from './qualify.ts';
 import refineHandler from './refine.ts';
+import chatHandler from './chat.ts';
 import ocrHandler from '../ocr.ts';
 import { validateBase64Payload, limitBodyString } from '../security.ts';
 
@@ -14,6 +15,7 @@ const TASK_HANDLERS: Record<string, (req: any, res: any) => any> = {
   deconstruct: deconstructHandler,
   qualify: qualifyHandler,
   refine: refineHandler,
+  'legal-chat': chatHandler,
   ocr: ocrHandler,
 };
 
@@ -90,7 +92,7 @@ async function sendCompletionPush(userId: string, jobId: string, taskType: strin
     if (!response.ok) return;
     const subscriptions = await response.json();
     const taskNames: Record<string, string> = {
-      'counter-brief': 'توليد المذكرة', deconstruct: 'تحليل المستند', qualify: 'التكييف القانوني', refine: 'مراجعة الصياغة', ocr: 'استخراج النص من الملف',
+      'counter-brief': 'توليد المذكرة', deconstruct: 'تحليل المستند', qualify: 'التكييف القانوني', refine: 'مراجعة الصياغة', 'legal-chat': 'الدردشة القانونية', ocr: 'استخراج النص من الملف',
     };
     const title = status === 'completed' ? 'اكتملت المهمة القانونية' : 'تعذّر إكمال المهمة القانونية';
     const body = `${taskNames[taskType] || 'المهمة'} ${status === 'completed' ? 'جاهزة؛ افتح التطبيق لعرض النتيجة.' : 'لم تكتمل؛ افتح التطبيق لمعرفة التفاصيل.'}`;
@@ -119,6 +121,51 @@ function safePayload(input: any, taskType: string) {
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
       payload[key] = String(value);
     }
+  }
+
+  if (taskType === 'legal-chat') {
+    const chatType = String(input?.taskType || '');
+    if (!['deconstruct', 'qualify', 'draft'].includes(chatType)) {
+      const error: any = new Error('نوع المهمة غير صالح للدردشة القانونية.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (typeof input?.originalContext !== 'string' || typeof input?.result !== 'string' || !input.result.trim()) {
+      const error: any = new Error('سياق القضية أو النتيجة الأصلية غير صالحين للدردشة القانونية.');
+      error.statusCode = 400;
+      throw error;
+    }
+    limitBodyString(input.originalContext, 100000, 'سياق القضية');
+    limitBodyString(input.result, 120000, 'النتيجة الأصلية');
+    if (!Array.isArray(input?.messages) || input.messages.length < 1 || input.messages.length > 40) {
+      const error: any = new Error('سجل المحادثة غير صالح.');
+      error.statusCode = 400;
+      throw error;
+    }
+    for (const message of input.messages) {
+      if (!message || !['user', 'assistant'].includes(message.role) || typeof message.content !== 'string') {
+        const error: any = new Error('رسالة محادثة غير صالحة.');
+        error.statusCode = 400;
+        throw error;
+      }
+      limitBodyString(message.content, 10000, 'رسالة المحادثة');
+    }
+    if (input.messages[input.messages.length - 1]?.role !== 'user') {
+      const error: any = new Error('يجب أن تنتهي المحادثة بسؤال من المستخدم.');
+      error.statusCode = 400;
+      throw error;
+    }
+    payload.taskType = chatType;
+    payload.originalContext = input.originalContext;
+    payload.result = input.result;
+    payload.messages = JSON.stringify(input.messages);
+    const chatPayloadLength = Object.values(payload).reduce((sum, value) => sum + value.length, 0);
+    if (chatPayloadLength > 650000) {
+      const error: any = new Error('حجم سياق الدردشة القانونية أكبر من الحد المسموح.');
+      error.statusCode = 413;
+      throw error;
+    }
+    return payload;
   }
 
   if (taskType === 'ocr') {
@@ -386,6 +433,11 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     await pendingWrite;
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
       fullText = handlerJson.text.trim();
+    }
+    // Legal chat returns a structured JSON response rather than streamed text.
+    // Persist the complete response in the same durable job record for polling clients.
+    if (!fullText.trim() && taskType === 'legal-chat' && fakeRes.statusCode < 400 && typeof handlerJson?.result === 'string' && handlerJson.result.trim()) {
+      fullText = JSON.stringify(handlerJson);
     }
 
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
