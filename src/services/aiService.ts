@@ -28,6 +28,8 @@ export function cleanDirectResponse(rawText: string): string {
   let text = rawText.trim();
   const introPatterns = [
     /^(?:[\s\*\#\-\>]*)(?:أهلاً|مرحباً|عزيزي|المحامي|إليك)[^\n]*\n+/i,
+    /^(?:[\s\*\#\-\>]*)(?:بالطبع|بالتأكيد|حاضر|تمام|أكيد|يسعدني|بكل سرور)[،,:!؛\s]+(?:إليك|هذه|هذا|سأقوم|سأبدأ|سأكتب|سأعد|سأراجع|سأعمل|يمكنني|تفضل|تفضّل)?[^\n]*\n+/i,
+    /^(?:[\s\*\#\-\>]*)(?:سأقوم لك|سأعمل لك|سأبدأ بـ|دعني أ|خليني أ|هنا صياغة|فيما يلي)[^\n]*\n+/i,
   ];
   for (const pattern of introPatterns) {
     text = text.replace(pattern, '').trim();
@@ -126,6 +128,105 @@ function jobStorageKey(type: SavedJobType, userId?: string, storageScope?: strin
   return `amin_ai_job_${type}_${user}`;
 }
 
+interface PendingJobPayloadRecord {
+  jobId: string;
+  type: SavedJobType;
+  payload: Record<string, any>;
+  savedAt: string;
+}
+
+const PENDING_JOB_DB = 'amin-ai-pending-jobs';
+const PENDING_JOB_STORE = 'payloads';
+const pendingJobLocalKey = (jobId: string) => `amin_ai_pending_payload_${jobId}`;
+
+function openPendingJobDb(): Promise<IDBDatabase | null> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof indexedDB === 'undefined') return resolve(null);
+      const request = indexedDB.open(PENDING_JOB_DB, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(PENDING_JOB_STORE)) db.createObjectStore(PENDING_JOB_STORE, { keyPath: 'jobId' });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+      request.onblocked = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function savePendingJobPayload(record: PendingJobPayloadRecord): Promise<void> {
+  // OCR payloads can contain large base64 files, so keep those in IndexedDB.
+  // Smaller legal-task payloads are synchronously stored in localStorage so a
+  // refresh cannot race ahead of saving the recovery data.
+  if (record.type !== 'ocr') {
+    try { localStorage.setItem(pendingJobLocalKey(record.jobId), JSON.stringify(record)); return; } catch {}
+  }
+  const db = await openPendingJobDb();
+  if (!db) {
+    // Small scans may fit localStorage on browsers where IndexedDB is blocked;
+    // never try to put a large base64 image/PDF into localStorage.
+    try {
+      const serialized = JSON.stringify(record);
+      if (serialized.length < 3_000_000) localStorage.setItem(pendingJobLocalKey(record.jobId), serialized);
+    } catch {}
+    return;
+  }
+  const saved = await new Promise<boolean>((resolve) => {
+    try {
+      const transaction = db.transaction(PENDING_JOB_STORE, 'readwrite');
+      transaction.objectStore(PENDING_JOB_STORE).put(record);
+      transaction.oncomplete = () => { db.close(); resolve(true); };
+      transaction.onerror = () => { db.close(); resolve(false); };
+      transaction.onabort = () => { db.close(); resolve(false); };
+    } catch { try { db.close(); } catch {} resolve(false); }
+  });
+  if (!saved) {
+    try {
+      const serialized = JSON.stringify(record);
+      if (serialized.length < 3_000_000) localStorage.setItem(pendingJobLocalKey(record.jobId), serialized);
+    } catch {}
+  }
+}
+
+async function readPendingJobPayload(jobId: string): Promise<PendingJobPayloadRecord | null> {
+  try {
+    const raw = localStorage.getItem(pendingJobLocalKey(jobId));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.jobId === jobId && parsed?.payload && typeof parsed.payload === 'object') return parsed as PendingJobPayloadRecord;
+    }
+  } catch {}
+  const db = await openPendingJobDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const request = db.transaction(PENDING_JOB_STORE, 'readonly').objectStore(PENDING_JOB_STORE).get(jobId);
+      request.onsuccess = () => {
+        const value = request.result;
+        db.close();
+        resolve(value?.jobId === jobId && value?.payload && typeof value.payload === 'object' ? value as PendingJobPayloadRecord : null);
+      };
+      request.onerror = () => { db.close(); resolve(null); };
+    } catch { try { db.close(); } catch {} resolve(null); }
+  });
+}
+
+async function deletePendingJobPayload(jobId: string): Promise<void> {
+  try { localStorage.removeItem(pendingJobLocalKey(jobId)); } catch {}
+  const db = await openPendingJobDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    try {
+      const transaction = db.transaction(PENDING_JOB_STORE, 'readwrite');
+      transaction.objectStore(PENDING_JOB_STORE).delete(jobId);
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); resolve(); };
+      transaction.onabort = () => { db.close(); resolve(); };
+    } catch { try { db.close(); } catch {} resolve(); }
+  });
+}
+
 async function enableCompletionPushNotifications(): Promise<void> {
   try {
     if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
@@ -177,11 +278,18 @@ async function requestSavedJob<T extends Record<string, any>>(
 ): Promise<string> {
   const key = jobStorageKey(type, userId, storageScope);
   const storage = typeof localStorage !== 'undefined' ? localStorage : null;
-  // A manual run always gets a new id. Reusing an old localStorage id is only
-  // allowed when the caller explicitly invokes one of the resume functions.
-  // Keep the newly generated id before POST so a lost response can be recovered
-  // idempotently without charging for a second generation.
+  // Each manual task gets a fresh ID. Save its payload before exposing the ID so
+  // refresh recovery can safely re-submit the exact same idempotent job if the
+  // browser closes before the first POST reaches the server.
   const jobId = resumeId || forcedJobId || makeJobId();
+  let effectivePayload: T = payload;
+  let savedPayloadRecord: PendingJobPayloadRecord | null = null;
+  if (resumeId) {
+    savedPayloadRecord = await readPendingJobPayload(jobId);
+    if (savedPayloadRecord?.type === type) effectivePayload = savedPayloadRecord.payload as T;
+  } else {
+    await savePendingJobPayload({ jobId, type, payload, savedAt: new Date().toISOString() });
+  }
   if (storage) storage.setItem(key, jobId);
   if (type === 'ocr' && storageScope && ocrMetadata && !resumeId) {
     upsertSavedOcrJob(storageScope, userId, {
@@ -194,33 +302,45 @@ async function requestSavedJob<T extends Record<string, any>>(
   }
   const clearJobReference = () => {
     if (storage?.getItem(key) === jobId) storage.removeItem(key);
+    void deletePendingJobPayload(jobId);
     if (type === 'ocr' && storageScope) {
       writeSavedOcrJobs(storageScope, userId, readSavedOcrJobs(storageScope, userId).filter((row) => row.jobId !== jobId));
     }
   };
 
   const headers = getRequestHeaders();
-  let created = Boolean(resumeId);
-  if (!resumeId) {
-    await enableCompletionPushNotifications();
+  let created = false;
+  // Resume paths re-submit the same job ID when the exact payload is available.
+  // The server's unique job ID makes this idempotent: an existing job is reused.
+  const shouldSubmit = !resumeId || Boolean(savedPayloadRecord && savedPayloadRecord.type === type);
+  if (shouldSubmit) {
+    if (!resumeId) void enableCompletionPushNotifications();
     let receivedHttpResponse = false;
     try {
       const createResponse = await fetch('/api/gemini/jobs', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ taskType: type, payload, jobId }),
+        body: JSON.stringify({ taskType: type, payload: effectivePayload, jobId }),
       });
       receivedHttpResponse = true;
       if (!createResponse.ok) {
         const error = await createResponse.json().catch(() => ({}));
-        clearJobReference();
-        throw new Error(error?.error || `تعذر حفظ المهمة (${createResponse.status}).`);
+        // A 5xx can mean the server accepted the request but lost the response;
+        // continue polling the same ID before declaring the task unavailable.
+        if (createResponse.status < 500 && createResponse.status !== 408) {
+          if (!resumeId) clearJobReference();
+          throw new Error(error?.error || `تعذر حفظ المهمة (${createResponse.status}).`);
+        }
+        if (!storage?.getItem(key)) throw new Error(error?.error || `تعذر حفظ المهمة (${createResponse.status}).`);
+      } else {
+        created = true;
       }
-      created = true;
     } catch (err: any) {
-      // Only a transport failure can mean the server accepted the idempotent POST
-      // but its response was lost. HTTP/application errors must be shown immediately.
-      if (receivedHttpResponse || !storage?.getItem(key)) throw err;
+      // An HTTP/application error is authoritative; only a transport failure can
+      // mean the server accepted the idempotent POST but its response was lost.
+      if (receivedHttpResponse) throw err;
+      if (!storage?.getItem(key)) throw err;
+      // Keep the saved payload and continue polling the same durable job.
     }
   }
 
@@ -266,19 +386,12 @@ async function requestSavedJob<T extends Record<string, any>>(
 
       if (data.status === 'completed') {
         const result = String(data.result || lastText);
-
-        // The server persists progress in batches, so the final result can
-        // contain a tail that was never present in partialResult. Always flush
-        // that tail to the live UI callback before resolving the task.
-        if (onChunk && result.startsWith(lastText) && result.length > lastText.length) {
-          onChunk(result.slice(lastText.length));
-        } else if (onChunk && !lastText && result) {
-          onChunk(result);
-        }
-        lastText = result;
-
+        // Refinement keeps its job ID until DraftingView persists the returned
+        // document, closing the small refresh window between server completion
+        // and the component's result-save callback.
+        if (type !== 'refine') void deletePendingJobPayload(jobId);
         if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'completed');
-        else if (storage) storage.removeItem(key);
+        else if (storage && type !== 'refine') storage.removeItem(key);
         return result;
       }
       if (data.status === 'failed') {
@@ -328,7 +441,7 @@ export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: st
 }
 
 
-export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
+export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify' | 'refine', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
   return requestSavedJob(type, {}, onChunk, userId, jobId);
 }
 
@@ -374,7 +487,6 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
         const isSse = (response.headers.get('content-type') || '').toLowerCase().includes('text/event-stream');
         let buffer = '';
         let fullText = '';
-        let sawDone = false;
 
         const processEvent = (raw: string) => {
           const lines = raw.split(/\r?\n/);
@@ -394,8 +506,6 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
             streamStarted = true;
             fullText += event.text;
             onChunk(event.text);
-          } else if (event.type === 'done') {
-            sawDone = true;
           } else if (event.type === 'error') {
             throw new Error(event.error || 'فشلت الاستجابة المتدفقة.');
           }
@@ -413,13 +523,6 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
 
         buffer += decoder.decode();
         if (buffer.trim()) processEvent(buffer);
-
-        // Do not silently report a truncated stream as a successful response.
-        if (!sawDone) {
-          const incomplete: any = new Error('انتهى الاتصال قبل اكتمال بث الإجابة. أعد المحاولة لاسترجاع النتيجة كاملة.');
-          incomplete.streamIncomplete = true;
-          throw incomplete;
-        }
 
         return { result: fullText };
       }
@@ -548,7 +651,7 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
   }
 }
 
-export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string ): Promise<string> {
+export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string, forcedJobId?: string ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     factsOrSubject: draftText,
@@ -559,7 +662,7 @@ export async function refineDraftText( draftText: string, enhancementType: 'more
       draftText,
       enhancementType,
       vaultContext: lawyerVaultContext,
-    }, onChunk, userId);
+    }, onChunk, userId, undefined, undefined, undefined, forcedJobId);
     return cleanDirectResponse(result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
