@@ -4,6 +4,32 @@ import { getSessionToken } from '../services/authService.ts';
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
 interface Props { taskType: 'deconstruct' | 'qualify' | 'draft'; userId?: string | null; originalContext: string; result: string; onResultChange?: (nextResult: string) => void }
 
+// Accept both the structured result used by the current background worker and
+// a plain-text result returned by an older/already-deployed worker version.
+function parseChatJobResult(value: unknown): Record<string, any> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, any>;
+  }
+  let raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return null;
+  for (let depth = 0; depth < 2; depth += 1) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, any>;
+      }
+      if (typeof parsed === 'string' && parsed.trim()) {
+        raw = parsed.trim();
+        continue;
+      }
+      break;
+    } catch {
+      break;
+    }
+  }
+  return { result: raw };
+}
+
 export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalContext, result, onResultChange }) => {
   // A context-specific key preserves a conversation on refresh but isolates different cases.
   const contextFingerprint = (() => {
@@ -149,8 +175,8 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
             }
             transientFailures = 0;
             if (statusData.status === 'completed') {
-              try { finalData = JSON.parse(String(statusData.result || '')); }
-              catch { throw new Error('اكتملت المهمة لكن تعذر قراءة نتيجة الدردشة المحفوظة.'); }
+              finalData = parseChatJobResult(statusData.result);
+              if (!finalData) throw new Error('اكتملت المهمة لكن لم تصل نتيجة دردشة صالحة.');
               break;
             }
             if (statusData.status === 'failed') {
@@ -167,7 +193,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         if (!active) return;
         if (!finalData) throw new Error('ما زالت المهمة قيد المعالجة على الخادم. افتح الشات لاحقًا لاستكمال النتيجة.');
         try { localStorage.removeItem(pendingKey); } catch {}
-        const answer = String(finalData?.result || '').trim();
+        const answer = String(finalData?.result || finalData?.reply || finalData?.answer || '').trim();
         if (!answer) throw new Error('لم تصل إجابة صالحة من المهمة المحفوظة.');
         const updatedResult = typeof finalData?.updatedResult === 'string' ? finalData.updatedResult.trim() : '';
         if (updatedResult && updatedResult !== result.trim()) onResultChangeRef.current?.(updatedResult);
@@ -282,10 +308,9 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
           }
           transientFailures = 0;
           if (statusData.status === 'completed') {
-            try {
-              finalData = JSON.parse(String(statusData.result || ''));
-            } catch {
-              const invalidResult: any = new Error('اكتملت المهمة لكن تعذر قراءة نتيجة الدردشة المحفوظة.');
+            finalData = parseChatJobResult(statusData.result);
+            if (!finalData) {
+              const invalidResult: any = new Error('اكتملت المهمة لكن لم تصل نتيجة دردشة صالحة.');
               invalidResult.terminalJobError = true;
               throw invalidResult;
             }
@@ -308,7 +333,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
       }
       if (!finalData) throw new Error('ما زالت الدردشة قيد المعالجة على الخادم. أعد إرسال السؤال نفسه لاستعادة النتيجة دون بدء مهمة جديدة.');
       try { localStorage.removeItem(pendingKey); } catch {}
-      const answer = String(finalData?.result || '').trim();
+      const answer = String(finalData?.result || finalData?.reply || finalData?.answer || '').trim();
       if (!answer) throw new Error('لم تصل إجابة صالحة. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
       const updatedResult = typeof finalData?.updatedResult === 'string' ? finalData.updatedResult.trim() : '';
       if (updatedResult && updatedResult !== result.trim()) onResultChange?.(updatedResult);
