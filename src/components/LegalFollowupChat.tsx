@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -22,6 +22,14 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [copiedMessage, setCopiedMessage] = useState<string | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the newest message visible when opening the chat, sending a message,
+  // receiving a reply, or showing/hiding the loading indicator.
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [messages, loading]);
 
   const copyMessage = async (content: string, messageKey: string) => {
     try {
@@ -167,9 +175,9 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
       }
       if (!finalData) throw new Error('ما زالت الدردشة قيد المعالجة على الخادم. أعد إرسال السؤال نفسه لاستعادة النتيجة دون بدء مهمة جديدة.');
       try { localStorage.removeItem(pendingKey); } catch {}
-      const answer = String(finalData?.result || '').trim();
+      const answer = String(finalData?.result || '').replace(/^\s*(?:reply|response|answer)\s*[:：-]?\s*(?:\r?\n)?/i, '').trim();
       if (!answer) throw new Error('لم تصل إجابة صالحة. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
-      const updatedResult = typeof finalData?.updatedResult === 'string' ? finalData.updatedResult.trim() : '';
+      const updatedResult = typeof finalData?.updatedResult === 'string' ? finalData.updatedResult.replace(/^\s*(?:reply|response|answer)\s*[:：-]?\s*(?:\r?\n)?/i, '').trim() : '';
       if (updatedResult && updatedResult !== result.trim()) onResultChange?.(updatedResult);
       setMessages((current) => [...current, { role: 'assistant', content: answer }]);
     } catch (err: any) {
@@ -189,7 +197,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
   if (!result.trim()) return null;
   return <section className="mt-5 rounded-2xl border border-emerald-700/60 bg-slate-950/70 p-4 space-y-3" dir="rtl">
     <div><h3 className="font-bold text-emerald-300">مناقشة النتيجة مع أمين</h3><p className="text-xs text-slate-400 mt-1">اسأل عن أي نقطة أو اطلب تعديل النتيجة نفسها؛ عند طلب التعديل سيحدّث أمين النتيجة المعروضة والمحفوظة لتصبح هي النسخة المستخدمة في التصدير.</p></div>
-    {messages.length > 0 && <div className="space-y-3 max-h-96 overflow-y-auto" aria-live="polite">
+    {messages.length > 0 && <div ref={messagesContainerRef} className="space-y-3 max-h-96 overflow-y-auto" aria-live="polite">
       {messages.map((message, index) => {
         const messageKey = `${index}-${message.role}`;
         return <div key={messageKey} className={`rounded-xl p-3 whitespace-pre-wrap text-sm leading-7 ${message.role === 'user' ? 'bg-slate-800 text-white' : 'bg-emerald-950/60 border border-emerald-900 text-slate-100'}`}>
