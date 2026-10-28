@@ -32,21 +32,21 @@ export default async function handler(req: any, res: any) {
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
     const latestUserMessage = lastMessage.content.trim();
 
-    // التحقق الدقيق: هل الطلب موجه خصيصاً لتعديل نصوص داخل "المستند نفسه"؟
-    // لن يتم اعتباره تعديلاً للمستند إلا إذا طلب تغيير شيء صريح في النتيجة (مثل تعديل جملة أو اسم أو بند بداخلها)
-    const isExplicitDocumentEdit = /^(عدل|غير|بدل|احذف|أضف بند|اضف بند|استبدل)\s+.*?(في النتيجة|في المستند|البند|الجملة|الاسم)/i.test(latestUserMessage);
+    // التحقق الدقيق: هل المطلوب تعديل صريح داخل المستند أم مجرد سؤال أو طلب عرض في الشات؟
+    const isExplicitDocumentEdit = /^(عدل البند|غير البند|استبدل البند|عدل الكلمة|غير الكلمة)\s+/i.test(latestUserMessage);
 
     let prompt = '';
     if (isExplicitDocumentEdit) {
-      prompt = `أنت أمين، مساعد قانوني مصري. بناءً على طلب المحامي الصريح بتعديل المستند: "${latestUserMessage}"
-قم بتعديل "النتيجة الحالية للمستند" أدناه وتطبيق التعديل المطلوب، وأرجع المستند كاملاً بعد التعديل فقط بدون أي شرح أو كلام خارجه.
+      // تعديل الجزء المخصص فقط بدون الحاجة لإعادة كتابة كل شيء لو أمكن، أو تحديث المستند بتركيز
+      prompt = `أنت أمين، مساعد قانوني مصري. بناءً على طلب المحامي بتعديل جزء محدد: "${latestUserMessage}"
+قم بتحديث المستند وتطبيق هذا التعديل المحدد فقط مع الحفاظ على باقي البنود، وأرجع المستند كاملاً بعد التعديل بشكل مباشر وبدون مقدمات.
 
 [النتيجة الحالية للمستند]
 ${result}`;
     } else {
-      // أي طلب آخر (سؤال، استفسار، طلب إظهار نص في الشات، إلخ) يتم الرد عليه في الشات مباشرة
+      // أي طلب آخر (سؤال، كتابة المذكرة في الشات للإطلاع، استفسار، إلخ) يتم الرد عليه في الشات مباشرة
       prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}).
-أجب على طلب أو سؤال المحامي التالي في الشات مباشرة بناءً على فهمك للنتيجة الحالية للمستند. لا تقم بتعديل المستند الحالي.
+أجب على طلب أو سؤال المحامي التالي في الشات مباشرة (مثل كتابة المذكرة هنا أو الرد على استفساره) بناءً على النتيجة الحالية. لا تقم بتعديل المستند الأساسي ما لم يُطلب ذلك صراحة.
 
 [النتيجة الحالية للمستند للاطلاع والاستعانة بها]
 ${result}
@@ -57,7 +57,7 @@ ${latestUserMessage}`;
 
     const rawAnswer = await Promise.race([
       generateDeepLegalResponse(prompt),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), 45000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), 75000))
     ]) as string;
 
     let answer = '';
@@ -65,9 +65,9 @@ ${latestUserMessage}`;
 
     const cleanedAnswer = rawAnswer.replace(/^```(?:text|markdown|json)?\s*/i, '').replace(/\s*```$/, '').trim();
 
-    if (isExplicitDocumentEdit && cleanedAnswer.length > 50) {
+    if (isExplicitDocumentEdit && cleanedAnswer.length > 20) {
       updatedResult = cleanedAnswer;
-      answer = 'تم تحديث النتيجة في مربع المستند بناءً على طلبك.';
+      answer = 'تم تعديل وتحديث المستند بناءً على طلبك.';
     } else {
       answer = cleanedAnswer;
       updatedResult = null;
@@ -81,7 +81,7 @@ ${latestUserMessage}`;
       trialRemaining: usage.trialRemaining 
     });
 
-  } catch (err: any) {
+  } clarify_catch: catch (err: any) {
     console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
     const isTimeout = err?.message === 'AI_TIMEOUT';
     return res.status(isTimeout ? 504 : 500).json({
