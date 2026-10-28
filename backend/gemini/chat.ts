@@ -42,7 +42,7 @@ export default async function handler(req: any, res: any) {
     
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
 
-    const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة ${taskLabel}. المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة: {"reply":"الإجابة أو النص المطلوب داخل الشات","updatedResult":null} تعليمات الإخراج المباشر: ابدأ من أول كلمة بالإجابة أو النص المطلوب مباشرة. ممنوع افتتاح الرد بكلمات تمهيدية مثل «بالطبع»، «بالتأكيد»، «حاضر»، «إليك»، «سأقوم»، أو شرح ما ستفعله؛ نفّذ المطلوب فوراً. إذا كانت المهمة تعديلاً، أخرج المستند المعدل مباشرة دون إعلان مسبق. تعليمات الهيكلة والتنسيق والتعامل مع العامية: 1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي"). 2. ميّز بدقة بين مكان الإجابة وبين تعديل المستند: - إذا طلب المحامي كتابة مذكرة جديدة أو صياغة نص أو شرح/إجابة داخل الشات أو المحادثة، فاكتب المحتوى المطلوب كاملاً في "reply" واجعل "updatedResult": null. لا تعتبر كلمات مثل "اكتب" أو "مذكرة" وحدها أمراً بتعديل النتيجة. - لا تضع نصاً في "updatedResult" إلا إذا كان الطلب صريحاً بتعديل المستند/المذكرة/النتيجة الحالية أو جزء محدد منها. عندها فقط ضع النسخة المعدلة كاملة في "updatedResult" واجعل "reply" تأكيداً قصيراً. - الأسئلة والمناقشات والاستفسارات تكون إجاباتها في "reply" دائماً، و"updatedResult": null. 3. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً. 4. حافظ على نص المستند الأصلي بالكامل وغير فقط ما طلبه المحامي دون إعادة كتابة الترويسات بلا داعٍ. [سياق القضية الأصلي] ${String(originalContext || '').slice(0, 100000)} [النتيجة الحالية للمستند] ${result} [سجل المحادثة] ${history} أرجع JSON فقط:`;
+    const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة ${taskLabel}. المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة: {"reply":"الإجابة أو النص المطلوب داخل الشات","updatedResult":null} تعليمات الهيكلة والتنسيق والتعامل مع العامية: 1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي"). 2. ميّز بدقة بين مكان الإجابة وبين تعديل المستند: - إذا طلب المحامي كتابة مذكرة جديدة أو صياغة نص أو شرح/إجابة داخل الشات أو المحادثة، فاكتب المحتوى المطلوب كاملاً في "reply" واجعل "updatedResult": null. لا تعتبر كلمات مثل "اكتب" أو "مذكرة" وحدها أمراً بتعديل النتيجة. - لا تضع نصاً في "updatedResult" إلا إذا كان الطلب صريحاً بتعديل المستند/المذكرة/النتيجة الحالية أو جزء محدد منها. عندها فقط ضع النسخة المعدلة كاملة في "updatedResult" واجعل "reply" تأكيداً قصيراً. - الأسئلة والمناقشات والاستفسارات تكون إجاباتها في "reply" دائماً، و"updatedResult": null. 3. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً. 4. حافظ على نص المستند الأصلي بالكامل وغير فقط ما طلبه المحامي دون إعادة كتابة الترويسات بلا داعٍ. [سياق القضية الأصلي] ${String(originalContext || '').slice(0, 100000)} [النتيجة الحالية للمستند] ${result} [سجل المحادثة] ${history} أرجع JSON فقط:`;
 
     const rawAnswer = await generateDeepLegalResponse(prompt);
     let answer = '';
@@ -70,9 +70,6 @@ export default async function handler(req: any, res: any) {
       const parsed = JSON.parse(cleaned);
       
       answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
-      // Remove common conversational lead-ins if the model emits one despite
-      // the direct-output instruction; keep the actual legal answer untouched.
-      answer = answer.replace(/^(?:بالطبع|بالتأكيد|حاضر|تمام|أكيد|يسعدني)[،,:!؛\s]+(?:إليك|هذا|هذه|سأقوم|سأبدأ|سأكتب|سأعد|سأراجع|سأعمل|يمكنني|تفضل|تفضّل)?[^\n]*\n+/i, '').trim();
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
     } catch {
       const plainAnswer = sanitizeLegalText(rawAnswer);
@@ -134,12 +131,7 @@ export default async function handler(req: any, res: any) {
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.status(200).json({ result: answer, updatedResult, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
-    console.error('Error in /api/gemini/chat:', {
-      message: err?.message || 'unknown error',
-      geminiCause: err?.geminiError?.message || err?.cause?.geminiError?.message || null,
-      openRouterCause: err?.openRouterError?.message || err?.cause?.openRouterError?.message || err?.cause?.message || null,
-      status: err?.statusCode || err?.status || null,
-    });
+    console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
     const code = Number(err?.statusCode || err?.status);
     const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 500;
     const retryAfter = Number(err?.retryAfter || 0);
