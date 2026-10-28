@@ -134,7 +134,12 @@ export default async function handler(req: any, res: any) {
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.status(200).json({ result: answer, updatedResult, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
-    console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
+    console.error('Error in /api/gemini/chat:', {
+      message: err?.message || 'unknown error',
+      geminiCause: err?.geminiError?.message || err?.cause?.geminiError?.message || null,
+      openRouterCause: err?.openRouterError?.message || err?.cause?.openRouterError?.message || err?.cause?.message || null,
+      status: err?.statusCode || err?.status || null,
+    });
     const code = Number(err?.statusCode || err?.status);
     const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 500;
     const retryAfter = Number(err?.retryAfter || 0);
