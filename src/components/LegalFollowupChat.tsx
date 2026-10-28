@@ -98,7 +98,6 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
     }
     try { localStorage.setItem(storageKey, JSON.stringify(savedMessages)); } catch {}
     setMessages(savedMessages);
-    const requestMessages = savedMessages.slice(-40);
     setLoading(true);
     setError('');
 
@@ -120,7 +119,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
               body: JSON.stringify({
                 taskType: 'legal-chat',
                 jobId,
-                payload: { taskType, originalContext, result, messages: requestMessages },
+                payload: { taskType, originalContext, result, messages: savedMessages },
               }),
             });
             createError = null;
@@ -203,7 +202,6 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
       return;
     }
     const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: question }];
-    const requestMessages = nextMessages.slice(-40);
     setMessages(nextMessages);
     setDraft('');
     setLoading(true);
@@ -249,7 +247,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
             body: JSON.stringify({
               taskType: 'legal-chat',
               jobId,
-              payload: { taskType, originalContext, result, messages: requestMessages },
+              payload: { taskType, originalContext, result, messages: nextMessages },
             }),
           });
           createError = null;
@@ -265,26 +263,6 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         const retryAfter = Number(createResponse.headers.get('Retry-After') || createData?.retryAfter || 0);
         const serverMessage = String(createData?.error || '');
         if (createResponse.status === 429) throw new Error(serverMessage || `تم الوصول إلى مهلة الاستخدام. انتظر ${retryAfter || 30} ثانية ثم أعد الإرسال.`);
-
-        // If the durable queue endpoint is temporarily unavailable, keep the chat
-        // usable through its existing direct endpoint instead of silently disabling
-        // answers and document edits. Do not fall back on auth/rate-limit responses.
-        if ([500, 502, 503, 504].includes(createResponse.status)) {
-          const directResponse = await fetch('/api/gemini/chat', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ taskType, originalContext, result, messages: requestMessages }),
-          });
-          const directData = await directResponse.json().catch(() => ({}));
-          if (!directResponse.ok) throw new Error(String(directData?.error || serverMessage || `تعذر بدء الدردشة القانونية (${directResponse.status}).`));
-          const directAnswer = String(directData?.result || '').trim();
-          if (!directAnswer) throw new Error('لم تصل إجابة صالحة من المساعد القانوني.');
-          try { localStorage.removeItem(pendingKey); } catch {}
-          const directUpdatedResult = typeof directData?.updatedResult === 'string' ? directData.updatedResult.trim() : '';
-          if (directUpdatedResult && directUpdatedResult !== result.trim()) onResultChange?.(directUpdatedResult);
-          setMessages((current) => [...current, { role: 'assistant', content: directAnswer }]);
-          return;
-        }
         throw new Error(serverMessage || `تعذر حفظ مهمة الدردشة القانونية (${createResponse.status}).`);
       }
 
