@@ -1,3 +1,5 @@
+PROJECT PATH: src/components/LegalFollowupChat.tsx
+
 import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
 
@@ -114,7 +116,14 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
             body: JSON.stringify({
               taskType: 'legal-chat',
               jobId,
-              payload: { taskType, originalContext, result, messages: nextMessages },
+              // Send only the current request to the AI. Keep the full transcript
+              // in local UI state, but do not resend old chat turns or duplicate case context.
+              payload: {
+              taskType,
+              originalContext: '',
+              result,
+              messages: [{ role: 'user', content: question }],
+            },
             }),
           });
           createError = null;
