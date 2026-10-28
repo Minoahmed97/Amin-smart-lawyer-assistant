@@ -8,11 +8,22 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
-/** Continue only when the provider confirms that its output-token cap was reached. */
-function hitOutputTokenLimit(reason: unknown): boolean {
+/** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
+function isBlockedFinishReason(reason: unknown): boolean {
   const normalized = String(reason || '').trim().toUpperCase();
-  // Gemini reports MAX_TOKENS; OpenRouter-compatible models report LENGTH.
-  return normalized === 'MAX_TOKENS' || normalized === 'MAX_OUTPUT_TOKENS' || normalized === 'LENGTH';
+  return ['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY', 'CONTENT_FILTER'].includes(normalized);
+}
+
+function mergeContinuation(previous: string, next: string): string {
+  if (!next) return '';
+  if (!previous) return next;
+  if (next.startsWith(previous)) return next.slice(previous.length);
+  if (previous.startsWith(next)) return '';
+  const maxOverlap = Math.min(previous.length, next.length, 6000);
+  for (let overlap = maxOverlap; overlap >= 80; overlap -= 1) {
+    if (previous.slice(-overlap) === next.slice(0, overlap)) return next.slice(overlap);
+  }
+  return next;
 }
 
 export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
@@ -25,134 +36,251 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
+  const maxContinuations = 5;
+  const usedPairs = new Set<string>();
+  const deadlineAt = Date.now() + 270000;
+  let accumulatedText = '';
+  let continuationCount = 0;
+  let lastError: any = null;
+  let previousPair = '';
+
+  const makeContinuationPrompt = () => accumulatedText
+    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
+    : optimizedPrompt;
+
   if (onChunk) {
-    await executeWithKeyRotationStream(async (ai, _key, model) => {
-      // Select the search tool for the provider currently handling this attempt.
-      // OpenRouter and Gemini are independent: enabling one must not depend on the other.
-      const providerSearchEnabled = options.legalResearch && (_key === 'openrouter'
-        ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-        : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
-      // Preserve the existing streaming/API path, but continue generation when
-      // Gemini explicitly ends a response because its output-token limit was hit.
-      // Each continuation receives the already emitted text so it can continue
-      // from the exact endpoint instead of restarting the document.
-      return (async function* () {
-        let accumulatedText = '';
-        let continuationCount = 0;
-        let nextPrompt = optimizedPrompt;
-        let completed = false;
-        let pendingMarkerTail = '';
+    let completed = false;
+    while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
+      const segmentPrompt = makeContinuationPrompt();
+      const segmentBaseText = accumulatedText;
+      let segmentBuffer = '';
+      let segmentPrefixResolved = !segmentBaseText.length;
+      let segmentCompleted = false;
+      let activePair = '';
+      let activePairLabel = '';
+      let finishReason = '';
+      let segmentError: any = null;
 
-        while (true) {
-          const textLengthBeforeStream = accumulatedText.length;
-          const stream = await ai.models.generateContentStream({
-            model,
-            contents: nextPrompt,
-            config: {
-              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              maxOutputTokens: 32768,
-              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-              thinkingConfig: { thinkingLevel: 'low' },
-            },
-          });
+      try {
+        await executeWithKeyRotationStream(async (ai, key, model) => {
+          activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
+          activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
+          const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
+            ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
+            : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
 
-          let finishReason = '';
-            for await (const chunk of stream) {
-            const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-            if (chunkText) {
-              const candidateText = pendingMarkerTail + chunkText;
-              const markerIndex = candidateText.indexOf(completionMarker);
+          return (async function* () {
+            let pendingMarkerTail = '';
+            let receivedText = false;
+            const stream = await ai.models.generateContentStream({
+              model,
+              contents: segmentPrompt,
+              config: {
+                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                temperature: 0.15,
+                maxOutputTokens: 32768,
+                ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+                thinkingConfig: { thinkingLevel: 'low' },
+              },
+            });
 
-              if (markerIndex >= 0) {
-                const visibleText = candidateText.slice(0, markerIndex);
-                accumulatedText += visibleText;
-                pendingMarkerTail = '';
-                completed = true;
-                yield { ...chunk, text: visibleText };
-              } else {
-                const keepLength = Math.max(0, completionMarker.length - 1);
+            try {
+              for await (const chunk of stream) {
+                const candidateReason = chunk?.candidates?.[0]?.finishReason;
+                if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+                const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+                if (!chunkText) continue;
+                receivedText = true;
+                const candidateText = pendingMarkerTail + chunkText;
+                const markerIndex = candidateText.indexOf(completionMarker);
+                if (markerIndex >= 0) {
+                  const visibleText = candidateText.slice(0, markerIndex);
+                  pendingMarkerTail = '';
+                  segmentCompleted = true;
+                  if (visibleText) yield { text: visibleText };
+                  break;
+                }
+                const keepLength = completionMarker.length - 1;
                 const splitAt = Math.max(0, candidateText.length - keepLength);
                 const visibleText = candidateText.slice(0, splitAt);
                 pendingMarkerTail = candidateText.slice(splitAt);
-                if (visibleText) {
-                    accumulatedText += visibleText;
-                  yield { ...chunk, text: visibleText };
-                }
+                if (visibleText) yield { text: visibleText };
               }
-            } else {
-              yield chunk;
+            } catch (error) {
+              if (pendingMarkerTail) yield { text: pendingMarkerTail };
+              pendingMarkerTail = '';
+              throw error;
             }
-            const candidates = chunk?.candidates;
-            const candidateReason = candidates?.[0]?.finishReason;
-            if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+
+            if (!segmentCompleted && pendingMarkerTail) yield { text: pendingMarkerTail };
+            if (!receivedText) {
+              const emptyError: any = new Error(`لم يصل نص من النموذج (finishReason: ${finishReason || 'UNKNOWN'}).`);
+              emptyError.status = 503;
+              emptyError.statusCode = 503;
+              throw emptyError;
+            }
+            if (isBlockedFinishReason(finishReason)) {
+              const blockedError: any = new Error(`توقف النموذج بسبب قيد محتوى (finishReason: ${finishReason}).`);
+              blockedError.status = 502;
+              blockedError.statusCode = 502;
+              blockedError.blockedResponse = true;
+              throw blockedError;
+            }
+          })();
+        }, (text) => {
+          if (!text) return;
+          segmentBuffer += text;
+          if (segmentPrefixResolved) {
+            accumulatedText += text;
+            onChunk(text);
+            return;
           }
-
-          if (!completed && pendingMarkerTail) {
-            accumulatedText += pendingMarkerTail;
-            yield { text: pendingMarkerTail };
-            pendingMarkerTail = '';
+          if (segmentBaseText.startsWith(segmentBuffer) && segmentBuffer.length < segmentBaseText.length) return;
+          const overlapWindow = Math.min(segmentBaseText.length, 6000);
+          if (segmentBuffer.length < overlapWindow) return;
+          const addition = mergeContinuation(segmentBaseText, segmentBuffer);
+          if (addition) {
+            accumulatedText += addition;
+            onChunk(addition);
           }
-
-          // Treat an empty model stream as a failed attempt, not as success.
-          // This lets the shared provider/key rotation try another model or key
-          // before the user receives the final generation error.
-          if (!accumulatedText.trim() || (accumulatedText.length === textLengthBeforeStream && !completed)) {
-            const noTextError: any = new Error(
-              `استجاب مزود الذكاء الاصطناعي دون نص قابل للاستخدام (finishReason: ${finishReason || 'UNKNOWN'}).`,
-            );
-            noTextError.status = 503;
-            noTextError.statusCode = 503;
-            throw noTextError;
-          }
-
-          if (completed || continuationCount >= 3 || !hitOutputTokenLimit(finishReason)) {
-            break;
-          }
-
-          continuationCount += 1;
-          nextPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة التي لم تصل إلى علامة الاكتمال] هذا هو النص الذي أخرجته حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك النتيجة النهائية والطلبات الختامية إن كانت مطلوبة. لا تعتبر النص السابق مكتملاً، ولا تضع علامة الاكتمال إلا بعد إتمام كل المطلوب. سبب الاستكمال التقني: ${finishReason || 'انتهى البث دون علامة اكتمال'}.`;
-        }
-      })();
-    }, onChunk);
-    return '';
-  }
-
-  return executeWithKeyRotation(async (ai, _key, model) => {
-    // Keep provider search settings independent on the non-streaming path too.
-    const providerSearchEnabled = options.legalResearch && (_key === 'openrouter'
-      ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-      : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
-    let currentPrompt = optimizedPrompt;
-    let fullText = '';
-
-    for (let attempt = 0; attempt <= 3; attempt += 1) {
-      const response = await ai.models.generateContent({
-        model,
-        contents: currentPrompt,
-        config: {
-          systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-          temperature: 0.15,
-          maxOutputTokens: 32768,
-          ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-        },
-      });
-
-      const rawText = typeof response.text === 'string' ? response.text : '';
-      const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
-      const markerIndex = rawText.indexOf(completionMarker);
-      const visibleText = markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText;
-      fullText += visibleText;
-
-      if (markerIndex >= 0 || !rawText.trim() || attempt >= 3 || !hitOutputTokenLimit(finishReason)) {
-        break;
+          segmentPrefixResolved = true;
+        }, undefined, undefined, false, {
+          deadlineAt,
+          avoidPairs: Array.from(usedPairs),
+        });
+      } catch (error: any) {
+        segmentError = error;
+        lastError = error;
       }
 
-      currentPrompt = `${optimizedPrompt} [استكمال بسبب بلوغ حد الإخراج فقط] هذا هو النص الذي تم توليده حتى الآن. أكمل منه مباشرة دون إعادة أي جزء سابق أو تلخيصه: ${fullText} أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason}.`;
+      if (activePair) usedPairs.add(activePair);
+      if (segmentError?.blockedResponse) throw segmentError;
+      if (!segmentPrefixResolved && segmentBuffer) {
+        const addition = mergeContinuation(segmentBaseText, segmentBuffer);
+        if (addition) {
+          accumulatedText += addition;
+          onChunk(addition);
+        }
+        segmentPrefixResolved = true;
+      }
+
+      if (segmentCompleted) {
+        completed = true;
+        break;
+      }
+      if (!segmentBuffer.trim() || accumulatedText.length === segmentBaseText.length) {
+        throw segmentError || new Error('لم يصل نص جديد أثناء محاولة استكمال المستند.');
+      }
+      if (continuationCount >= maxContinuations) {
+        const incompleteError: any = new Error(`لم تكتمل الإجابة بعد ${maxContinuations} محاولات استكمال؛ لم تصل علامة اكتمال المستند.`);
+        incompleteError.status = 502;
+        incompleteError.statusCode = 502;
+        incompleteError.cause = lastError;
+        throw incompleteError;
+      }
+
+      console.info('[counter-brief] continuing incomplete output', {
+        finishReason: finishReason || 'UNKNOWN',
+        generatedCharacters: accumulatedText.length,
+        continuationCount: continuationCount + 1,
+        providerModel: activePairLabel || 'unknown',
+        changedConnection: Boolean(previousPair && activePair && previousPair !== activePair),
+        previousRequestFailed: Boolean(segmentError),
+      });
+      previousPair = activePair;
+      continuationCount += 1;
     }
 
-    return fullText.trim();
-  });
+    if (!completed) {
+      const incompleteError: any = new Error('انتهى الوقت المتاح قبل اكتمال المستند القانوني.');
+      incompleteError.status = 504;
+      incompleteError.statusCode = 504;
+      throw incompleteError;
+    }
+    return accumulatedText.trim();
+  }
+
+  while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
+    const segmentPrompt = makeContinuationPrompt();
+    let activePair = '';
+    let activePairLabel = '';
+    let segmentResult: any;
+    try {
+      segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
+        activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
+        activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
+        const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
+          ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
+          : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+        const response = await ai.models.generateContent({
+          model,
+          contents: segmentPrompt,
+          config: {
+            systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+            temperature: 0.15,
+            maxOutputTokens: 32768,
+            ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+          },
+        });
+        const rawText = typeof response.text === 'string' ? response.text : '';
+        const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
+        if (!rawText.trim()) {
+          const emptyError: any = new Error(`أعاد مزود الذكاء الاصطناعي نصاً فارغاً (finishReason: ${finishReason || 'UNKNOWN'}).`);
+          emptyError.status = 503;
+          emptyError.statusCode = 503;
+          throw emptyError;
+        }
+        if (isBlockedFinishReason(finishReason)) {
+          const blockedError: any = new Error(`توقف النموذج بسبب قيد محتوى (finishReason: ${finishReason}).`);
+          blockedError.status = 502;
+          blockedError.statusCode = 502;
+          blockedError.blockedResponse = true;
+          throw blockedError;
+        }
+        const markerIndex = rawText.indexOf(completionMarker);
+        return {
+          text: markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText,
+          completed: markerIndex >= 0,
+          finishReason,
+        };
+      }, undefined, undefined, false, {
+        deadlineAt,
+        avoidPairs: Array.from(usedPairs),
+      });
+    } catch (error: any) {
+      lastError = error;
+      if (error?.blockedResponse) throw error;
+      if (activePair) usedPairs.add(activePair);
+      throw error;
+    }
+
+    if (activePair) usedPairs.add(activePair);
+    const addition = mergeContinuation(accumulatedText, segmentResult.text || '');
+    accumulatedText += addition;
+    if (segmentResult.completed) return accumulatedText.trim();
+    if (!addition.trim()) throw new Error(`لم يصل نص جديد أثناء الاستكمال (finishReason: ${segmentResult.finishReason || 'UNKNOWN'}).`);
+    if (continuationCount >= maxContinuations) {
+      const incompleteError: any = new Error(`لم تكتمل الإجابة بعد ${maxContinuations} محاولات استكمال؛ لم تصل علامة اكتمال المستند.`);
+      incompleteError.status = 502;
+      incompleteError.statusCode = 502;
+      incompleteError.cause = lastError;
+      throw incompleteError;
+    }
+    console.info('[counter-brief] continuing incomplete output', {
+      finishReason: segmentResult.finishReason || 'UNKNOWN',
+      generatedCharacters: accumulatedText.length,
+      continuationCount: continuationCount + 1,
+      providerModel: activePairLabel || 'unknown',
+      changedConnection: Boolean(previousPair && activePair && previousPair !== activePair),
+    });
+    previousPair = activePair;
+    continuationCount += 1;
+  }
+
+  const incompleteError: any = new Error('انتهى الوقت المتاح قبل اكتمال المستند القانوني.');
+  incompleteError.status = 504;
+  incompleteError.statusCode = 504;
+  throw incompleteError;
 }
 
 export default async function handler(req: any, res: any) {
