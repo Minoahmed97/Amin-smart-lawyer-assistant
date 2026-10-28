@@ -48,7 +48,7 @@ function normalizeMessages(contents: any, systemInstruction?: any) {
   return messages;
 }
 
-function buildPayload(options: any, model: string, stream: boolean) {
+function buildPayload(options: any, model: string, stream: boolean, providerName = 'OpenRouter') {
   const config = options?.config || {};
   return {
     model,
@@ -59,9 +59,9 @@ function buildPayload(options: any, model: string, stream: boolean) {
     // automatically when a model ends early. Providers/models may enforce lower limits.
     max_tokens: Math.max(1024, Math.min(
       typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : 16384,
-      Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS) > 0
+      providerName === 'Groq' ? 8192 : (Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS) > 0
         ? Math.min(32768, Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS))
-        : 16384,
+        : 32768),
     )),
     stream,
   };
@@ -75,19 +75,22 @@ type OpenRouterRequest = {
   didTimeout: () => boolean;
 };
 
-function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
+function createTimeoutError(timeoutMs: number, beforeFirstText = false, providerName = 'OpenRouter') {
   const error: any = new Error(beforeFirstText
-    ? `لم يصل أول جزء من النص عبر OpenRouter خلال ${Math.ceil(timeoutMs / 1000)} ثانية.`
-    : `انتهت مهلة طلب OpenRouter بعد ${Math.ceil(timeoutMs / 1000)} ثانية دون تحديث.`);
+    ? `لم يصل أول جزء من النص عبر ${providerName} خلال ${Math.ceil(timeoutMs / 1000)} ثانية.`
+    : `انتهت مهلة طلب ${providerName} بعد ${Math.ceil(timeoutMs / 1000)} ثانية دون تحديث.`);
   error.status = 504;
   error.statusCode = 504;
   return error;
 }
 
-async function request(options: any, model: string, stream: boolean): Promise<OpenRouterRequest> {
-  const apiKey = String(options?.providerApiKey || process.env.OPENROUTER_API_KEY || '').trim();
+async function request( options: any, model: string, stream: boolean, provider: { baseUrl?: string; apiKey?: string; providerName?: string } = {}, ): Promise<OpenRouterRequest> {
+  const providerName = provider.providerName || 'OpenRouter';
+  const baseUrl = (provider.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
+  // Never send the OpenRouter credential to a different provider if its own key is missing.
+  const apiKey = provider.apiKey?.trim() || (providerName === 'OpenRouter' ? process.env.OPENROUTER_API_KEY?.trim() : '');
   if (!apiKey) {
-    const error: any = new Error('اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
+    const error: any = new Error(providerName === 'Groq' ? 'مفتاح Groq غير مضبوط.' : 'اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
     error.statusCode = 503;
     throw error;
   }
@@ -96,8 +99,6 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
     ? Math.min(requestedTimeout, 285000)
     : (stream ? 60000 : 120000);
   const requestDeadlineAt = Number(options?.requestDeadlineAt);
-  const baseUrl = String(options?.providerBaseUrl || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
-  const providerName = /api\.groq\.com\/openai\/v1$/i.test(baseUrl) ? 'Groq' : 'OpenRouter';
   const controller = new AbortController();
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -121,25 +122,23 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   resetTimeout();
   let response: Response;
   try {
-    const isOpenRouter = /openrouter\.ai\/api\/v1$/i.test(baseUrl);
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    };
-    if (isOpenRouter) {
-      headers['HTTP-Referer'] = process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app';
-      headers['X-Title'] = 'Amin Smart Lawyer Assistant';
-    }
     response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      headers,
-      body: JSON.stringify(buildPayload(options, model, stream)),
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...(providerName === 'OpenRouter' ? {
+          'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app',
+          'X-Title': 'Amin Smart Lawyer Assistant',
+        } : {}),
+      },
+      body: JSON.stringify(buildPayload(options, model, stream, providerName)),
       signal: controller.signal,
     });
   } catch (error: any) {
     clearRequestTimeout();
     if (timedOut) {
-      throw createTimeoutError(activeTimeoutMs, stream);
+      throw createTimeoutError(activeTimeoutMs, stream, providerName);
     }
     throw error;
   }
@@ -149,7 +148,7 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
       body = await response.text();
     } catch {
       clearRequestTimeout();
-      if (timedOut) throw createTimeoutError(activeTimeoutMs, stream);
+      if (timedOut) throw createTimeoutError(activeTimeoutMs, stream, providerName);
     }
     clearRequestTimeout();
     const error: any = new Error(`${providerName} request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
@@ -166,15 +165,13 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   };
 }
 
-export function createOpenRouterCompatibleClient( defaultTimeoutMs = 120000, requestDeadlineAt?: number, providerBaseUrl = 'https://openrouter.ai/api/v1', providerApiKey?: string, ) {
+export function createOpenRouterCompatibleClient( defaultTimeoutMs = 120000, requestDeadlineAt?: number, baseUrl = 'https://openrouter.ai/api/v1', apiKey?: string, providerName = 'OpenRouter', ) {
   const applyDefaultTimeout = (options: any) => ({
     ...options,
     requestTimeoutMs: Number(options?.requestTimeoutMs) >= 1000
       ? options.requestTimeoutMs
       : defaultTimeoutMs,
     ...(Number.isFinite(requestDeadlineAt) ? { requestDeadlineAt } : {}),
-    providerBaseUrl,
-    ...(providerApiKey ? { providerApiKey } : {}),
   });
   return {
     models: {
@@ -182,13 +179,13 @@ export function createOpenRouterCompatibleClient( defaultTimeoutMs = 120000, req
         const timedOptions = applyDefaultTimeout(options);
         let pending: OpenRouterRequest | null = null;
         try {
-          pending = await request(timedOptions, timedOptions.model, false);
+          pending = await request(timedOptions, timedOptions.model, false, { baseUrl, apiKey, providerName });
           const data: any = await pending.response.json();
           const text = data?.choices?.[0]?.message?.content;
           const finishReason = data?.choices?.[0]?.finish_reason;
           const normalizedText = typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '';
           if (!normalizedText.trim()) {
-            const emptyError: any = new Error(`OpenRouter model ${timedOptions.model} returned no text (finish_reason: ${finishReason || 'UNKNOWN'}).`);
+            const emptyError: any = new Error(`${providerName} model ${timedOptions.model} returned no text (finish_reason: ${finishReason || 'UNKNOWN'}).`);
             emptyError.status = 503;
             emptyError.statusCode = 503;
             throw emptyError;
@@ -198,7 +195,7 @@ export function createOpenRouterCompatibleClient( defaultTimeoutMs = 120000, req
             candidates: finishReason ? [{ finishReason: String(finishReason).toUpperCase() }] : [],
           };
         } catch (error: any) {
-          if (pending?.didTimeout()) throw createTimeoutError(pending.timeoutMs());
+          if (pending?.didTimeout()) throw createTimeoutError(pending.timeoutMs(), false, providerName);
           throw error;
         } finally {
           pending?.clearTimeout();
@@ -206,11 +203,11 @@ export function createOpenRouterCompatibleClient( defaultTimeoutMs = 120000, req
       },
       generateContentStream: async (options: any) => {
         const timedOptions = applyDefaultTimeout(options);
-        const pending = await request(timedOptions, timedOptions.model, true);
+        const pending = await request(timedOptions, timedOptions.model, true, { baseUrl, apiKey, providerName });
         const response = pending.response;
         if (!response.body) {
           pending.clearTimeout();
-          throw new Error('OpenRouter لم يُرجع تدفق استجابة.');
+          throw new Error(`${providerName} لم يُرجع تدفق استجابة.`);
         }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -268,13 +265,13 @@ export function createOpenRouterCompatibleClient( defaultTimeoutMs = 120000, req
               }
             }
             if (!firstTextSeen && !pending.didTimeout()) {
-              const emptyError: any = new Error(`OpenRouter model ${timedOptions.model} closed its stream before returning text.`);
+              const emptyError: any = new Error(`${providerName} model ${timedOptions.model} closed its stream before returning text.`);
               emptyError.status = 503;
               emptyError.statusCode = 503;
               throw emptyError;
             }
           } catch (error: any) {
-            if (pending.didTimeout()) throw createTimeoutError(pending.timeoutMs(), !firstTextSeen);
+            if (pending.didTimeout()) throw createTimeoutError(pending.timeoutMs(), !firstTextSeen, providerName);
             throw error;
           } finally {
             pending.clearTimeout();
