@@ -159,6 +159,9 @@ function safePayload(input: any, taskType: string) {
     payload.originalContext = input.originalContext;
     payload.result = input.result;
     payload.messages = JSON.stringify(input.messages);
+    // Some deployed database schemas constrain task_type to the original job types.
+    // Persist legal-chat under the existing 'refine' type and route it explicitly in the worker.
+    payload._actualTaskType = 'legal-chat';
     const chatPayloadLength = Object.values(payload).reduce((sum, value) => sum + value.length, 0);
     if (chatPayloadLength > 650000) {
       const error: any = new Error('حجم سياق الدردشة القانونية أكبر من الحد المسموح.');
@@ -273,8 +276,12 @@ function toPayload(value: unknown): Record<string, string> {
 function startClaimedJob(job: any) {
   const userId = String(job?.user_id || '');
   const jobId = String(job?.id || '');
-  const taskType = String(job?.task_type || '');
+  const storedTaskType = String(job?.task_type || '');
   const payload = toPayload(job?.payload);
+  // Keep the database task_type within the existing supported values while
+  // routing legal-chat jobs to the dedicated chat handler in the worker.
+  const taskType = payload._actualTaskType === 'legal-chat' ? 'legal-chat' : storedTaskType;
+  delete payload._actualTaskType;
   if (!userId || !jobId || !TASK_HANDLERS[taskType]) {
     void patchJob(jobId, userId, { status: 'failed', error: 'بيانات المهمة المحفوظة غير صالحة.', payload: {} }).catch(() => undefined);
     return;
@@ -492,6 +499,9 @@ export default async function handler(req: any, res: any) {
 
       const requestedId = String(requestBody?.jobId || '').trim();
       const id = /^[0-9a-f-]{36}$/i.test(requestedId) ? requestedId : crypto.randomUUID();
+      // Keep the stored task_type compatible with existing production DB constraints.
+      // The actual handler for legal chat is recorded in payload._actualTaskType.
+      const storedTaskType = taskType === 'legal-chat' ? 'refine' : taskType;
       const insert = await supabase(JOB_TABLE, {
         method: 'POST',
         headers: { Prefer: 'return=minimal' },
@@ -499,7 +509,7 @@ export default async function handler(req: any, res: any) {
         body: JSON.stringify({
           id,
           user_id: session.userId,
-          task_type: taskType,
+          task_type: storedTaskType,
           status: 'queued',
           payload,
           partial_result: '',
