@@ -32,48 +32,40 @@ export default async function handler(req: any, res: any) {
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
     const latestUserMessage = lastMessage.content.trim();
 
-    // Prompt مركز فقط على المستند الحالي وآخر رسالة للمحامي بدون تاريخ الشات القديم
+    // Prompt ذكي وموجز يربط السؤال بالنتيجة الحالية مباشرة بدون الاعتماد على الشات القديم
     const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}).
-مهمتك هي الرد على طلب المحامي الأخير المذكور أدناه، والتعامل مع النتيجة الحالية للمستند بناءً على طلبه.
+لديك أدناه "النتيجة الحالية للمستند" ولدى المحامي سؤال أو طلب يتعلق بها.
 
-حدد هل طلب المحامي يتطلب **تعديل المستند الحالي نفسه** (مثل تعديل جملة، إعادة صياغة، تغيير اسم، إضافة بند) أم مجرد **سؤال أو نقاش أو طلب نص يظهر في الشات فقط**.
-
-أجب بصيغة JSON خفيفة وصريحة جداً كالتالي:
-{
-  "mode": "chat" أو "edit",
-  "reply": "إجابتك أو ردك الذي يظهر للمحامي في الشات",
-  "updatedResult": "اكتب المستند كاملاً بعد التعديل هنا فقط إذا كان mode يساوي edit، وإلا اجعله null"
-}
-
-[النتيجة الحالية للمستند]
+[النتيجة الحالية للمستند التي تناقشها وتقرؤها جيداً]
 ${result}
 
-[طلب المحامي الأخير]
+[سؤال أو طلب المحامي الأخير]
 ${latestUserMessage}
 
-أرجع JSON صالحاً فقط بدون أي نص خارجه:`;
+المطلوب منك بدقة:
+1. اقرأ "النتيجة الحالية للمستند" أعلاه جيداً لتعرف محتواها بالكامل.
+2. انظر إلى "سؤال أو طلب المحامي الأخير".
+3. حدد هل الطلب هو **تعديل أو تغيير أو إضافة** على المستند الحالي؟ 
+   - إذا كان تعديلاً للمستند: ابدأ ردك بكلمة [EDIT] واكتب المستند كاملاً بعد إجراء التعديل المطلوب عليه.
+   - إذا كان سؤالاً عادياً أو استفساراً أو طلباً لشرح نقطة: أجب عن السؤال مباشرة بناءً على فهمك للمستند وبدون كتابة كلمة EDIT.
 
-    // استدعاء النموذج مع حماية زمنية (25 ثانية) لضمان عدم التعليق نهائياً
+أرجع إجابتك مباشرة بدون أي مقدمات أو نصوص زائدة:`;
+
     const rawAnswer = await Promise.race([
       generateDeepLegalResponse(prompt),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), 25000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), 45000))
     ]) as string;
-    
-    let mode = 'chat';
+
     let answer = '';
     let updatedResult: string | null = null;
 
-    try {
-      const cleanedJson = rawAnswer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-      const parsed = JSON.parse(cleanedJson);
-      mode = parsed?.mode === 'edit' ? 'edit' : 'chat';
-      answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : 'تم استلام طلبك.';
-      if (mode === 'edit' && typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim().length > 20) {
-        updatedResult = parsed.updatedResult.trim();
-        answer = 'تم تحديث النتيجة في مربع المستند بناءً على طلبك.';
-      }
-    } catch (parseError) {
-      answer = rawAnswer.replace(/^```(?:json|text)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const trimmed = rawAnswer.trim();
+
+    if (trimmed.startsWith('[EDIT]')) {
+      updatedResult = trimmed.replace('[EDIT]', '').trim();
+      answer = 'تم تحديث النتيجة في مربع المستند بناءً على طلبك.';
+    } else {
+      answer = trimmed.replace(/^```(?:text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
       updatedResult = null;
     }
 
