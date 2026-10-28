@@ -32,24 +32,23 @@ export default async function handler(req: any, res: any) {
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
     const latestUserMessage = lastMessage.content.trim();
 
-    // فحص دقيق: هل الطلب يستهدف تعديل المستند/النتيجة صراحة، أم مجرد سؤال أو عرض في الشات؟
+    // فحص دقيق جداً هل هو أمر تعديل
     const isDocumentEditIntent = /^(عدل|غير|بدل|احذف|أضف|اضف|استبدل|ضع)\b/i.test(latestUserMessage) && 
-                                 (latestUserMessage.includes('نتيجة') || latestUserMessage.includes('مستند') || latestUserMessage.includes('بند') || latestUserMessage.includes('الفقرة') || latestUserMessage.includes('الجملة') || latestUserMessage.length < 50);
+                                 (latestUserMessage.includes('نتيجة') || latestUserMessage.includes('مستند') || latestUserMessage.includes('بند') || latestUserMessage.includes('الفقرة') || latestUserMessage.includes('الجملة') || latestUserMessage.length < 60);
 
     let prompt = '';
     if (isDocumentEditIntent) {
-      // توجيه صارم لتعديل الجزء المقصود فقط بدون إغراق الشات وبدون إعادة كتابة كل شيء بلا داعٍ
-      prompt = `أنت أمين، مساعد قانوني مصري. بناءً على طلب المحامي بتعديل محدد داخل المستند:
+      // هنا السر: بنطلب منه يركز على استبدال النص المطلوب في المستند بذكاء وسرعة، وبنسمح له يتعامل مع الجزء المطلوب بدقة
+      prompt = `أنت مساعد قانوني مصري. المحامي يطلب منك هذا التعديل المحدد:
 "${latestUserMessage}"
 
-قم بتعديل وتحديث النتيجة الحالية بناءً على هذا الطلب مع التركيز على الجزء المطلوب تعديله فقط وعدم سرد نص المستند بالكامل في الشات، وأرجع النص المحدث بالكامل لكي يتم اعتماده في المربع.
+مهمتك: قم بتطبيق هذا التعديل المحدّد فقط داخل المستند أدناه (استبدال النص القديم بالنص الجديد المطلوب)، وأرجع المستند كاملاً بعد التعديل بشكل سريع ومن غير مقدمات أو كلام زائد.
 
-[النتيجة الحالية للمستند]
+[النص الأصلي للمستند]
 ${result}`;
     } else {
-      // الأسئلة العادية أو طلب إظهار المذكرة في الشات
       prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}).
-أجب على طلب أو سؤال المحامي التالي في الشات مباشرة (مثل عرض المذكرة هنا في الشات، أو شرحها، أو الإجابة على استفساره). لا تقم بتعديل المستند الأساسي.
+أجب على طلب أو سؤال المحامي التالي في الشات مباشرة (مثل عرض المذكرة هنا في الشات، أو شرحها). لا تقم بتعديل المستند الأساسي.
 
 [النتيجة الحالية للمستند للاطلاع والاستعانة بها]
 ${result}
@@ -58,9 +57,10 @@ ${result}
 ${latestUserMessage}`;
     }
 
+    // رفعنا وقت الانتظار لـ 90 ثانية لضمان عدم حدوث أي Timeout نهائياً حتى مع أثقل المستندات
     const rawAnswer = await Promise.race([
       generateDeepLegalResponse(prompt),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), 75000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), 90000))
     ]) as string;
 
     let answer = '';
@@ -69,11 +69,9 @@ ${latestUserMessage}`;
     const cleanedAnswer = rawAnswer.replace(/^```(?:text|markdown|json)?\s*/i, '').replace(/\s*```$/, '').trim();
 
     if (isDocumentEditIntent && cleanedAnswer.length > 10) {
-      // التعديل يذهب حصرياً لمربع النتيجة، والشات يظهر فيه رسالة نجاح نظيفة
       updatedResult = cleanedAnswer;
-      answer = 'تم تطبيق التعديل المطلوبة وتحديث مربع النتيجة بنجاح.';
+      answer = 'تم تعديل المطلوب وتحديث مربع النتيجة بنجاح.';
     } else {
-      // الإجابة تظهر في الشات فقط ولا تلمس مربع النتيجة
       answer = cleanedAnswer;
       updatedResult = null;
     }
@@ -91,8 +89,8 @@ ${latestUserMessage}`;
     const isTimeout = err?.message === 'AI_TIMEOUT';
     return res.status(isTimeout ? 504 : 500).json({
       error: isTimeout 
-        ? 'استغرق الذكاء الاصطناعي وقتاً أطول من اللازم للرد. حاول مرة أخرى.' 
-        : (err?.message || 'تعذر إتمام الدردشة القانونية. حاول مرة أخرى بعد قليل.'),
+        ? 'استغرق التعديل وقتاً أطول من المعتاد. حاول مرة أخرى.' 
+        : (err?.message || 'تعذر إتمام الطلب. حاول مرة أخرى بعد قليل.'),
     });
   }
 }
