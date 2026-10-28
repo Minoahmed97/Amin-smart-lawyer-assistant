@@ -1,5 +1,3 @@
-PROJECT PATH: src/components/LegalFollowupChat.tsx
-
 import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
 
