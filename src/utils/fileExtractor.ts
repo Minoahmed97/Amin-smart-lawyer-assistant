@@ -294,7 +294,7 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
 }
 
 /** * أداة الاستخراج الشاملة والسريعة: * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. * 4. الملفات النصية (.txt): قراءة فورية للنص. */
-export async function extractTextFromAnyFile( file: File, recoveryScope = 'general', onBackgroundJobRegistered?: (jobId: string) => void | Promise<void>, ): Promise<ExtractedFileResult> {
+export async function extractTextFromAnyFile(file: File, recoveryScope = 'general'): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
   let extractedText = '';
@@ -364,7 +364,6 @@ export async function extractTextFromAnyFile( file: File, recoveryScope = 'gener
       fileName,
       recoveryScope,
       getActiveLawyerUserId(),
-      onBackgroundJobRegistered,
     );
     extractedText = savedTask.text;
     backgroundJobId = savedTask.jobId;
