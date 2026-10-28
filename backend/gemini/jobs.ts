@@ -385,6 +385,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   let persistedLength = 0;
   let streamError = '';
   let handlerJson: any = null;
+  let phase = 'start';
   
   const heartbeat = setInterval(() => {
     void patchJob(jobId, userId, {}).catch(() => {});
@@ -429,6 +430,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   };
 
   try {
+    phase = 'mark-running';
     await patchJob(jobId, userId, { status: 'running', error: null });
     const fakeReq = {
       ...originalReq,
@@ -436,7 +438,9 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       headers: { ...(originalReq?.headers || {}), authorization: `Bearer ${token}` },
       body: { ...payload, stream: true },
     };
+    phase = 'run-handler';
     await TASK_HANDLERS[taskType](fakeReq, fakeRes);
+    phase = 'flush-partial-result';
     await pendingWrite;
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
       fullText = handlerJson.text.trim();
@@ -449,10 +453,13 @@ async function processJob(jobId: string, userId: string, token: string, taskType
 
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
       const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
+      phase = 'persist-handler-failure';
+      console.error('AI job handler returned failure:', JSON.stringify({ jobId, taskType, phase, statusCode: fakeRes.statusCode, error: safeDiagnosticMessage(error), hasPartialResult: Boolean(fullText.trim()) }));
       await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
       await sendCompletionPush(userId, jobId, taskType, 'failed');
       return;
     }
+    phase = 'persist-success';
     await patchJob(jobId, userId, {
       status: 'completed',
       result: fullText,
@@ -465,10 +472,14 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   } catch (err: any) {
     await pendingWrite.catch(() => {});
     const message = String(err?.message || 'تعذر إكمال العملية.').slice(0, 1000);
+    console.error('AI job processing failed:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(message), hasPartialResult: Boolean(fullText.trim()) }));
     try {
+      phase = 'persist-caught-failure';
       await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
       await sendCompletionPush(userId, jobId, taskType, 'failed');
-    } catch {}
+    } catch (persistError: any) {
+      console.error('AI job failure could not be persisted:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(persistError?.message || persistError) }));
+    }
   } finally {
     clearInterval(heartbeat);
   }
