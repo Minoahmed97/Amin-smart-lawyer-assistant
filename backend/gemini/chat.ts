@@ -30,31 +30,27 @@ export default async function handler(req: any, res: any) {
     const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
     const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
 
-    // لا تعتبر كل طلب كتابة أو فعل أمر تعديلاً على النتيجة؛ فقد يطلب المحامي
-    // مذكرة جديدة أو إجابة داخل المحادثة. لا تُحدّث المستند إلا عند وجود طلب
-    // صريح يستهدف النتيجة/المستند الحالي أو جزءاً منه، مع إعطاء أولوية لمكان
-    // الإخراج إذا قال المستخدم بوضوح إنه يريد الإجابة هنا في الشات.
-    const explicitlyWantsChatReply = /(?:في\s*الشات|هنا\s+(?:في\s*)?الشات|داخل\s+(?:هذه\s*)?المحادثة|في\s*المحادثة|هنا\s+في\s+الرد|اكتب(?:لي|\s+لي)?\s+.{0,45}\s+هنا|ابعته(?:ا|الي|اليها)?\s+هنا|ابعتها\s+هنا|اكتبها\s+هنا|اعرضها\s+هنا|هات(?:لي|\s+لي)?\s+.{0,50}\s+في\s*الشات|استخرج(?:لي|\s+لي)?\s+.{0,50}\s+في\s*الشات|انقل(?:لي|\s+لي)?\s+.{0,50}\s+للشات|من\s+النتيجة\s+.{0,50}\s+(?:في\s*الشات|هنا))/i.test(latestUserMessage);
-    const explicitResultTarget = /(?:النتيجة(?:\s+(?:الحالية|المعروضة|نفسها))?|خانة\s+النتيجة|المستند(?:\s+(?:الحالي|الموجود|المعروض))?|المذكرة\s+(?:الحالية|الموجودة|المعروضة)|النص\s+الحالي|داخل\s+(?:المستند|المذكرة|النتيجة)|إلى\s+(?:المستند|المذكرة|النتيجة)|في\s+(?:المستند|المذكرة|النتيجة))/i.test(latestUserMessage);
-    const explicitEditAction = /(?:احذف|حذف|امسح|شيل|أضف|اضف|ضيف|إضافة|اضافة|عدّل|عدل|تعديل|غيّر|غير|استبدل|بدّل|بدل|أعد\s+صياغ|اعد\s+صياغ|أعد\s+كتابة|اعد\s+كتابة|صحّح|صحح|اختصر|وسّع|وسع|رتّب|رتب|أدرج|ادرج|اكتب|صيّغ|صيغ|أنشئ|انشئ|جهز|جهّز|اجعل|خلي|حط|انقل|ظبط|زود|remove|delete|add|rewrite|replace|edit|change|insert|move|update)/i.test(latestUserMessage);
-    const explicitlyTargetsExistingPart = /(?:الفقرة|الفقرات|الجزء|الأجزاء|العنوان|الترويسة|الخاتمة|الطلبات|الطلب|الدفع|الدفوع|التاريخ|الاسم|الجملة|السطر|المقطع|الصفحة|بند\s+رقم|الفقرة\s+رقم|(?:عدل|عدّل|ظبط|غير|غيّر|اختصر|وسع|وسّع|شيل|احذف|ضيف|أضف|اكتب)ها|(?:عدل|عدّل|ظبط|غير|غيّر)ه)/i.test(latestUserMessage);
-    const requestsEdit = !explicitlyWantsChatReply && explicitEditAction && (explicitResultTarget || explicitlyTargetsExistingPart) && !/(?:اشرح|وضح|ما\s+معنى|يعني\s+ايه|ما\s+المقصود|ما\s+هو|ما\s+هي|هل|ليه|لماذا|ازاي|كيف|استخرج|هات|اعرض|انقل)\b/i.test(latestUserMessage);
+    // Classify intent by the meaning and context of the request, not fixed keywords.
+    // The model's explicit action field below is the only authority for result edits.
+    let requestsEdit = false;
     
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
 
     const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة ${taskLabel}.
-المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة:
-{"reply":"الإجابة أو النص المطلوب داخل الشات","updatedResult":null}
+أرجع كائن JSON صالح فقط بهذه الحقول:
+{"action":"chat","reply":"النص الذي يظهر في الشات","updatedResult":null}
 
-تعليمات الهيكلة والتنسيق والتعامل مع العامية:
-0. لا تكتب كلمة Reply أو Response أو Answer كعنوان أو بادئة في الرد أو النص المعدل؛ أخرج المحتوى مباشرة.
-1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي").
-2. ميّز بدقة بين مكان الإجابة وبين تعديل المستند:
-   - إذا طلب المحامي كتابة مذكرة جديدة أو صياغة نص أو شرح/إجابة داخل الشات أو المحادثة، فاكتب المحتوى المطلوب كاملاً في "reply" واجعل "updatedResult": null. لا تعتبر كلمات مثل "اكتب" أو "مذكرة" وحدها أمراً بتعديل النتيجة.
-   - لا تضع نصاً في "updatedResult" إلا إذا كان الطلب صريحاً بتعديل المستند/المذكرة/النتيجة الحالية أو جزء محدد منها. عندها فقط ضع النسخة المعدلة كاملة في "updatedResult" واجعل "reply" تأكيداً قصيراً.
-   - الأسئلة والمناقشات والاستفسارات تكون إجاباتها في "reply" دائماً، و"updatedResult": null.
-3. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً.
-4. حافظ على نص المستند الأصلي بالكامل وغير فقط ما طلبه المحامي دون إعادة كتابة الترويسات بلا داعٍ.
+افهم المقصود من المعنى والسياق، لا من كلمات مفتاحية أو صيغة حرفية. المستخدم قد يتحدث بالفصحى أو العامية المصرية وقد يعبّر عن طلبه بشكل غير مباشر.
+
+حدّد action بدقة:
+- "edit_result": عندما يكون قصده العملي تعديل أو استكمال أو تصحيح أو تقوية أو إعادة صياغة النتيجة/المستند الحالي أو جزء منه، حتى لو عبّر بصورة غير مباشرة، مثل أن يقول إن فقرة ضعيفة أو إن الرد محتاج يكون أقوى. أعد المستند كاملاً بعد تطبيق التعديل في "updatedResult"، واجعل "reply" تأكيداً قصيراً فقط. لا تضع المستند المعدل كاملاً في reply.
+- "chat": عندما يسأل سؤالاً، أو يناقش نقطة، أو يطلب تفسيراً أو رأياً أو نصاً جديداً يريده في المحادثة. أجب فعلياً داخل "reply"، واجعل "updatedResult": null. لا تغيّر المستند لمجرد أن السؤال يتناول موضوعاً مذكوراً فيه.
+- إذا طلب كتابة أو إعادة صياغة شيء داخل الشات، اكتب النص المطلوب في reply ولا تغيّر المستند.
+- إذا طلب تعديل رسالة في الشات، اكتب النسخة المعدلة من الرسالة في reply ولا تغيّر المستند إلا إذا طلب أيضاً تعديله.
+- إذا لم يكن واضحاً هل يريد تعديل المستند أم مجرد مناقشته، لا تخمّن ولا تعدّل المستند؛ اسأله في reply سؤال توضيحياً قصيراً واجعل action="chat".
+- لا تجعل كلمة مثل "عدّل" أو "اكتب" أو "النتيجة" وحدها تحدد المسار؛ افهم العبارة كاملة. ميّز بين ملاحظة/سؤال عن المستند وبين طلب تغيير فعلي فيه.
+
+لا تكتب Reply أو Response أو Answer كعنوان أو بادئة. استخدم أسطر جديدة حقيقية ولا تكتب رموز \\n كنص حرفي. حافظ على المستند الأصلي بالكامل وغيّر فقط ما يتطلبه الطلب دون إعادة كتابة الترويسات بلا داعٍ.
 
 [سياق القضية الأصلي]
 ${String(originalContext || '').slice(0, 100000)}
@@ -92,17 +88,55 @@ ${history}
       const jsonEnd = trimmedAnswer.lastIndexOf('}');
       const cleaned = jsonStart >= 0 && jsonEnd > jsonStart ? trimmedAnswer.slice(jsonStart, jsonEnd + 1) : trimmedAnswer;
       const parsed = JSON.parse(cleaned);
-      
+
+      // Semantic classification from the model replaces brittle keyword matching.
+      requestsEdit = parsed?.action === 'edit_result';
       answer = typeof parsed?.reply === 'string' ? sanitizeLegalText(parsed.reply) : '';
       updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? sanitizeLegalText(parsed.updatedResult) : null;
-    } catch {
-      const plainAnswer = sanitizeLegalText(rawAnswer);
+
+      // Only after the model classified the intent as an edit, recover a full
+      // document if it mistakenly placed that document in the chat reply field.
       const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
-      if (requestsEdit && plainAnswer.length >= minimumDocumentLength) {
-        updatedResult = plainAnswer;
-        answer = 'تم تعديل المطلوب في المستند.';
-      } else {
-        answer = plainAnswer;
+      if (requestsEdit && !updatedResult && answer.length >= minimumDocumentLength) {
+        updatedResult = answer;
+        answer = 'تم تحديث النتيجة في مربع المستند.';
+      } else if (requestsEdit && updatedResult && answer.length >= minimumDocumentLength) {
+        answer = 'تم تحديث النتيجة في مربع المستند.';
+      }
+    } catch {
+      // If the model ignored the JSON contract, ask it to classify and structure
+      // the same response semantically before deciding where the content belongs.
+      try {
+        const repairPrompt = `حوّل الناتج أدناه إلى JSON صالح فقط بالشكل {"action":"chat","reply":"...","updatedResult":null}. يجب أن تكون action إما chat أو edit_result.
+افهم أحدث طلب من معناه وسياقه، لا من كلمات مفتاحية. إذا كان المقصود تنفيذ تغيير في المستند الحالي، فاجعل action="edit_result" وضع النسخة الكاملة المعدلة في updatedResult واجعل reply تأكيداً قصيراً. إذا كان سؤالاً أو طلب شرح أو نصاً داخل المحادثة، فاجعل action="chat" وأجب في reply واجعل updatedResult=null. لا تنقل المستند المعدل إلى reply.
+
+[أحدث طلب للمحامي]
+${latestUserMessage}
+
+[النتيجة الحالية]
+${result}
+
+[الناتج السابق من النموذج]
+${rawAnswer}`;
+        const repairRaw = String(await generateDeepLegalResponse(repairPrompt) || '').trim();
+        const repairStart = repairRaw.indexOf('{');
+        const repairEnd = repairRaw.lastIndexOf('}');
+        if (repairStart < 0 || repairEnd <= repairStart) throw new Error('invalid_repair_json');
+        const repaired = JSON.parse(repairRaw.slice(repairStart, repairEnd + 1));
+        requestsEdit = repaired?.action === 'edit_result';
+        answer = typeof repaired?.reply === 'string' ? sanitizeLegalText(repaired.reply) : '';
+        updatedResult = typeof repaired?.updatedResult === 'string' && repaired.updatedResult.trim() ? sanitizeLegalText(repaired.updatedResult) : null;
+        const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
+        if (requestsEdit && !updatedResult && answer.length >= minimumDocumentLength) {
+          updatedResult = answer;
+          answer = 'تم تحديث النتيجة في مربع المستند.';
+        }
+      } catch (repairError: any) {
+        console.warn('Legal chat response structure recovery failed:', repairError?.message || 'unknown error');
+        // Fail safely instead of accidentally posting a full revised document in chat.
+        answer = 'تعذر تحديد نوع الطلب بصورة موثوقة هذه المرة، لذلك لم أغيّر النتيجة. أعد إرسال طلبك وسأحاول تنفيذه من جديد.';
+        updatedResult = null;
+        requestsEdit = false;
       }
     }
 
@@ -111,6 +145,9 @@ ${history}
     if (!requestsEdit) updatedResult = null;
     if (updatedResult) {
       updatedResult = sanitizeLegalText(updatedResult);
+      if (requestsEdit && answer.length >= Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)))) {
+        answer = 'تم تحديث النتيجة في مربع المستند.';
+      }
     }
     if (answer) {
       answer = sanitizeLegalText(answer);
@@ -131,22 +168,25 @@ ${history}
 
     if (requestsEdit && !updatedResult) {
       try {
-        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي (سواء بالعامية أو الفصحى). أعد النص الكامل النهائي المعدل فقط بدون رموز "n\\" أو "\\n" نصية.
+        const recoveryPrompt = `أنت تنفذ طلباً صُنّف بعد فهم المعنى والسياق على أنه تعديل للنتيجة الحالية. طبّق طلب المحامي بدقة على المستند أدناه، سواء كان بالعامية المصرية أو بالفصحى أو بصياغة غير مباشرة. أعد المستند كاملاً بعد التعديل فقط، ولا تكتب شرحاً أو تأكيداً. حافظ على كل ما لم يُطلب تغييره.
 
 [طلب المحامي] ${latestUserMessage}
 [النتيجة الحالية]
 ${result}`;
 
         const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
-        let recoveredResult = sanitizeLegalText(recoveredRaw);
-        
+        const recoveredResult = sanitizeLegalText(recoveredRaw);
         const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
         if (recoveredResult.length >= minimumDocumentLength) {
           updatedResult = recoveredResult;
-          answer = 'تم تحديث النتيجة بنجاح.';
+          answer = 'تم تحديث النتيجة في مربع المستند.';
         }
       } catch (recoveryError: any) {
         console.warn('Legal chat result-update recovery failed:', recoveryError?.message || 'unknown error');
+      }
+      // Never leave a success-style reply when the result box was not updated.
+      if (!updatedResult) {
+        answer = 'لم أتمكن من تطبيق التعديل على النتيجة بشكل موثوق، لذلك لم أغيّر المستند. وضّح لي الجزء المطلوب أو أعد صياغة طلب التعديل.';
       }
     }
 
