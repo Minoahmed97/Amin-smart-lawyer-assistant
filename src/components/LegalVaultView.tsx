@@ -109,35 +109,9 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
     setTimeout(() => setSuccessNote(null), 3500);
   };
 
-  const handleUploadedText = async (text: string, fileName: string, _fileType?: string, sourceFile?: File) => {
+  const handleUploadedText = (text: string, fileName: string, _fileType?: string, sourceFile?: File) => {
     const cleanTitle = fileName.replace(/\.[^/.]+$/, '');
     const classification = classifyLegalDocument(fileName, text);
-
-    // Persist the original file before committing the model. If local file storage
-    // fails, the upload queue can retain the file and retry after refresh without
-    // creating duplicate models from the same recovered OCR result.
-    if (sourceFile) {
-      try {
-        await saveLegalVaultOriginalFile(sourceFile, userId, text);
-        await refreshOriginalFiles();
-      } catch (cause: any) {
-        console.warn('Original vault file could not be saved:', cause);
-        setSuccessNote(`تعذر حفظ الملف الأصلي في الخزنة؛ احتفظنا بالمهمة لإعادة المحاولة: ${fileName}.`);
-        const retryError: any = new Error(`تعذر حفظ الملف الأصلي في الخزنة: ${fileName}.`);
-        retryError.preservePendingUpload = true;
-        throw retryError;
-      }
-
-      if (sourceFile.name.toLowerCase().endsWith('.docx')) {
-        try {
-          const template = await saveLegalDocTemplate(sourceFile, userId, text);
-          if (template) await refreshWordTemplates();
-        } catch (error) {
-          console.warn('Word template index could not be saved:', error);
-        }
-      }
-    }
-
     const saved = saveLawModel({
       title: `نموذج: ${cleanTitle}`,
       category: classification.category,
@@ -150,9 +124,24 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
     }, userId);
     refreshModels();
     setSelectedModel(saved);
-    setSuccessNote(sourceFile
-      ? `تم حفظ النص والملف الأصلي في الخزنة على هذا الجهاز: ${fileName}.`
-      : `تم حفظ النص فقط؛ لم يصل الملف الأصلي إلى الخزنة. أعد رفع المستند إذا كنت تريد الاحتفاظ بنسخته الأصلية.`);
+    if (sourceFile) {
+      void saveLegalVaultOriginalFile(sourceFile, userId, text)
+        .then(() => refreshOriginalFiles())
+        .catch((error) => {
+          console.warn('Original vault file could not be saved:', error);
+          setSuccessNote(`تم حفظ النص، لكن تعذر حفظ الملف الأصلي على هذا الجهاز: ${fileName}.`);
+        });
+      if (sourceFile.name.toLowerCase().endsWith('.docx')) {
+        void saveLegalDocTemplate(sourceFile, userId, text)
+          .then((template) => {
+            if (template) { void refreshWordTemplates(); setSuccessNote(`تم حفظ النص والملف الأصلي وقالب وورد: ${fileName}. التصنيف الأولي: ${template.courtType} — ${template.workType}.`); }
+          })
+          .catch((error) => console.warn('Word template index could not be saved:', error));
+      }
+      setSuccessNote(`تم حفظ النص وتصنيف المستند مبدئيًا. جارٍ حفظ الملف الأصلي على هذا الجهاز: ${fileName}.`);
+    } else {
+      setSuccessNote(`تم حفظ النص فقط؛ لم يصل الملف الأصلي إلى الخزنة. أعد رفع المستند إذا كنت تريد الاحتفاظ بنسخته الأصلية.`);
+    }
     setTimeout(() => setSuccessNote(null), 6000);
   };
 
