@@ -116,7 +116,12 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     setIsLoading(true);
     setQualifyError('');
     void resumeSavedAiTask('qualify', jobId, (chunk) => {
-      if (active) setQualificationResult((current) => current + chunk);
+      if (active) setQualificationResult((current) => {
+        if (!current) return chunk;
+        if (chunk.startsWith(current)) return chunk;
+        if (current.startsWith(chunk)) return current;
+        return current + chunk;
+      });
     }, userId).then((result) => {
       if (!active) return;
       setQualificationResult(result);
