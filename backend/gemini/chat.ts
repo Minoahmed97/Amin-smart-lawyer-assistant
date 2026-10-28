@@ -7,6 +7,9 @@ export default async function handler(req: any, res: any) {
   try {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch {} }
+    if (body && typeof body.messages === 'string') {
+      try { body.messages = JSON.parse(body.messages); } catch { body.messages = null; }
+    }
     const { taskType, originalContext, result, messages } = body || {};
     if (!['deconstruct', 'qualify', 'draft'].includes(taskType)) return res.status(400).json({ error: 'نوع المهمة غير صالح للدردشة القانونية.' });
     if (typeof result !== 'string' || !result.trim()) return res.status(400).json({ error: 'لا توجد نتيجة أصلية لمناقشتها.' });
@@ -32,7 +35,28 @@ export default async function handler(req: any, res: any) {
     
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
 
-    const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة ${taskLabel}. المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة: {"reply":"رسالة قصيرة للمحامي","updatedResult":null} تعليمات الهيكلة والتنسيق والتعامل مع العامية: 1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي"). 2. ميّز بدقة بين: - طلبات التعديل على المستند (تغيير، إضافة، حذف، تعديل تاريخ أو نص): ضع النسخة المعدلة كاملة في "updatedResult" واجعل الرد مختصراً في "reply". - الأسئلة والمناقشات والاستفسارات المجردة: اجعل "updatedResult": null وأجب على السؤال في "reply". 3. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً. 4. حافظ على نص المستند الأصلي بالكامل وغير فقط ما طلبه المحامي دون إعادة كتابة الترويسات بلا داعٍ. [سياق القضية الأصلي] ${String(originalContext || '').slice(0, 100000)} [النتيجة الحالية للمستند] ${result} [سجل المحادثة] ${history} أرجع JSON فقط:`;
+    const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة ${taskLabel}.
+المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة:
+{"reply":"رسالة قصيرة للمحامي","updatedResult":null}
+
+تعليمات الهيكلة والتنسيق والتعامل مع العامية:
+1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي").
+2. ميّز بدقة بين:
+   - طلبات التعديل على المستند (تغيير، إضافة، حذف، تعديل تاريخ أو نص): ضع النسخة المعدلة كاملة في "updatedResult" واجعل الرد مختصراً في "reply".
+   - الأسئلة والمناقشات والاستفسارات المجردة: اجعل "updatedResult": null وأجب على السؤال في "reply".
+3. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً.
+4. حافظ على نص المستند الأصلي بالكامل وغير فقط ما طلبه المحامي دون إعادة كتابة الترويسات بلا داعٍ.
+
+[سياق القضية الأصلي]
+${String(originalContext || '').slice(0, 100000)}
+
+[النتيجة الحالية للمستند]
+${result}
+
+[سجل المحادثة]
+${history}
+
+أرجع JSON فقط:`;
 
     const rawAnswer = await generateDeepLegalResponse(prompt);
     let answer = '';
@@ -81,7 +105,11 @@ export default async function handler(req: any, res: any) {
 
     if (requestsEdit && !updatedResult) {
       try {
-        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي (سواء بالعامية أو الفصحى). أعد النص الكامل النهائي المعدل فقط بدون رموز "n\\" أو "\\n" نصية. [طلب المحامي] ${latestUserMessage} [النتيجة الحالية] ${result}`;
+        const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي (سواء بالعامية أو الفصحى). أعد النص الكامل النهائي المعدل فقط بدون رموز "n\\" أو "\\n" نصية.
+
+[طلب المحامي] ${latestUserMessage}
+[النتيجة الحالية]
+${result}`;
 
         const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
         let recoveredResult = sanitizeLegalText(recoveredRaw);
