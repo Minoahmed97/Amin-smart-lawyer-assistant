@@ -8,17 +8,10 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
-/** Provider finish reasons that indicate the model was blocked rather than merely unfinished. */
+/** Provider finish reasons that indicate a blocked response rather than a normally ended response. */
 function isBlockedFinishReason(reason: unknown): boolean {
   const normalized = String(reason || '').trim().toUpperCase();
-  return ['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY'].includes(normalized);
-}
-
-/** Output caps differ by model/provider; continuation is also needed when a response ends without our completion marker. */
-function hitOutputTokenLimit(reason: unknown): boolean {
-  const normalized = String(reason || '').trim().toUpperCase();
-  // Gemini reports MAX_TOKENS; OpenRouter-compatible models report LENGTH.
-  return normalized === 'MAX_TOKENS' || normalized === 'MAX_OUTPUT_TOKENS' || normalized === 'LENGTH';
+  return ['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY', 'CONTENT_FILTER'].includes(normalized);
 }
 
 export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
@@ -122,6 +115,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             throw blockedError;
           }
 
+          // An unmarked STOP/unknown finish reason is not proof that the legal
+          // document is complete. Continue instead of silently returning a cut-off draft.
           if (continuationCount >= maxContinuations) {
             const incompleteError: any = new Error(`لم تكتمل الإجابة بعد ${maxContinuations} محاولات استكمال؛ لم تصل علامة اكتمال المستند.`);
             incompleteError.status = 502;
@@ -129,9 +124,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             throw incompleteError;
           }
 
-          // Do not silently return a mid-sentence response merely because the
-          // provider ended with STOP/unknown instead of MAX_TOKENS. The private
-          // completion marker is the source of truth for a complete document.
           continuationCount += 1;
           nextPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي أخرجته حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${accumulatedText} تابع مباشرة من آخر حرف في النص السابق دون إعادة أي جزء منه أو تلخيصه. أكمل جميع الأجزاء المتبقية من النتيجة المطلوبة حتى نهايتها، بما في ذلك جميع الأقسام والطلبات الختامية إن كانت مطلوبة. لا تعتبر النص السابق مكتملاً، ولا تضع علامة الاكتمال إلا بعد إتمام كل المطلوب. سبب الاستكمال التقني: ${finishReason || 'انتهى الرد دون علامة اكتمال'}.`;
         }
@@ -172,14 +164,13 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         throw new Error(`توقف توليد الإجابة بسبب رفض أو قيد من المزود (finishReason: ${finishReason}).`);
       }
       if (!rawText.trim()) {
-        if (attempt === 0) throw new Error(`أعاد مزود الذكاء الاصطناعي نصاً فارغاً (finishReason: ${finishReason || 'UNKNOWN'}).`);
-        throw new Error('توقف استكمال الإجابة دون إنتاج نص إضافي.');
+        throw new Error(`أعاد مزود الذكاء الاصطناعي نصاً فارغاً أثناء التوليد أو الاستكمال (finishReason: ${finishReason || 'UNKNOWN'}).`);
       }
       if (attempt >= maxContinuations) {
         throw new Error(`لم تكتمل الإجابة بعد ${maxContinuations} محاولات استكمال؛ لم تصل علامة اكتمال المستند.`);
       }
 
-      currentPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${fullText} تابع مباشرة من آخر حرف دون إعادة أي جزء سابق أو تلخيصه. أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason || (hitOutputTokenLimit(finishReason) ? finishReason : 'انتهى الرد دون علامة اكتمال')} .`;
+      currentPrompt = `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده حتى الآن، وهو جزء من النتيجة نفسها وليس طلباً لإعادة كتابته: ${fullText} تابع مباشرة من آخر حرف دون إعادة أي جزء سابق أو تلخيصه. أكمل جميع الأجزاء المتبقية من العمل المطلوب حتى النهاية، ولا تعتبر النتيجة مكتملة إلا بعد إنهاء جميع الأقسام والطلبات اللازمة. أضف علامة الاكتمال فقط بعد إنهاء العمل بالكامل. سبب الاستكمال التقني: ${finishReason || 'انتهى الرد دون علامة اكتمال'}.`;
     }
 
     if (!fullText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
