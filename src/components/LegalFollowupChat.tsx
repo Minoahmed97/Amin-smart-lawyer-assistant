@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -22,6 +22,15 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [copiedMessage, setCopiedMessage] = useState<string | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the newest message visible when opening a saved conversation or when
+  // either side adds a message. This is UI-only and does not change chat logic.
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+  }, [messages, loading]);
 
   const copyMessage = async (content: string, messageKey: string) => {
     try {
@@ -189,7 +198,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
   if (!result.trim()) return null;
   return <section className="mt-5 rounded-2xl border border-emerald-700/60 bg-slate-950/70 p-4 space-y-3" dir="rtl">
     <div><h3 className="font-bold text-emerald-300">مناقشة النتيجة مع أمين</h3><p className="text-xs text-slate-400 mt-1">اسأل عن أي نقطة أو اطلب تعديل النتيجة نفسها؛ عند طلب التعديل سيحدّث أمين النتيجة المعروضة والمحفوظة لتصبح هي النسخة المستخدمة في التصدير.</p></div>
-    {messages.length > 0 && <div className="space-y-3 max-h-96 overflow-y-auto" aria-live="polite">
+    {messages.length > 0 && <div ref={messagesContainerRef} className="space-y-3 max-h-96 overflow-y-auto" aria-live="polite">
       {messages.map((message, index) => {
         const messageKey = `${index}-${message.role}`;
         return <div key={messageKey} className={`rounded-xl p-3 whitespace-pre-wrap text-sm leading-7 ${message.role === 'user' ? 'bg-slate-800 text-white' : 'bg-emerald-950/60 border border-emerald-900 text-slate-100'}`}>
