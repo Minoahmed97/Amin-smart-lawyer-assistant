@@ -27,24 +27,46 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
     await enforceAiCooldown(req);
 
-    const history = messages.map((m: any) => `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${m.content}`).join('\n\n');
     const latestUserMessage = String(messages[messages.length - 1]?.content || '').trim();
+    // Keep chat requests within the configured Groq fallback input-token budget.
+    // Retain the newest turns and preserve both ends of long context/result text.
+    const clipForChat = (value: string, maxChars: number, tailChars = 900) => {
+      const text = String(value || '');
+      if (text.length <= maxChars) return text;
+      const marker = '\n[تم اختصار النص الطويل لتناسب حدود مزود الذكاء الاصطناعي]\n';
+      const tail = Math.min(tailChars, Math.floor((maxChars - marker.length) * 0.3));
+      const head = Math.max(0, maxChars - marker.length - tail);
+      return `${text.slice(0, head)}${marker}${text.slice(-tail)}`;
+    };
+    const recentMessages = messages.slice(-6).map((m: any, index: number, list: any[]) => {
+      const isLatest = index === list.length - 1;
+      return `${m.role === 'user' ? 'المحامي' : 'أمين'}: ${clipForChat(m.content, isLatest ? 1800 : 500, 150)}`;
+    });
+    const history = clipForChat(recentMessages.join('\n\n'), 2400, 450);
+    const contextForPrompt = clipForChat(String(originalContext || ''), 900, 250);
+    const resultForPrompt = clipForChat(result, 4200, 800);
+    const resultWasTrimmed = resultForPrompt.length < result.length;
 
     // لا تعتبر كل طلب كتابة أو فعل أمر تعديلاً على النتيجة؛ فقد يطلب المحامي
     // مذكرة جديدة أو إجابة داخل المحادثة. لا تُحدّث المستند إلا عند وجود طلب
     // صريح يستهدف النتيجة/المستند الحالي أو جزءاً منه، مع إعطاء أولوية لمكان
     // الإخراج إذا قال المستخدم بوضوح إنه يريد الإجابة هنا في الشات.
-    const explicitlyWantsChatReply = /(?:في\s*الشات|هنا\s+(?:في\s*)?الشات|داخل\s+(?:هذه\s*)?المحادثة|في\s*المحادثة|هنا\s+في\s+الرد|اكتب(?:لي|\s+لي)?\s+.{0,45}\s+هنا|ابعته(?:ا|الي|اليها)?\s+هنا|ابعتها\s+هنا|اكتبها\s+هنا|اعرضها\s+هنا|جاوبني\s+هنا|رد\s+عليّ?\s+هنا)/i.test(latestUserMessage);
-    const explicitResultTarget = /(?:النتيجة(?:\s+(?:الحالية|المعروضة|نفسها|دي|ده|دا))?|خانة\s+النتيجة|المستند(?:\s+(?:الحالي|الموجود|المعروض|ده|دي|دا))?|المذكرة\s+(?:الحالية|الموجودة|المعروضة|دي|ده|دا)|النص(?:\s+(?:الحالي|ده|دي|دا|المكتوب|المعروض))?|الرد\s+(?:السابق|الموجود)|اللي\s+فوق|داخل\s+(?:المستند|المذكرة|النتيجة|النص)|إلى\s+(?:المستند|المذكرة|النتيجة|النص)|في\s+(?:المستند|المذكرة|النتيجة|النص))/i.test(latestUserMessage);
-    const explicitEditAction = /(?:احذف|حذف|امسح|شيل|أضف|اضف|ضيف|إضافة|اضافة|عدّل|عدل|تعديل|غيّر|غير|استبدل|بدّل|بدل|أعد\s+صياغ|اعد\s+صياغ|أعد\s+كتابة|اعد\s+كتابة|صحّح|صحح|اختصر|وسّع|وسع|رتّب|رتب|أدرج|ادرج|اكتب|صيّغ|صيغ|أنشئ|انشئ|جهز|جهّز|اجعل|خلّي|خلي|حسّن|حسن|قوّي|قوي|زبط|ظبط|حط|انقل|زود|remove|delete|add|rewrite|replace|edit|change|insert|move|update)/i.test(latestUserMessage);
-    const explicitlyTargetsExistingPart = /(?:الفقرة|الفقرات|الجزء|الأجزاء|العنوان|الترويسة|الخاتمة|الطلبات|الطلب|الدفع|الدفوع|التاريخ|الاسم|الجملة|السطر|المقطع|الصفحة|بند\s+رقم|الفقرة\s+رقم|(?:عدل|عدّل|ظبط|زبط|غير|غيّر|اختصر|وسع|وسّع|شيل|احذف|ضيف|أضف|اكتب|خلي|خلّي|حسن|حسّن|قوي|قوّي)ها|(?:عدل|عدّل|ظبط|زبط|غير|غيّر)ه)/i.test(latestUserMessage);
+    const explicitlyWantsChatReply = /(?:في\s*الشات|هنا\s+(?:في\s*)?الشات|داخل\s+(?:هذه\s*)?المحادثة|في\s*المحادثة|هنا\s+في\s+الرد|اكتب(?:لي|\s+لي)?\s+.{0,45}\s+هنا|ابعته(?:ا|الي|اليها)?\s+هنا|ابعتها\s+هنا|اكتبها\s+هنا|اعرضها\s+هنا)/i.test(latestUserMessage);
+    const explicitResultTarget = /(?:النتيجة(?:\s+(?:الحالية|المعروضة|نفسها))?|خانة\s+النتيجة|المستند(?:\s+(?:الحالي|الموجود|المعروض))?|المذكرة\s+(?:الحالية|الموجودة|المعروضة)|النص\s+الحالي|داخل\s+(?:المستند|المذكرة|النتيجة)|إلى\s+(?:المستند|المذكرة|النتيجة)|في\s+(?:المستند|المذكرة|النتيجة))/i.test(latestUserMessage);
+    const explicitEditAction = /(?:احذف|حذف|امسح|شيل|أضف|اضف|ضيف|إضافة|اضافة|عدّل|عدل|تعديل|غيّر|غير|استبدل|بدّل|بدل|أعد\s+صياغ|اعد\s+صياغ|أعد\s+كتابة|اعد\s+كتابة|صحّح|صحح|اختصر|وسّع|وسع|رتّب|رتب|أدرج|ادرج|اكتب|صيّغ|صيغ|أنشئ|انشئ|جهز|جهّز|اجعل|خلي|حط|انقل|ظبط|زود|remove|delete|add|rewrite|replace|edit|change|insert|move|update)/i.test(latestUserMessage);
+    const explicitlyTargetsExistingPart = /(?:الفقرة|الفقرات|الجزء|الأجزاء|العنوان|الترويسة|الخاتمة|الطلبات|الطلب|الدفع|الدفوع|التاريخ|الاسم|الجملة|السطر|المقطع|الصفحة|بند\s+رقم|الفقرة\s+رقم|(?:عدل|عدّل|ظبط|غير|غيّر|اختصر|وسع|وسّع|شيل|احذف|ضيف|أضف|اكتب)ها|(?:عدل|عدّل|ظبط|غير|غيّر)ه)/i.test(latestUserMessage);
     const requestsEdit = !explicitlyWantsChatReply && explicitEditAction && (explicitResultTarget || explicitlyTargetsExistingPart);
     
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
 
-    const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة ${taskLabel}. المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة: {"reply":"الإجابة أو النص المطلوب داخل الشات","updatedResult":null} تعليمات الهيكلة والتنسيق والتعامل مع العامية: 1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي"). 2. ميّز بدقة بين مكان الإجابة وبين تعديل المستند: - إذا طلب المحامي كتابة مذكرة جديدة أو صياغة نص أو شرح/إجابة داخل الشات أو المحادثة، فاكتب المحتوى المطلوب كاملاً في "reply" واجعل "updatedResult": null. لا تعتبر كلمات مثل "اكتب" أو "مذكرة" وحدها أمراً بتعديل النتيجة. - لا تضع نصاً في "updatedResult" إلا إذا كان الطلب صريحاً بتعديل المستند/المذكرة/النتيجة الحالية أو جزء محدد منها. عندها فقط ضع النسخة المعدلة كاملة في "updatedResult" واجعل "reply" تأكيداً قصيراً. - الأسئلة والمناقشات والاستفسارات تكون إجاباتها في "reply" دائماً، و"updatedResult": null. 3. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً. 4. حافظ على نص المستند الأصلي بالكامل وغير فقط ما طلبه المحامي دون إعادة كتابة الترويسات بلا داعٍ. [سياق القضية الأصلي] ${String(originalContext || '').slice(0, 100000)} [النتيجة الحالية للمستند] ${result} [سجل المحادثة] ${history} أرجع JSON فقط:`;
+    const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة ${taskLabel}. المطلوب منك إرجاع كائن JSON صالح فقط بدون أية زيادات، بصيغة: {"reply":"الإجابة أو النص المطلوب داخل الشات","updatedResult":null} تعليمات الهيكلة والتنسيق والتعامل مع العامية: 1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي"). 2. ميّز بدقة بين مكان الإجابة وبين تعديل المستند: - إذا طلب المحامي كتابة مذكرة جديدة أو صياغة نص أو شرح/إجابة داخل الشات أو المحادثة، فاكتب المحتوى المطلوب كاملاً في "reply" واجعل "updatedResult": null. لا تعتبر كلمات مثل "اكتب" أو "مذكرة" وحدها أمراً بتعديل النتيجة. - لا تضع نصاً في "updatedResult" إلا إذا كان الطلب صريحاً بتعديل المستند/المذكرة/النتيجة الحالية أو جزء محدد منها. عندها فقط ضع النسخة المعدلة كاملة في "updatedResult" واجعل "reply" تأكيداً قصيراً. - الأسئلة والمناقشات والاستفسارات تكون إجاباتها في "reply" دائماً، و"updatedResult": null. 3. استخدم الأسطر الحقيقية الجديدة (Newlines) للفصل بين الفقرات والسطور، ولا تكتب الرمز "n\\" أو "\\n" كأحرف نصية صريحة إطلاقاً. 4. حافظ على نص المستند الأصلي بالكامل وغير فقط ما طلبه المحامي دون إعادة كتابة الترويسات بلا داعٍ. [سياق القضية الأصلي] ${contextForPrompt} [النتيجة الحالية للمستند] ${resultForPrompt} [سجل المحادثة] ${history} أرجع JSON فقط:`;
 
-    const rawAnswer = await generateDeepLegalResponse(prompt);
+    if (requestsEdit && resultWasTrimmed) {
+      const answer = 'المستند أطول من الحد الذي يمكن إرساله بأمان لمزوّد الذكاء الاصطناعي الحالي. لم أغيّر المستند حتى لا أفقد أجزاء منه. حدّد الفقرة أو الجزء المطلوب تعديله، أو قصّر النص الذي تريد العمل عليه، ثم أعد الطلب.';
+      return res.status(200).json({ result: answer, updatedResult: null });
+    }
+
+    const rawAnswer = await generateDeepLegalResponse(prompt, undefined, { chatMode: true });
     let answer = '';
     let updatedResult: string | null = null;
 
@@ -96,8 +118,8 @@ export default async function handler(req: any, res: any) {
     // نطلب منه إجابة فعلية داخل الشات بدلاً من عرض رسالة نجاح مضللة.
     if (!requestsEdit && /(?:تم\s+(?:تعديل|تحديث|إضافة|اضافة|حذف)|عدلت\s+(?:المستند|النتيجة)|تم تعديل المطلوب في المستند|تم تحديث النتيجة بنجاح)/i.test(answer)) {
       try {
-        const chatOnlyPrompt = `أجب على أحدث رسالة من المحامي داخل الشات فقط. لا تعدّل المستند الحالي ولا تقل إنك عدّلته، ولا تُرجع نسخة بديلة منه. إذا طلب كتابة مذكرة أو نص، فاكتب النص المطلوب كاملاً هنا في الرد. إذا كان سؤالاً، فأجب عنه مباشرة. أعد الإجابة فقط دون JSON.\n\n[سياق القضية]\n${String(originalContext || '').slice(0, 100000)}\n\n[النتيجة للاطلاع والسياق فقط، لا تعدّلها]\n${result}\n\n[سجل المحادثة]\n${history}\n\n[أحدث طلب]\n${latestUserMessage}`;
-        const chatOnlyAnswer = String(await generateDeepLegalResponse(chatOnlyPrompt) || '').trim();
+        const chatOnlyPrompt = `أجب على أحدث رسالة من المحامي داخل الشات فقط. لا تعدّل المستند الحالي ولا تقل إنك عدّلته، ولا تُرجع نسخة بديلة منه. إذا طلب كتابة مذكرة أو نص، فاكتب النص المطلوب كاملاً هنا في الرد. إذا كان سؤالاً، فأجب عنه مباشرة. أعد الإجابة فقط دون JSON.\n\n[سياق القضية]\n${contextForPrompt}\n\n[النتيجة للاطلاع والسياق فقط، لا تعدّلها]\n${resultForPrompt}\n\n[سجل المحادثة]\n${history}\n\n[أحدث طلب]\n${clipForChat(latestUserMessage, 1800, 150)}`;
+        const chatOnlyAnswer = String(await generateDeepLegalResponse(chatOnlyPrompt, undefined, { chatMode: true }) || '').trim();
         if (chatOnlyAnswer) answer = sanitizeLegalText(chatOnlyAnswer);
       } catch (chatRecoveryError: any) {
         console.warn('Legal chat-only response recovery failed:', chatRecoveryError?.message || 'unknown error');
@@ -109,7 +131,7 @@ export default async function handler(req: any, res: any) {
       try {
         const recoveryPrompt = `قم بتعديل النتيجة الحالية بناءً على طلب المحامي (سواء بالعامية أو الفصحى). أعد النص الكامل النهائي المعدل فقط بدون رموز "n\\" أو "\\n" نصية. [طلب المحامي] ${latestUserMessage} [النتيجة الحالية] ${result}`;
 
-        const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt) || '').trim();
+        const recoveredRaw = String(await generateDeepLegalResponse(recoveryPrompt, undefined, { chatMode: true }) || '').trim();
         let recoveredResult = sanitizeLegalText(recoveredRaw);
         
         const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
