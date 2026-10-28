@@ -246,7 +246,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
     }
   }
 
-  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاِح.' };
+  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاح.' };
 }
 
 let dedicatedOCRActiveKey = '';
@@ -259,7 +259,7 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
     return { ready: false, keyCount: 0, checkedKeys: 0, message: error?.message || 'تعذر قراءة مجموعة مفاتيح الصور والمستندات.' };
   }
   if (!keys.length) {
-    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخانصة (OCR).' };
+    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخاضصة (OCR).' };
   }
 
   const deadlineAt = Date.now() + Math.max(1000, totalTimeoutMs);
@@ -296,6 +296,7 @@ async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, mod
     deadlineAt,
     'https://api.groq.com/openai/v1',
     fallbackConfig.apiKey,
+    'Groq',
   );
   
   const modelToUse = fallbackConfig.model || 'meta-llama/llama-3.2-11b-vision-preview';
@@ -472,12 +473,61 @@ function withAdaptiveAnswerLength(ai: any): any {
   };
 }
 
+
+// Last-resort provider fallback. It is used only when the existing server-side
+// Groq fallback is enabled by the administrator; the key remains server-side.
+async function executeWithConfiguredGroqFallback<T>(
+  action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
+  deadlineAt: number,
+): Promise<T> {
+  const config = await fetchServerCloudOCRGroqFallbackConfig();
+  if (!config.enabled || !config.apiKey) {
+    throw new Error('احتياطي Groq غير مفعّل أو لم يتم حفظ مفتاحه من إدارة المنصة.');
+  }
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs < 1000) throw Object.assign(new Error('انتهت المهلة قبل بدء احتياطي Groq.'), { status: 504, statusCode: 504 });
+  const client = withAdaptiveAnswerLength(createOpenRouterCompatibleClient(
+    Math.min(60000, remainingMs),
+    deadlineAt,
+    'https://api.groq.com/openai/v1',
+    config.apiKey,
+    'Groq',
+  )) as unknown as GoogleGenAI;
+  console.warn('Using the configured direct Groq fallback after the primary AI providers failed.');
+  return action(client, config.apiKey, config.model || 'qwen/qwen3.8-27b');
+}
+
+async function executeConfiguredGroqStreamFallback( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, deadlineAt: number, ): Promise<void> {
+  const config = await fetchServerCloudOCRGroqFallbackConfig();
+  if (!config.enabled || !config.apiKey) {
+    throw new Error('احتياطي Groq غير مفعّل أو لم يتم حفظ مفتاحه من إدارة المنصة.');
+  }
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs < 1000) throw Object.assign(new Error('انتهت المهلة قبل بدء احتياطي Groq.'), { status: 504, statusCode: 504 });
+  const client = withAdaptiveAnswerLength(createOpenRouterCompatibleClient(
+    Math.min(60000, remainingMs),
+    deadlineAt,
+    'https://api.groq.com/openai/v1',
+    config.apiKey,
+    'Groq',
+  )) as unknown as GoogleGenAI;
+  const stream = await action(client, config.apiKey, config.model || 'qwen/qwen3.8-27b');
+  let emittedText = false;
+  for await (const chunk of stream) {
+    const text = typeof chunk?.text === 'string' ? chunk.text : '';
+    if (text) {
+      emittedText = true;
+      onChunk(text);
+    }
+  }
+  if (!emittedText) throw Object.assign(new Error('أعاد احتياطي Groq استجابة فارغة.'), { status: 503, statusCode: 503 });
+}
+
 type KeyRotationExecutionOptions = {
   ocrMode?: boolean;
   deadlineAt?: number;
   previousProviderError?: string;
   providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
-  /** Previously used key/model pairs are avoided first during continuation. */
   avoidPairs?: string[];
 };
 
@@ -501,8 +551,6 @@ export async function executeWithKeyRotation<T>(
     const overallStart = Date.now();
     const totalBudget = Math.max(0, deadlineAt - overallStart);
     let lastProviderError: any = null;
-    let lastGeminiError: any = null;
-    let lastOpenRouterError: any = null;
 
     for (let round = 0; round < 2; round++) {
       const roundStart = overallStart + Math.floor(totalBudget * round / 2);
@@ -516,7 +564,6 @@ export async function executeWithKeyRotation<T>(
           providerAttempt: 'gemini-primary',
         });
       } catch (geminiError: any) {
-        lastGeminiError = geminiError;
         lastProviderError = geminiError;
       }
       if (roundEnd - Date.now() < 10000) break;
@@ -528,19 +575,21 @@ export async function executeWithKeyRotation<T>(
           previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
         });
       } catch (openRouterError: any) {
-        lastOpenRouterError = openRouterError;
         lastProviderError = openRouterError;
-        // OpenRouter 402 means the configured account has no usable credits;
-        // another identical fallback round cannot fix that and only wastes time.
-        if (Number(openRouterError?.status || openRouterError?.statusCode) === 402) break;
+        if (shouldFallbackFromOpenRouter(openRouterError) && roundEnd - Date.now() >= 10000) {
+          try {
+            return await executeWithConfiguredGroqFallback(action, roundEnd);
+          } catch (groqError: any) {
+            lastProviderError = groqError;
+          }
+        }
       }
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
+    const detail = String(lastProviderError?.message || '').replace(/gsk_[A-Za-z0-9_-]+/g, '[مفتاح محجوب]').slice(0, 220);
+    const combined: any = new Error(`تعذر تنفيذ الطلب بعد محاولتين عبر Gemini وOpenRouter${detail ? `؛ السبب الأخير: ${detail}` : '.'}`);
     combined.status = 503;
     combined.statusCode = 503;
     combined.cause = lastProviderError;
-    combined.geminiError = lastGeminiError;
-    combined.openRouterError = lastOpenRouterError;
     throw combined;
   }
 
@@ -570,7 +619,7 @@ export async function executeWithKeyRotation<T>(
       if (deadlineAt - Date.now() < 10000) throw timeoutError();
       return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
     }
-    throw lastError || new Error('تعذر الاتصال بننماذج OpenRouter.');
+    throw lastError || new Error('تعذر الاتصال بنماذج OpenRouter.');
   }
 
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
@@ -653,8 +702,6 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     const overallStart = Date.now();
     const totalBudget = Math.max(0, deadlineAt - overallStart);
     let lastProviderError: any = null;
-    let lastGeminiError: any = null;
-    let lastOpenRouterError: any = null;
     for (let round = 0; round < 2; round++) {
       const roundStart = overallStart + Math.floor(totalBudget * round / 2);
       const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
@@ -672,7 +719,6 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         });
         return;
       } catch (geminiError: any) {
-        lastGeminiError = geminiError;
         lastProviderError = geminiError;
         if (anyProviderEmittedText) throw geminiError;
       }
@@ -689,18 +735,23 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         });
         return;
       } catch (openRouterError: any) {
-        lastOpenRouterError = openRouterError;
         lastProviderError = openRouterError;
         if (anyProviderEmittedText) throw openRouterError;
-        if (Number(openRouterError?.status || openRouterError?.statusCode) === 402) break;
+        if (shouldFallbackFromOpenRouter(openRouterError) && roundEnd - Date.now() >= 10000) {
+          try {
+            await executeConfiguredGroqStreamFallback(action, onChunk, roundEnd);
+            return;
+          } catch (groqError: any) {
+            lastProviderError = groqError;
+          }
+        }
       }
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
+    const detail = String(lastProviderError?.message || '').replace(/gsk_[A-Za-z0-9_-]+/g, '[مفتاح محجوب]').slice(0, 220);
+    const combined: any = new Error(`تعذر تنفيذ الطلب بعد محاولتين عبر Gemini وOpenRouter${detail ? `؛ السبب الأخير: ${detail}` : '.'}`);
     combined.status = 503;
     combined.statusCode = 503;
     combined.cause = lastProviderError;
-    combined.geminiError = lastGeminiError;
-    combined.openRouterError = lastOpenRouterError;
     throw combined;
   }
 
