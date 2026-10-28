@@ -93,12 +93,19 @@ function reserveStartIndex(count: number, pool: 'general' | 'ocr'): number {
   return start;
 }
 
-function selectModelsForKey(models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now()): string[] {
+function selectModelsForKey(
+  models: string[],
+  key: string,
+  pool: 'general' | 'ocr' = 'general',
+  now = Date.now(),
+  avoidPairs?: Set<string>,
+): string[] {
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
   const available = models.filter((model) =>
     !isCooling(modelCooldowns, model, now) &&
-    !isCooling(pairCooldowns, rotationPairKey(key, model), now)
+    !isCooling(pairCooldowns, rotationPairKey(key, model), now) &&
+    !avoidPairs?.has(`${key}::${model}`)
   );
   return available.slice(0, MAX_MODELS_PER_KEY_PER_REQUEST);
 }
@@ -197,7 +204,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
   for (const model of GEMINI_MODELS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      lastFailure = 'انتهت المهلة المحدد لفحص مفتاح Gemini.';
+      lastFailure = 'انتهت المهلة المحددة لفحص مفتاح Gemini.';
       break;
     }
 
@@ -245,7 +252,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
     }
   }
 
-  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاِح.' };
+  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاح.' };
 }
 
 let dedicatedOCRActiveKey = '';
@@ -258,7 +265,7 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
     return { ready: false, keyCount: 0, checkedKeys: 0, message: error?.message || 'تعذر قراءة مجموعة مفاتيح الصور والمستندات.' };
   }
   if (!keys.length) {
-    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخانصة (OCR).' };
+    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخاصة (OCR).' };
   }
 
   const deadlineAt = Date.now() + Math.max(1000, totalTimeoutMs);
@@ -278,7 +285,9 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
-/** * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini */
+/** 
+ * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini 
+ */
 async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>, deadlineAt = Date.now() + 90000): Promise<any> {
   const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
   if (!fallbackConfig.enabled || !fallbackConfig.apiKey) {
@@ -379,7 +388,7 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
     if (Date.now() >= deadlineAt || deadlineAt - Date.now() < 10000) break;
   }
 
-  const finalError: any = new Error(`فشلت محاولتان كاملتان لاستخراج النص: Gemini بمفاتيحه ونماذجه ثم Groq. ${String(lastError?.message || '')}`);
+  const finalError: any = new Error(`فشلت محاولتان كاملتان لاستخراج النص: Gemini بمفاتيح ونماذج ثم Groq. ${String(lastError?.message || '')}`);
   finalError.status = lastError?.status || lastError?.statusCode || 503;
   finalError.statusCode = finalError.status;
   finalError.cause = lastError;
@@ -476,6 +485,8 @@ type KeyRotationExecutionOptions = {
   deadlineAt?: number;
   previousProviderError?: string;
   providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
+  /** Previously used key/model pairs are avoided first during continuation. */
+  avoidPairs?: string[];
 };
 
 export async function executeWithKeyRotation<T>(
@@ -533,7 +544,10 @@ export async function executeWithKeyRotation<T>(
   }
 
   if (!_forceGeminiFallback) {
-    const models = executionOptions?.ocrMode ? ['openrouter/free'] : getOpenRouterModels();
+    const availableModels = executionOptions?.ocrMode ? ['openrouter/free'] : getOpenRouterModels();
+    const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+    const preferredModelsForAttempt = availableModels.filter((model) => !avoidedPairs.has(`openrouter::${model}`));
+    const models = preferredModelsForAttempt.length ? preferredModelsForAttempt : availableModels;
     let lastError: any = null;
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
@@ -567,6 +581,8 @@ export async function executeWithKeyRotation<T>(
 
   const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
+  let attemptedModelCount = 0;
+  const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   const keyFailureKinds = new Map<string, string>();
 
   for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
@@ -579,9 +595,10 @@ export async function executeWithKeyRotation<T>(
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general');
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
 
       for (let m = 0; m < keyModels.length; m++) {
+        attemptedModelCount += 1;
         const remainingMs = deadlineAt - Date.now();
         if (remainingMs < 10000) {
           lastError = timeoutError();
@@ -605,6 +622,16 @@ export async function executeWithKeyRotation<T>(
     }
   }
 
+  if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
+    if (executionOptions?.providerAttempt === 'gemini-primary') {
+      throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
+    }
+    return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
+      ...executionOptions,
+      avoidPairs: undefined,
+    });
+  }
+
   const finalKind = getGeminiErrorKind(lastError);
   if (finalKind === 'quota') {
     const quotaError: any = new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام.');
@@ -614,7 +641,14 @@ export async function executeWithKeyRotation<T>(
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
-export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false, executionOptions?: KeyRotationExecutionOptions ): Promise<void> {
+export async function executeWithKeyRotationStream(
+  action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>,
+  onChunk: (text: string) => void,
+  preferredModels: string[] = GEMINI_MODELS,
+  _ignoredClientFallbackKey?: string,
+  _forceGeminiFallback = false,
+  executionOptions?: KeyRotationExecutionOptions
+): Promise<void> {
   if (!executionOptions?.deadlineAt) {
     executionOptions = { ...executionOptions, deadlineAt: Date.now() + 270000 };
   }
@@ -670,7 +704,10 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
 
   if (!_forceGeminiFallback && executionOptions?.providerAttempt === 'openrouter-fallback' && !executionOptions?.ocrMode) {
-    const models = getOpenRouterModels();
+    const availableModels = getOpenRouterModels();
+    const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+    const preferredModelsForAttempt = availableModels.filter((model) => !avoidedPairs.has(`openrouter::${model}`));
+    const models = preferredModelsForAttempt.length ? preferredModelsForAttempt : availableModels;
     let lastOpenRouterError: any = null;
 
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
@@ -714,14 +751,17 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
 
+  const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  let attemptedModelCount = 0;
   for (let cycle = 0; cycle < 1; cycle++) {
     const startIdx = reserveStartIndex(keys.length, 'general');
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general');
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
 
       for (let m = 0; m < keyModels.length; m++) {
+        attemptedModelCount += 1;
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
         let emittedAnyChunk = false;
         try {
@@ -736,12 +776,24 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           activeKeyIndex = currentKeyIndex;
           return;
         } catch (err: any) {
-          if (emittedAnyChunk) throw err;
           markRotationFailure(currentKey, keyModels[m], err, 'general');
+          if (emittedAnyChunk) {
+            activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
+            throw err;
+          }
           if (permanentlyInvalidKeys.has(currentKey)) break;
         }
       }
     }
+  }
+  if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
+    if (executionOptions?.providerAttempt === 'gemini-primary') {
+      throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
+    }
+    return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, {
+      ...executionOptions,
+      avoidPairs: undefined,
+    });
   }
   throw new Error('فشلت جميع محاولات تدوير البث.');
 }
