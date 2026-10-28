@@ -174,7 +174,6 @@ async function requestSavedJob<T extends Record<string, any>>(
   storageScope?: string,
   ocrMetadata?: { fileName: string; mimeType: string },
   forcedJobId?: string,
-  onJobRegistered?: (jobId: string) => void | Promise<void>,
 ): Promise<string> {
   const key = jobStorageKey(type, userId, storageScope);
   const storage = typeof localStorage !== 'undefined' ? localStorage : null;
@@ -192,11 +191,6 @@ async function requestSavedJob<T extends Record<string, any>>(
       status: 'pending',
       createdAt: new Date().toISOString(),
     });
-    // Link the browser-persisted original file to its durable server job before
-    // the first network request can outlive or lose the current page.
-    try { await onJobRegistered?.(jobId); } catch (error) {
-      console.warn('Could not link the pending original file to its OCR job:', error);
-    }
   }
   const clearJobReference = () => {
     if (storage?.getItem(key) === jobId) storage.removeItem(key);
@@ -272,17 +266,6 @@ async function requestSavedJob<T extends Record<string, any>>(
 
       if (data.status === 'completed') {
         const result = String(data.result || lastText);
-
-        // The server persists progress in batches, so the final result can
-        // contain a tail that was never present in partialResult. Always flush
-        // that tail to the live UI callback before resolving the task.
-        if (onChunk && result.startsWith(lastText) && result.length > lastText.length) {
-          onChunk(result.slice(lastText.length));
-        } else if (onChunk && !lastText && result) {
-          onChunk(result);
-        }
-        lastText = result;
-
         if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'completed');
         else if (storage) storage.removeItem(key);
         return result;
@@ -338,7 +321,7 @@ export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: 
   return requestSavedJob(type, {}, onChunk, userId, jobId);
 }
 
-export async function runSavedOcrTask( base64Data: string, mimeType: string, fileName: string, storageScope: string, userId?: string, onJobRegistered?: (jobId: string) => void | Promise<void>, ): Promise<{ text: string; jobId: string }> {
+export async function runSavedOcrTask( base64Data: string, mimeType: string, fileName: string, storageScope: string, userId?: string, ): Promise<{ text: string; jobId: string }> {
   const jobId = makeJobId();
   const text = await requestSavedJob(
     'ocr',
@@ -349,7 +332,6 @@ export async function runSavedOcrTask( base64Data: string, mimeType: string, fil
     storageScope,
     { fileName, mimeType },
     jobId,
-    onJobRegistered,
   );
   return { text, jobId };
 }
@@ -381,7 +363,6 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
         const isSse = (response.headers.get('content-type') || '').toLowerCase().includes('text/event-stream');
         let buffer = '';
         let fullText = '';
-        let sawDone = false;
 
         const processEvent = (raw: string) => {
           const lines = raw.split(/\r?\n/);
@@ -401,8 +382,6 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
             streamStarted = true;
             fullText += event.text;
             onChunk(event.text);
-          } else if (event.type === 'done') {
-            sawDone = true;
           } else if (event.type === 'error') {
             throw new Error(event.error || 'فشلت الاستجابة المتدفقة.');
           }
@@ -420,13 +399,6 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
 
         buffer += decoder.decode();
         if (buffer.trim()) processEvent(buffer);
-
-        // Do not silently report a truncated stream as a successful response.
-        if (!sawDone) {
-          const incomplete: any = new Error('انتهى الاتصال قبل اكتمال بث الإجابة. أعد المحاولة لاسترجاع النتيجة كاملة.');
-          incomplete.streamIncomplete = true;
-          throw incomplete;
-        }
 
         return { result: fullText };
       }
