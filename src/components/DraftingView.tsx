@@ -213,43 +213,6 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     return () => { active = false; };
   }, [userId]);
 
-  // Resume a refinement operation too; unlike initial drafting, this task also
-  // needs its original draft and refinement mode saved before the request starts.
-  useEffect(() => {
-    let active = true;
-    const userKey = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const jobKey = `amin_ai_job_refine_${userKey}`;
-    const metadataKey = `amin_judicial_refine_pending_${userKey}`;
-    let jobId = '';
-    let metadata: any = null;
-    try {
-      jobId = localStorage.getItem(jobKey) || '';
-      metadata = JSON.parse(localStorage.getItem(metadataKey) || 'null');
-    } catch {}
-    if (!jobId || !metadata?.draftText || !metadata?.enhancementType) return () => { active = false; };
-    setIsRefining(true);
-    setDraftError('');
-    void refineDraftText(metadata.draftText, metadata.enhancementType, (chunk) => {
-      if (active) setGeneratedBrief((current) => {
-        if (!current) return chunk;
-        if (chunk.startsWith(current)) return chunk;
-        if (current.startsWith(chunk)) return current;
-        return current + chunk;
-      });
-    }, userId, jobId).then((refined) => {
-      if (!active) return;
-      setGeneratedBrief(refined);
-      persistentStorage.setItem('amin_judicial_draft_result', refined);
-      try { localStorage.removeItem(metadataKey); localStorage.removeItem(jobKey); } catch {}
-      setRefineNote('اكتملت مراجعة المسودة المحفوظة.');
-    }).catch((err: any) => {
-      if (active) setDraftError(err?.message || 'تعذر استعادة مراجعة المسودة المحفوظة.');
-    }).finally(() => {
-      if (active) setIsRefining(false);
-    });
-    return () => { active = false; };
-  }, [userId]);
-
 
   const generateDraft = async () => {
     if (isUploadingDoc) return;
@@ -310,29 +273,14 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setIsRefining(true);
     setRefineNote('');
     const previousDraft = generatedBrief;
-    const userKey = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const jobKey = `amin_ai_job_refine_${userKey}`;
-    const metadataKey = `amin_judicial_refine_pending_${userKey}`;
-    const jobId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
-          const random = Math.random() * 16 | 0;
-          return (char === 'x' ? random : (random & 0x3 | 0x8)).toString(16);
-        });
-    // Store both the stable job ID and source draft synchronously before starting.
-    try {
-      localStorage.setItem(jobKey, jobId);
-      localStorage.setItem(metadataKey, JSON.stringify({ draftText: previousDraft, enhancementType: type }));
-    } catch {}
     setGeneratedBrief('');
     try {
       const refined = await refineDraftText(previousDraft, type, (chunk) => {
         setGeneratedBrief((current) => current + chunk);
-      }, userId, jobId);
+      }, userId);
       if (refined) {
         setGeneratedBrief(refined);
         persistentStorage.setItem('amin_judicial_draft_result', refined);
-        try { localStorage.removeItem(metadataKey); localStorage.removeItem(jobKey); } catch {}
         const notes: Record<string, string> = {
           moreDecisive: 'تم تعزيز العبارات القضائية وجعل الصياغة أكثر حسماً.',
           addPrecedents: 'تم تدعيم المذكرة بأحدث مبادئ وأحكام محكمة النقض المصرية.',
