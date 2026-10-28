@@ -61,7 +61,7 @@ function buildPayload(options: any, model: string, stream: boolean) {
       typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : 16384,
       Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS) > 0
         ? Math.min(32768, Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS))
-        : 16384,
+        : 32768,
     )),
     stream,
   };
