@@ -1,5 +1,7 @@
 import mammoth from 'mammoth';
 import { getSessionToken } from '../services/authService.ts';
+import { runSavedOcrTask } from '../services/aiService.ts';
+import { getActiveLawyerUserId } from './legalVaultService.ts';
 
 export interface ExtractedFileResult {
   fileName: string;
@@ -7,6 +9,7 @@ export interface ExtractedFileResult {
   text: string;
   previewSnippet: string;
   characterCount: number;
+  backgroundJobId?: string;
 }
 
 export function fileToBase64(file: File | Blob): Promise<string> {
@@ -22,15 +25,8 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   });
 }
 
-/**
- * تجهيز الصور قبل OCR: تحويل إلى رمادي، تصغير الأبعاد، وضغط JPEG.
- * يحاول إبقاء ملف الصورة الناتج دون 1MB مع الحفاظ على وضوح النص قدر الإمكان.
- */
-export async function compressAndResizeImage(
-  file: File,
-  maxDimension = 1800,
-  quality = 0.82,
-): Promise<{ base64Data: string; mimeType: string }> {
+/** * تجهيز الصور قبل OCR: تحويل إلى رمادي، تصغير الأبعاد، وضغط JPEG. * يحاول إبقاء ملف الصورة الناتج دون 1MB مع الحفاظ على وضوح النص قدر الإمكان. */
+export async function compressAndResizeImage( file: File, maxDimension = 1800, quality = 0.82, ): Promise<{ base64Data: string; mimeType: string }> {
   const MAX_IMAGE_BYTES = 1024 * 1024;
   const encodeCanvas = (canvas: HTMLCanvasElement, q: number) =>
     new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', q));
@@ -298,10 +294,11 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
 }
 
 /** * أداة الاستخراج الشاملة والسريعة: * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. * 4. الملفات النصية (.txt): قراءة فورية للنص. */
-export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileResult> {
+export async function extractTextFromAnyFile(file: File, recoveryScope = 'general'): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
   let extractedText = '';
+  let backgroundJobId: string | undefined;
 
   if (fileName.startsWith('~$')) {
     throw new Error(`ملف مؤقت (${fileName}) من وورد. اختر المستند الأصلي.`);
@@ -358,7 +355,18 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
     } else {
       base64Data = await fileToBase64(file);
     }
-    extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
+    // Route long-running PDFs/images through the existing durable server job queue.
+    // This keeps the current OCR handler and Gemini/Groq routing, while preserving
+    // the job id for recovery if the browser is backgrounded or the connection drops.
+    const savedTask = await runSavedOcrTask(
+      base64Data,
+      mimeType,
+      fileName,
+      recoveryScope,
+      getActiveLawyerUserId(),
+    );
+    extractedText = savedTask.text;
+    backgroundJobId = savedTask.jobId;
   } else {
     try {
       extractedText = await file.text();
@@ -378,5 +386,6 @@ export async function extractTextFromAnyFile(file: File): Promise<ExtractedFileR
     text: cleanText,
     previewSnippet: cleanText.slice(0, 200) + (cleanText.length > 200 ? '...' : ''),
     characterCount: cleanText.length,
+    ...(backgroundJobId ? { backgroundJobId } : {}),
   };
 }

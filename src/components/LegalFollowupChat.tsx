@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -22,6 +22,14 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [copiedMessage, setCopiedMessage] = useState<string | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the newest message visible when opening the chat, sending a message,
+  // receiving a reply, or showing/hiding the loading indicator.
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [messages, loading]);
 
   const copyMessage = async (content: string, messageKey: string) => {
     try {
@@ -66,29 +74,117 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
     setLoading(true);
     setError('');
     try {
-      const response = await fetch('/api/gemini/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${sessionToken}`,
-        },
-        body: JSON.stringify({ taskType, originalContext, result, messages: nextMessages }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const retryAfter = Number(response.headers.get('Retry-After') || data?.retryAfter || 0);
-        const serverMessage = String(data?.error || '');
-        if (response.status === 429) {
-          throw new Error(serverMessage || `تم الوصول إلى مهلة الاستخدام. انتظر ${retryAfter || 30} ثانية ثم أعد الإرسال.`);
+      // Route legal chat through the durable background-job worker rather than
+      // holding one browser connection open for the full model response.
+      const pendingKey = `${storageKey}_pending_job`;
+      const fingerprint = (value: string) => {
+        let hash = 2166136261;
+        for (let i = 0; i < value.length; i += 1) {
+          hash ^= value.charCodeAt(i);
+          hash = Math.imul(hash, 16777619);
         }
-        if (response.status >= 500) {
-          throw new Error(serverMessage || 'تعذر على خدمة الذكاء الاصطناعي إكمال الرد. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
-        }
-        throw new Error(serverMessage || 'تعذر إرسال السؤال حالياً.');
+        return (hash >>> 0).toString(36);
+      };
+      let jobId = '';
+      try {
+        const pending = JSON.parse(localStorage.getItem(pendingKey) || 'null');
+        if (pending?.question === question && pending?.resultFingerprint === fingerprint(result)) jobId = String(pending.jobId || '');
+      } catch {}
+      if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
+        jobId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+              const random = Math.random() * 16 | 0;
+              return (char === 'x' ? random : (random & 0x3 | 0x8)).toString(16);
+            });
+        try { localStorage.setItem(pendingKey, JSON.stringify({ jobId, question, resultFingerprint: fingerprint(result) })); } catch {}
       }
-      const answer = String(data?.result || '').trim();
+
+      const headers = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessionToken}`,
+      };
+      let createResponse: Response | null = null;
+      let createError: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          createResponse = await fetch('/api/gemini/jobs', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              taskType: 'legal-chat',
+              jobId,
+              // Send only the current request to the AI. Keep the full transcript
+              // in local UI state, but do not resend old chat turns or duplicate case context.
+              payload: {
+              taskType,
+              originalContext: '',
+              result,
+              messages: [{ role: 'user', content: question }],
+            },
+            }),
+          });
+          createError = null;
+          break;
+        } catch (error) {
+          createError = error;
+          if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 700));
+        }
+      }
+      if (!createResponse) throw createError instanceof Error ? createError : new Error('تعذر بدء مهمة الدردشة القانونية.');
+      const createData = await createResponse.json().catch(() => ({}));
+      if (!createResponse.ok) {
+        const retryAfter = Number(createResponse.headers.get('Retry-After') || createData?.retryAfter || 0);
+        const serverMessage = String(createData?.error || '');
+        if (createResponse.status === 429) throw new Error(serverMessage || `تم الوصول إلى مهلة الاستخدام. انتظر ${retryAfter || 30} ثانية ثم أعد الإرسال.`);
+        throw new Error(serverMessage || `تعذر حفظ مهمة الدردشة القانونية (${createResponse.status}).`);
+      }
+
+      const startedAt = Date.now();
+      let transientFailures = 0;
+      let finalData: any = null;
+      while (Date.now() - startedAt < 20 * 60 * 1000) {
+        try {
+          const statusResponse = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
+            method: 'GET', headers, cache: 'no-store',
+          });
+          const statusData = await statusResponse.json().catch(() => ({}));
+          if (!statusResponse.ok) {
+            const failure: any = new Error(statusData?.error || `تعذر استرجاع حالة الدردشة (${statusResponse.status}).`);
+            failure.statusCode = statusResponse.status;
+            throw failure;
+          }
+          transientFailures = 0;
+          if (statusData.status === 'completed') {
+            try {
+              finalData = JSON.parse(String(statusData.result || ''));
+            } catch {
+              const invalidResult: any = new Error('اكتملت المهمة لكن تعذر قراءة نتيجة الدردشة المحفوظة.');
+              invalidResult.terminalJobError = true;
+              throw invalidResult;
+            }
+            break;
+          }
+          if (statusData.status === 'failed') {
+            try { localStorage.removeItem(pendingKey); } catch {}
+            const failedJob: any = new Error(String(statusData.error || 'تعذر إكمال رد الدردشة القانونية.'));
+            failedJob.terminalJobError = true;
+            throw failedJob;
+          }
+        } catch (pollError: any) {
+          if (pollError?.terminalJobError || (pollError?.statusCode >= 400 && pollError.statusCode < 500 && pollError.statusCode !== 408 && pollError.statusCode !== 429)) throw pollError;
+          transientFailures += 1;
+          if (transientFailures >= 15) {
+            throw new Error('انقطع الاتصال مؤقتًا، لكن مهمة الدردشة محفوظة على الخادم. أعد إرسال السؤال نفسه لاستعادة المهمة دون بدء إجابة جديدة.');
+          }
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      }
+      if (!finalData) throw new Error('ما زالت الدردشة قيد المعالجة على الخادم. أعد إرسال السؤال نفسه لاستعادة النتيجة دون بدء مهمة جديدة.');
+      try { localStorage.removeItem(pendingKey); } catch {}
+      const answer = String(finalData?.result || '').replace(/^\s*(?:reply|response|answer)\s*[:：-]?\s*(?:\r?\n)?/i, '').trim();
       if (!answer) throw new Error('لم تصل إجابة صالحة. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
-      const updatedResult = typeof data?.updatedResult === 'string' ? data.updatedResult.trim() : '';
+      const updatedResult = typeof finalData?.updatedResult === 'string' ? finalData.updatedResult.replace(/^\s*(?:reply|response|answer)\s*[:：-]?\s*(?:\r?\n)?/i, '').trim() : '';
       if (updatedResult && updatedResult !== result.trim()) onResultChange?.(updatedResult);
       setMessages((current) => [...current, { role: 'assistant', content: answer }]);
     } catch (err: any) {
@@ -108,7 +204,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
   if (!result.trim()) return null;
   return <section className="mt-5 rounded-2xl border border-emerald-700/60 bg-slate-950/70 p-4 space-y-3" dir="rtl">
     <div><h3 className="font-bold text-emerald-300">مناقشة النتيجة مع أمين</h3><p className="text-xs text-slate-400 mt-1">اسأل عن أي نقطة أو اطلب تعديل النتيجة نفسها؛ عند طلب التعديل سيحدّث أمين النتيجة المعروضة والمحفوظة لتصبح هي النسخة المستخدمة في التصدير.</p></div>
-    {messages.length > 0 && <div className="space-y-3 max-h-96 overflow-y-auto" aria-live="polite">
+    {messages.length > 0 && <div ref={messagesContainerRef} className="space-y-3 max-h-96 overflow-y-auto" aria-live="polite">
       {messages.map((message, index) => {
         const messageKey = `${index}-${message.role}`;
         return <div key={messageKey} className={`rounded-xl p-3 whitespace-pre-wrap text-sm leading-7 ${message.role === 'user' ? 'bg-slate-800 text-white' : 'bg-emerald-950/60 border border-emerald-900 text-slate-100'}`}>

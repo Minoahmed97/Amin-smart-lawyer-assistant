@@ -118,7 +118,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   const [showNewOcrKey, setShowNewOcrKey] = useState<boolean>(false);
   const [ocrKeyBusy, setOcrKeyBusy] = useState<boolean>(false);
   const [ocrKeyActionMsg, setOcrKeyActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [groqOCRFallbackStatus, setGroqOCRFallbackStatus] = useState<{ enabled: boolean; configured: boolean; maskedKey: string; model: string }>({ enabled: false, configured: false, maskedKey: '', model: 'qwen/qwen3.6-27b' });
+  const [groqOCRFallbackStatus, setGroqOCRFallbackStatus] = useState<{ enabled: boolean; configured: boolean; maskedKey: string; model: string }>({ enabled: false, configured: false, maskedKey: '', model: 'qwen/qwen3.8-27b' });
   const [groqOCRKeyInput, setGroqOCRKeyInput] = useState<string>('');
   const [showGroqOCRKey, setShowGroqOCRKey] = useState<boolean>(false);
   const [groqOCRBusy, setGroqOCRBusy] = useState<boolean>(false);
@@ -309,7 +309,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
           enabled: data.enabled === true,
           configured: data.configured === true,
           maskedKey: String(data.maskedKey || ''),
-          model: String(data.model || 'qwen/qwen3.6-27b'),
+          model: String(data.model || 'qwen/qwen3.8-27b'),
         });
       })
       .catch((error: any) => {
@@ -345,7 +345,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
           enabled: data.status.enabled === true,
           configured: data.status.configured === true,
           maskedKey: String(data.status.maskedKey || ''),
-          model: String(data.status.model || 'qwen/qwen3.6-27b'),
+          model: String(data.status.model || 'qwen/qwen3.8-27b'),
         });
       } else if (action === 'toggle') {
         setGroqOCRFallbackStatus((prev) => ({ ...prev, enabled: enabled === true }));

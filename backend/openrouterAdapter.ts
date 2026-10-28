@@ -280,15 +280,23 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
 }
 
 export function getOpenRouterModels(): string[] {
-  const configured = (process.env.OPENROUTER_MODELS || '').split(/[;,\n]/).map((x) => x.trim()).filter(Boolean);
-  // This project is configured for free-tier routing: reject non-free model IDs
-  // so a Vercel environment typo cannot silently route legal requests to paid models.
-  const configuredFree = configured.filter((model) => model === 'openrouter/free' || model.endsWith(':free'));
-  // Prefer OpenRouter's live free router, then current independently addressable free models.
-  return configuredFree.length ? [...new Set(configuredFree)] : [
-    'openrouter/free',
+  const configured = (process.env.OPENROUTER_MODELS || '')
+    .split(/[;,\n]/)
+    .map((x) => x.trim().replace(/^['\"]|['\"]$/g, ''))
+    .filter(Boolean);
+
+  // Keep this fallback free-only. In particular, reject the paid slug
+  // "qwen/qwen3.8-27b" and accept it only if the free variant is explicitly named.
+  const configuredFree = configured.filter((model) =>
+    model === 'openrouter/free' || /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/i.test(model)
+  );
+  const knownFreeFallbacks = [
     'nvidia/nemotron-3-ultra-550b-a55b:free',
     'nvidia/nemotron-3.5-lightning:free',
     'qwen/qwen3.8-27b:free',
   ];
+
+  // The dynamic router selects from currently available free models, avoiding
+  // reliance on one hard-coded slug when provider availability changes.
+  return [...new Set(['openrouter/free', ...(configuredFree.length ? configuredFree.filter((m) => m !== 'openrouter/free') : knownFreeFallbacks)])];
 }

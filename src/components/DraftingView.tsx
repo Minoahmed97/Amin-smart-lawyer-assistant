@@ -187,9 +187,13 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     if (!jobId) return () => { active = false; };
     setIsLoading(true);
     setDraftError('');
-    setGeneratedBrief('');
     void resumeDraftCounterBrief(jobId, (chunk) => {
-      if (active) setGeneratedBrief((current) => current + chunk);
+      if (active) setGeneratedBrief((current) => {
+        if (!current) return chunk;
+        if (chunk.startsWith(current)) return chunk;
+        if (current.startsWith(chunk)) return current;
+        return current + chunk;
+      });
     }, userId).then(async (result) => {
       if (!active) return;
       setGeneratedBrief(result);

@@ -234,9 +234,14 @@ const OCR_GROQ_FALLBACK_CACHE_MS = 15_000;
 function cleanOCRGroqFallbackConfig(value: any): OCRGroqFallbackConfig {
   const object = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const apiKey = typeof object.apiKey === 'string' ? object.apiKey.trim() : '';
-  const model = typeof object.model === 'string' && object.model.trim()
+  const configuredModel = typeof object.model === 'string' && object.model.trim()
     ? object.model.trim().slice(0, 100)
     : OCR_GROQ_DEFAULT_MODEL;
+  // Replace vision models that Groq has retired so existing saved settings
+  // continue to work without requiring the user to re-enter the API key.
+  const model = ['meta-llama/llama-3.2-11b-vision-preview', 'meta-llama/llama-3.2-90b-vision-preview', 'qwen/qwen3.6-27b'].includes(configuredModel)
+    ? OCR_GROQ_DEFAULT_MODEL
+    : configuredModel;
   return {
     enabled: object.enabled === true,
     apiKey: apiKey.startsWith('gsk_') && apiKey.length >= 20 ? apiKey : '',
