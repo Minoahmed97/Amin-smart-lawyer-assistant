@@ -32,21 +32,19 @@ export default async function handler(req: any, res: any) {
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
     const latestUserMessage = lastMessage.content.trim();
 
-    // التحقق الدقيق: هل المطلوب تعديل صريح داخل المستند أم مجرد سؤال أو طلب عرض في الشات؟
-    const isExplicitDocumentEdit = /^(عدل البند|غير البند|استبدل البند|عدل الكلمة|غير الكلمة)\s+/i.test(latestUserMessage);
+    // فحص ذكي ومرن: أي طلب يبدأ بكلمات تدل على التعديل أو التغيير أو الاستبدال سيتم اعتباره تعديلاً مباشراً للمستند
+    const isExplicitDocumentEdit = /^(عدل|غير|بدل|احذف|أضف|اضف|استبدل|ضع|اكتب في النتيجة)\b/i.test(latestUserMessage);
 
     let prompt = '';
     if (isExplicitDocumentEdit) {
-      // تعديل الجزء المخصص فقط بدون الحاجة لإعادة كتابة كل شيء لو أمكن، أو تحديث المستند بتركيز
-      prompt = `أنت أمين، مساعد قانوني مصري. بناءً على طلب المحامي بتعديل جزء محدد: "${latestUserMessage}"
-قم بتحديث المستند وتطبيق هذا التعديل المحدد فقط مع الحفاظ على باقي البنود، وأرجع المستند كاملاً بعد التعديل بشكل مباشر وبدون مقدمات.
+      prompt = `أنت أمين، مساعد قانوني مصري. بناءً على طلب المحامي بالتعديل: "${latestUserMessage}"
+قم بتعديل وتحديث النتيجة الحالية بناءً على هذا الطلب بدقة، ورجع المستند كاملاً بعد التعديل مباشرة بدون مقدمات أو شرح خارج المستند.
 
 [النتيجة الحالية للمستند]
 ${result}`;
     } else {
-      // أي طلب آخر (سؤال، كتابة المذكرة في الشات للإطلاع، استفسار، إلخ) يتم الرد عليه في الشات مباشرة
       prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}).
-أجب على طلب أو سؤال المحامي التالي في الشات مباشرة (مثل كتابة المذكرة هنا أو الرد على استفساره) بناءً على النتيجة الحالية. لا تقم بتعديل المستند الأساسي ما لم يُطلب ذلك صراحة.
+أجب على طلب أو سؤال المحامي التالي في الشات مباشرة (مثل عرض المذكرة أو شرحها أو الرد على استفساره) بناءً على النتيجة الحالية. لا تقم بتعديل المستند الأساسي.
 
 [النتيجة الحالية للمستند للاطلاع والاستعانة بها]
 ${result}
@@ -65,9 +63,10 @@ ${latestUserMessage}`;
 
     const cleanedAnswer = rawAnswer.replace(/^```(?:text|markdown|json)?\s*/i, '').replace(/\s*```$/, '').trim();
 
+    // إذا كان طلب تعديل صريح، نقوم بتحديث المربع بـ cleanedAnswer، وإلا نجعل التعديل في الشات فقط
     if (isExplicitDocumentEdit && cleanedAnswer.length > 20) {
       updatedResult = cleanedAnswer;
-      answer = 'تم تعديل وتحديث المستند بناءً على طلبك.';
+      answer = 'تم تعديل المستند وتحديث النتيجة بناءً على طلبك.';
     } else {
       answer = cleanedAnswer;
       updatedResult = null;
@@ -81,7 +80,7 @@ ${latestUserMessage}`;
       trialRemaining: usage.trialRemaining 
     });
 
-  } clarify_catch: catch (err: any) {
+  } catch (err: any) {
     console.error('Error in /api/gemini/chat:', err?.message || 'unknown error');
     const isTimeout = err?.message === 'AI_TIMEOUT';
     return res.status(isTimeout ? 504 : 500).json({
