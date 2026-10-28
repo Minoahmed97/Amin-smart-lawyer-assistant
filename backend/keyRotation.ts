@@ -93,13 +93,7 @@ function reserveStartIndex(count: number, pool: 'general' | 'ocr'): number {
   return start;
 }
 
-function selectModelsForKey(
-  models: string[],
-  key: string,
-  pool: 'general' | 'ocr' = 'general',
-  now = Date.now(),
-  avoidPairs?: Set<string>,
-): string[] {
+function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, ): string[] {
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
   const available = models.filter((model) =>
@@ -204,7 +198,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
   for (const model of GEMINI_MODELS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      lastFailure = 'انتهت المهلة المحدد لفحص مفتاح Gemini.';
+      lastFailure = 'انتهت المهلة المحددة لفحص مفتاح Gemini.';
       break;
     }
 
@@ -285,9 +279,7 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
-/** 
- * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini 
- */
+/** * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini */
 async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>, deadlineAt = Date.now() + 90000): Promise<any> {
   const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
   if (!fallbackConfig.enabled || !fallbackConfig.apiKey) {
@@ -641,14 +633,7 @@ export async function executeWithKeyRotation<T>(
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
-export async function executeWithKeyRotationStream(
-  action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>,
-  onChunk: (text: string) => void,
-  preferredModels: string[] = GEMINI_MODELS,
-  _ignoredClientFallbackKey?: string,
-  _forceGeminiFallback = false,
-  executionOptions?: KeyRotationExecutionOptions
-): Promise<void> {
+export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false, executionOptions?: KeyRotationExecutionOptions ): Promise<void> {
   if (!executionOptions?.deadlineAt) {
     executionOptions = { ...executionOptions, deadlineAt: Date.now() + 270000 };
   }
