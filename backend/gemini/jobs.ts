@@ -1,7 +1,7 @@
 import { waitUntil } from '@vercel/functions';
 import crypto from 'node:crypto';
 import webpush from 'web-push';
-import { createSession, requireActiveSession, requireSession } from '../auth.ts';
+import { requireActiveSession, requireSession } from '../auth.ts';
 import counterBriefHandler from './counter-brief.ts';
 import deconstructHandler from './deconstruct.ts';
 import qualifyHandler from './qualify.ts';
@@ -480,8 +480,6 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     } catch (persistError: any) {
       console.error('AI job failure could not be persisted:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(persistError?.message || persistError) }));
     }
-  } finally {
-    clearInterval(heartbeat);
   }
 }
 
@@ -533,10 +531,7 @@ export default async function handler(req: any, res: any) {
         if (existingRes.ok) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
-          if (existing?.id) {
-            if (existing.status === 'queued') scheduleBackground(dispatchQueuedJob(existing.id));
-            return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
-          }
+          if (existing?.id) return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
         }
         return res.status(503).json({ error: 'تعذر حفظ مهمة الصياغة على الخادم.' });
       }

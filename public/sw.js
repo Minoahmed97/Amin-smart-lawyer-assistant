@@ -58,35 +58,3 @@ self.addEventListener('fetch', (event) => {
     }).catch(() => caches.match(request).then((cached) => cached || caches.match('/index.html')))
   );
 });
-
-
-self.addEventListener('push', (event) => {
-  let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data ? event.data.text() : '' }; }
-  const title = String(data.title || 'اكتملت المهمة القانونية');
-  const options = {
-    body: String(data.body || 'افتح التطبيق للاطلاع على النتيجة.'),
-    icon: '/pwa-icon-192.png',
-    badge: '/pwa-icon-192.png',
-    data: { url: typeof data.url === 'string' && data.url.startsWith('/') ? data.url : '/' },
-    tag: 'amin-ai-task-completion',
-    renotify: true,
-  };
-  event.waitUntil(self.registration.showNotification(title, options));
-});
-
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  const targetUrl = new URL(event.notification.data?.url || '/', self.location.origin).href;
-  event.waitUntil((async () => {
-    const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const client of clientsList) {
-      if (client.url.startsWith(self.location.origin) && 'focus' in client) {
-        await client.focus();
-        if ('navigate' in client) await client.navigate(targetUrl);
-        return;
-      }
-    }
-    if (self.clients.openWindow) await self.clients.openWindow(targetUrl);
-  })());
-});
