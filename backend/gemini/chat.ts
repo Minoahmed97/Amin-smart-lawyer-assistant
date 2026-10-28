@@ -34,11 +34,11 @@ export default async function handler(req: any, res: any) {
     // مذكرة جديدة أو إجابة داخل المحادثة. لا تُحدّث المستند إلا عند وجود طلب
     // صريح يستهدف النتيجة/المستند الحالي أو جزءاً منه، مع إعطاء أولوية لمكان
     // الإخراج إذا قال المستخدم بوضوح إنه يريد الإجابة هنا في الشات.
-    const explicitlyWantsChatReply = /(?:في\s*الشات|هنا\s+(?:في\s*)?الشات|داخل\s+(?:هذه\s*)?المحادثة|في\s*المحادثة|هنا\s+في\s+الرد|اكتب(?:لي|\s+لي)?\s+.{0,45}\s+هنا|ابعته(?:ا|الي|اليها)?\s+هنا|ابعتها\s+هنا|اكتبها\s+هنا|اعرضها\s+هنا)/i.test(latestUserMessage);
+    const explicitlyWantsChatReply = /(?:في\s*الشات|هنا\s+(?:في\s*)?الشات|داخل\s+(?:هذه\s*)?المحادثة|في\s*المحادثة|هنا\s+في\s+الرد|اكتب(?:لي|\s+لي)?\s+.{0,45}\s+هنا|ابعته(?:ا|الي|اليها)?\s+هنا|ابعتها\s+هنا|اكتبها\s+هنا|اعرضها\s+هنا|هات(?:لي|\s+لي)?\s+.{0,50}\s+في\s*الشات|استخرج(?:لي|\s+لي)?\s+.{0,50}\s+في\s*الشات|انقل(?:لي|\s+لي)?\s+.{0,50}\s+للشات|من\s+النتيجة\s+.{0,50}\s+(?:في\s*الشات|هنا))/i.test(latestUserMessage);
     const explicitResultTarget = /(?:النتيجة(?:\s+(?:الحالية|المعروضة|نفسها))?|خانة\s+النتيجة|المستند(?:\s+(?:الحالي|الموجود|المعروض))?|المذكرة\s+(?:الحالية|الموجودة|المعروضة)|النص\s+الحالي|داخل\s+(?:المستند|المذكرة|النتيجة)|إلى\s+(?:المستند|المذكرة|النتيجة)|في\s+(?:المستند|المذكرة|النتيجة))/i.test(latestUserMessage);
     const explicitEditAction = /(?:احذف|حذف|امسح|شيل|أضف|اضف|ضيف|إضافة|اضافة|عدّل|عدل|تعديل|غيّر|غير|استبدل|بدّل|بدل|أعد\s+صياغ|اعد\s+صياغ|أعد\s+كتابة|اعد\s+كتابة|صحّح|صحح|اختصر|وسّع|وسع|رتّب|رتب|أدرج|ادرج|اكتب|صيّغ|صيغ|أنشئ|انشئ|جهز|جهّز|اجعل|خلي|حط|انقل|ظبط|زود|remove|delete|add|rewrite|replace|edit|change|insert|move|update)/i.test(latestUserMessage);
     const explicitlyTargetsExistingPart = /(?:الفقرة|الفقرات|الجزء|الأجزاء|العنوان|الترويسة|الخاتمة|الطلبات|الطلب|الدفع|الدفوع|التاريخ|الاسم|الجملة|السطر|المقطع|الصفحة|بند\s+رقم|الفقرة\s+رقم|(?:عدل|عدّل|ظبط|غير|غيّر|اختصر|وسع|وسّع|شيل|احذف|ضيف|أضف|اكتب)ها|(?:عدل|عدّل|ظبط|غير|غيّر)ه)/i.test(latestUserMessage);
-    const requestsEdit = !explicitlyWantsChatReply && explicitEditAction && (explicitResultTarget || explicitlyTargetsExistingPart);
+    const requestsEdit = !explicitlyWantsChatReply && explicitEditAction && (explicitResultTarget || explicitlyTargetsExistingPart) && !/(?:اشرح|وضح|ما\s+معنى|يعني\s+ايه|ما\s+المقصود|ما\s+هو|ما\s+هي|هل|ليه|لماذا|ازاي|كيف|استخرج|هات|اعرض|انقل)\b/i.test(latestUserMessage);
     
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
 
@@ -47,6 +47,7 @@ export default async function handler(req: any, res: any) {
 {"reply":"الإجابة أو النص المطلوب داخل الشات","updatedResult":null}
 
 تعليمات الهيكلة والتنسيق والتعامل مع العامية:
+0. لا تكتب كلمة Reply أو Response أو Answer كعنوان أو بادئة في الرد أو النص المعدل؛ أخرج المحتوى مباشرة.
 1. افهم قصد المحامي سواء تحدث بالفصحى أو بالعامية المصرية (مثل: "خليها كذا"، "غير دي لـ كذا"، "ظبط التاريخ"، "شيل الحته دي").
 2. ميّز بدقة بين مكان الإجابة وبين تعديل المستند:
    - إذا طلب المحامي كتابة مذكرة جديدة أو صياغة نص أو شرح/إجابة داخل الشات أو المحادثة، فاكتب المحتوى المطلوب كاملاً في "reply" واجعل "updatedResult": null. لا تعتبر كلمات مثل "اكتب" أو "مذكرة" وحدها أمراً بتعديل النتيجة.
@@ -75,6 +76,7 @@ ${history}
       if (!text) return '';
       return text
         .replace(/^```(?:json|text|markdown)?\s*/i, '')
+        .replace(/^\s*(?:reply|response|answer)\s*[:：-]?\s*(?:\r?\n)?/i, '')
         .replace(/\s*```$/, '')
         .replace(/^\{\s*"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
         .replace(/^"reply"\s*:\s*".*?"\s*,\s*"updatedResult"\s*:\s*"/s, '')
@@ -91,8 +93,8 @@ ${history}
       const cleaned = jsonStart >= 0 && jsonEnd > jsonStart ? trimmedAnswer.slice(jsonStart, jsonEnd + 1) : trimmedAnswer;
       const parsed = JSON.parse(cleaned);
       
-      answer = typeof parsed?.reply === 'string' ? parsed.reply.trim() : '';
-      updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? parsed.updatedResult.trim() : null;
+      answer = typeof parsed?.reply === 'string' ? sanitizeLegalText(parsed.reply) : '';
+      updatedResult = typeof parsed?.updatedResult === 'string' && parsed.updatedResult.trim() ? sanitizeLegalText(parsed.updatedResult) : null;
     } catch {
       const plainAnswer = sanitizeLegalText(rawAnswer);
       const minimumDocumentLength = Math.min(300, Math.max(120, Math.floor(result.trim().length * 0.45)));
