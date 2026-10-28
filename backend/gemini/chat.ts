@@ -7,6 +7,9 @@ export default async function handler(req: any, res: any) {
   try {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch {} }
+    if (body && typeof body.messages === 'string') {
+      try { body.messages = JSON.parse(body.messages); } catch { body.messages = null; }
+    }
     const { taskType, originalContext, result, messages } = body || {};
     if (!['deconstruct', 'qualify', 'draft'].includes(taskType)) return res.status(400).json({ error: 'نوع المهمة غير صالح للدردشة القانونية.' });
     if (typeof result !== 'string' || !result.trim()) return res.status(400).json({ error: 'لا توجد نتيجة أصلية لمناقشتها.' });
