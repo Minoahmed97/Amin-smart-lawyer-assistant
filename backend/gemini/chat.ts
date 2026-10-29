@@ -32,17 +32,23 @@ export default async function handler(req: any, res: any) {
     const taskLabel = taskType === 'deconstruct' ? 'تفنيد والرد على مستند' : taskType === 'qualify' ? 'تكييف قانوني للنزاع' : 'صياغة قانونية';
     const latestUserMessage = lastMessage.content.trim();
 
-    // فحص دقيق جداً هل هو أمر تعديل
-    const isDocumentEditIntent = /^(عدل|غير|بدل|احذف|أضف|اضف|استبدل|ضع)\b/i.test(latestUserMessage) && 
+    // فحص دقيق هل هو أمر تعديل
+    const isDocumentEditIntent = /^(عدل|غير|بدل|احذف|أضف|اضف|استبدل|ضع|شيل)\b/i.test(latestUserMessage) && 
                                  (latestUserMessage.includes('نتيجة') || latestUserMessage.includes('مستند') || latestUserMessage.includes('بند') || latestUserMessage.includes('الفقرة') || latestUserMessage.includes('الجملة') || latestUserMessage.length < 60);
 
     let prompt = '';
     if (isDocumentEditIntent) {
-      // هنا السر: بنطلب منه يركز على استبدال النص المطلوب في المستند بذكاء وسرعة، وبنسمح له يتعامل مع الجزء المطلوب بدقة
-      prompt = `أنت مساعد قانوني مصري. المحامي يطلب منك هذا التعديل المحدد:
+      // هنا بنطلب منه يرجع النتيجة بصيغة JSON واضحة: الشات لوحده، والمستند المحدث لوحده عشان ميتلخبطوش
+      prompt = `أنت مساعد قانوني مصري ذكي. المحامي يطلب منك هذا التعديل المحدد على المستند:
 "${latestUserMessage}"
 
-مهمتك: قم بتطبيق هذا التعديل المحدّد فقط داخل المستند أدناه (استبدال النص القديم بالنص الجديد المطلوب)، وأرجع المستند كاملاً بعد التعديل بشكل سريع ومن غير مقدمات أو كلام زائد.
+مهمتك: 
+1. قم بتطبيق هذا التعديل على المستند أدناه وإرجاع المستند كاملاً بعد التعديل.
+2. أجب بصيغة JSON صحيحة تماماً بالشكل التالي من غير أي كود ماركداك إضافي بره الـ JSON:
+{
+  "chatResponse": "رسالة قصيرة تخبر المحامي أنه تم التعديل بنجاح",
+  "updatedDocument": "النص الكامل للمستند بعد التعديل"
+}
 
 [النص الأصلي للمستند]
 ${result}`;
@@ -57,7 +63,6 @@ ${result}
 ${latestUserMessage}`;
     }
 
-    // رفعنا وقت الانتظار لـ 90 ثانية لضمان عدم حدوث أي Timeout نهائياً حتى مع أثقل المستندات
     const rawAnswer = await Promise.race([
       generateDeepLegalResponse(prompt),
       new Promise((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), 90000))
@@ -66,11 +71,18 @@ ${latestUserMessage}`;
     let answer = '';
     let updatedResult: string | null = null;
 
-    const cleanedAnswer = rawAnswer.replace(/^```(?:text|markdown|json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const cleanedAnswer = rawAnswer.replace(/^```(?:json|text|markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
 
-    if (isDocumentEditIntent && cleanedAnswer.length > 10) {
-      updatedResult = cleanedAnswer;
-      answer = 'تم تعديل المطلوب وتحديث مربع النتيجة بنجاح.';
+    if (isDocumentEditIntent) {
+      try {
+        const parsed = JSON.parse(cleanedAnswer);
+        answer = parsed.chatResponse || 'تم تعديل المطلوب بنجاح.';
+        updatedResult = parsed.updatedDocument || null;
+      } catch (e) {
+        // لو الـ AI رجع النص دايركت من غير JSON بالخطأ، بنحطه في المستند ونخلي الشات يرد برسالة نجاح
+        updatedResult = cleanedAnswer;
+        answer = 'تم تعديل المستند وتحديث مربع النتيجة بنجاح.';
+      }
     } else {
       answer = cleanedAnswer;
       updatedResult = null;
