@@ -16,13 +16,74 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
   })();
   const storageKey = `amin_legal_followup_${taskType}_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}_${contextFingerprint}`;
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    try { const saved = localStorage.getItem(storageKey); return saved ? JSON.parse(saved) : []; } catch { return []; }
+    try {
+      const saved = localStorage.getItem(storageKey);
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed.filter((message: any) =>
+        message && (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string'
+      ) : [];
+    } catch { return []; }
   });
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [copiedMessage, setCopiedMessage] = useState<string | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const recoveryStartedKeyRef = useRef<string | null>(null);
+  const sendRef = useRef<((event: React.FormEvent, recoveredQuestion?: string, isRecovery?: boolean) => Promise<void>) | null>(null);
+  const requestSequenceRef = useRef(0);
+  const activeRequestRef = useRef<{ requestId: number; question: string; storageKey: string } | null>(null);
+  const currentPropsRef = useRef({ storageKey, originalContext, result });
+  currentPropsRef.current = { storageKey, originalContext, result };
+  const previousStorageKeyRef = useRef(storageKey);
+  const previousResultRef = useRef(result);
+  const persistedStorageKeyRef = useRef(storageKey);
+
+  // Invalidate responses when the case context or current result changes, and
+  // load the transcript belonging to the newly selected context.
+  useEffect(() => {
+    const contextChanged = previousStorageKeyRef.current !== storageKey;
+    const resultChanged = previousResultRef.current !== result;
+    if (!contextChanged && !resultChanged) return;
+
+    const interruptedRequest = activeRequestRef.current;
+    requestSequenceRef.current += 1;
+    setLoading(false);
+    setError('');
+    recoveryStartedKeyRef.current = null;
+    previousResultRef.current = result;
+
+    if (interruptedRequest && interruptedRequest.requestId < requestSequenceRef.current) {
+      activeRequestRef.current = null;
+      if (!contextChanged && resultChanged) {
+        setMessages((current) => {
+          const last = current[current.length - 1];
+          return last?.role === 'user' && last.content === interruptedRequest.question
+            ? current.slice(0, -1)
+            : current;
+        });
+        setDraft(interruptedRequest.question);
+        setError('تغيّرت النتيجة أثناء إعداد الرد. أعد إرسال السؤال بعد استقرار النتيجة.');
+      }
+    }
+
+    if (contextChanged) {
+      previousStorageKeyRef.current = storageKey;
+      recoveryStartedKeyRef.current = null;
+      let savedMessages: ChatMessage[] = [];
+      try {
+        const saved = localStorage.getItem(storageKey);
+        const parsed = saved ? JSON.parse(saved) : [];
+        if (Array.isArray(parsed)) {
+          savedMessages = parsed.filter((message: any) =>
+            message && (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string'
+          );
+        }
+      } catch {}
+      setMessages(savedMessages);
+      setDraft('');
+    }
+  }, [storageKey, result]);
 
   // Keep the newest message visible when opening the chat, sending a message,
   // receiving a reply, or showing/hiding the loading indicator.
@@ -57,26 +118,56 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
     }
   };
 
-  useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify(messages)); } catch {} }, [messages, storageKey]);
+  useEffect(() => {
+    // Do not briefly write the previous context's transcript under a new key.
+    if (persistedStorageKeyRef.current !== storageKey) {
+      persistedStorageKeyRef.current = storageKey;
+      return;
+    }
+    try { localStorage.setItem(storageKey, JSON.stringify(messages)); } catch {}
+  }, [messages, storageKey]);
 
-  const send = async (event: React.FormEvent) => {
+  const send = async (event: React.FormEvent, recoveredQuestion?: string, isRecovery = false) => {
     event.preventDefault();
-    const question = draft.trim();
+    const question = (recoveredQuestion ?? draft).trim();
     if (!question || loading || !result.trim()) return;
     const sessionToken = getSessionToken();
     if (!sessionToken) {
       setError('تعذر العثور على رمز جلسة الحساب في هذا المتصفح. حدّث الصفحة، وإذا استمرت المشكلة سجّل الدخول مرة أخرى.');
       return;
     }
-    const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: question }];
-    setMessages(nextMessages);
-    setDraft('');
+    const requestId = ++requestSequenceRef.current;
+    activeRequestRef.current = { requestId, question, storageKey };
+    const requestStorageKey = storageKey;
+    const requestOriginalContext = originalContext;
+    const requestResult = result;
+    const isRequestCurrent = () =>
+      requestId === requestSequenceRef.current &&
+      currentPropsRef.current.storageKey === requestStorageKey &&
+      currentPropsRef.current.originalContext === requestOriginalContext &&
+      currentPropsRef.current.result === requestResult;
+    const pendingKey = `${requestStorageKey}_pending_job`;
+    let jobId = '';
+
+    if (isRecovery) {
+      // The question may have been saved before refresh, or refresh may have
+      // happened before the message-saving effect ran. Ensure it appears once.
+      setMessages((current) => {
+        const last = current[current.length - 1];
+        return last?.role === 'user' && last.content === question
+          ? current
+          : [...current, { role: 'user', content: question }];
+      });
+    } else {
+      const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: question }];
+      setMessages(nextMessages);
+      setDraft('');
+    }
     setLoading(true);
     setError('');
     try {
       // Route legal chat through the durable background-job worker rather than
       // holding one browser connection open for the full model response.
-      const pendingKey = `${storageKey}_pending_job`;
       const fingerprint = (value: string) => {
         let hash = 2166136261;
         for (let i = 0; i < value.length; i += 1) {
@@ -85,7 +176,6 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         }
         return (hash >>> 0).toString(36);
       };
-      let jobId = '';
       try {
         const pending = JSON.parse(localStorage.getItem(pendingKey) || 'null');
         if (pending?.question === question && pending?.resultFingerprint === fingerprint(result)) jobId = String(pending.jobId || '');
@@ -118,8 +208,8 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
               // in local UI state, but do not resend old chat turns or duplicate case context.
               payload: {
               taskType,
-              originalContext: '',
-              result,
+              originalContext: requestOriginalContext,
+              result: requestResult,
               messages: [{ role: 'user', content: question }],
             },
             }),
@@ -134,21 +224,32 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
       if (!createResponse) throw createError instanceof Error ? createError : new Error('تعذر بدء مهمة الدردشة القانونية.');
       const createData = await createResponse.json().catch(() => ({}));
       if (!createResponse.ok) {
+        try {
+          const pending = JSON.parse(localStorage.getItem(pendingKey) || 'null');
+          if (pending?.jobId === jobId) localStorage.removeItem(pendingKey);
+        } catch {}
         const retryAfter = Number(createResponse.headers.get('Retry-After') || createData?.retryAfter || 0);
         const serverMessage = String(createData?.error || '');
-        if (createResponse.status === 429) throw new Error(serverMessage || `تم الوصول إلى مهلة الاستخدام. انتظر ${retryAfter || 30} ثانية ثم أعد الإرسال.`);
-        throw new Error(serverMessage || `تعذر حفظ مهمة الدردشة القانونية (${createResponse.status}).`);
+        const rejected: any = new Error(createResponse.status === 429
+          ? (serverMessage || `تم الوصول إلى مهلة الاستخدام. انتظر ${retryAfter || 30} ثانية ثم أعد الإرسال.`)
+          : (serverMessage || `تعذر حفظ مهمة الدردشة القانونية (${createResponse.status}).`));
+        rejected.statusCode = createResponse.status;
+        rejected.jobCreationRejected = true;
+        throw rejected;
       }
+      if (!isRequestCurrent()) return;
 
       const startedAt = Date.now();
       let transientFailures = 0;
       let finalData: any = null;
       while (Date.now() - startedAt < 20 * 60 * 1000) {
+        if (!isRequestCurrent()) return;
         try {
           const statusResponse = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
             method: 'GET', headers, cache: 'no-store',
           });
           const statusData = await statusResponse.json().catch(() => ({}));
+          if (!isRequestCurrent()) return;
           if (!statusResponse.ok) {
             const failure: any = new Error(statusData?.error || `تعذر استرجاع حالة الدردشة (${statusResponse.status}).`);
             failure.statusCode = statusResponse.status;
@@ -181,13 +282,25 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         await new Promise((resolve) => window.setTimeout(resolve, 1500));
       }
       if (!finalData) throw new Error('ما زالت الدردشة قيد المعالجة على الخادم. أعد إرسال السؤال نفسه لاستعادة النتيجة دون بدء مهمة جديدة.');
+      if (!isRequestCurrent()) return;
       try { localStorage.removeItem(pendingKey); } catch {}
       const answer = String(finalData?.result || '').replace(/^\s*(?:reply|response|answer)\s*[:：-]?\s*(?:\r?\n)?/i, '').trim();
       if (!answer) throw new Error('لم تصل إجابة صالحة. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
       const updatedResult = typeof finalData?.updatedResult === 'string' ? finalData.updatedResult.replace(/^\s*(?:reply|response|answer)\s*[:：-]?\s*(?:\r?\n)?/i, '').trim() : '';
-      if (updatedResult && updatedResult !== result.trim()) onResultChange?.(updatedResult);
+      if (!isRequestCurrent()) return;
+      if (updatedResult && updatedResult !== requestResult.trim()) onResultChange?.(updatedResult);
       setMessages((current) => [...current, { role: 'assistant', content: answer }]);
     } catch (err: any) {
+      const statusCode = Number(err?.statusCode);
+      const terminalFailure = err?.terminalJobError || err?.jobCreationRejected ||
+        (statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429);
+      if (terminalFailure && jobId) {
+        try {
+          const pending = JSON.parse(localStorage.getItem(pendingKey) || 'null');
+          if (pending?.jobId === jobId) localStorage.removeItem(pendingKey);
+        } catch {}
+      }
+      if (!isRequestCurrent()) return;
       // Remove the failed pending question from the transcript so it is not shown
       // as if it had been answered; restore it to the input for a deliberate retry.
       setMessages((current) => {
@@ -197,9 +310,46 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
       setDraft(question);
       setError(err?.message || 'تعذر الاتصال بالمساعد القانوني. تحقق من الاتصال ثم أعد المحاولة.');
     } finally {
-      setLoading(false);
+      if (activeRequestRef.current?.requestId === requestId) activeRequestRef.current = null;
+      if (requestId === requestSequenceRef.current) setLoading(false);
     }
   };
+
+  // Keep a callable reference to the latest handler so a saved background job
+  // can resume polling after a full page refresh without creating a new job.
+  sendRef.current = send;
+
+  useEffect(() => {
+    if (!result.trim() || recoveryStartedKeyRef.current === storageKey) return;
+    const pendingKey = `${storageKey}_pending_job`;
+    const fingerprint = (value: string) => {
+      let hash = 2166136261;
+      for (let i = 0; i < value.length; i += 1) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(36);
+    };
+
+    try {
+      const pending = JSON.parse(localStorage.getItem(pendingKey) || 'null');
+      if (
+        !pending?.question ||
+        !/^[0-9a-f-]{36}$/i.test(String(pending?.jobId || '')) ||
+        pending.resultFingerprint !== fingerprint(result)
+      ) return;
+
+      recoveryStartedKeyRef.current = storageKey;
+      setError('');
+      void sendRef.current?.(
+        { preventDefault: () => {} } as React.FormEvent,
+        String(pending.question),
+        true,
+      );
+    } catch {
+      // Leave the chat usable for manual retry if saved recovery data is malformed.
+    }
+  }, [storageKey, result]);
 
   if (!result.trim()) return null;
   return <section className="mt-5 rounded-2xl border border-emerald-700/60 bg-slate-950/70 p-4 space-y-3" dir="rtl">

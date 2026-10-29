@@ -303,8 +303,11 @@ export async function loginAccount(username: string, password: string, deviceFin
   if (!user || !verifyPassword(password, user.password_hash)) {
     throw new Error('اسم المستخدم أو كلمة المرور غير صحيح.');
   }
+  if (user.account_status === 'deleted') {
+    throw new Error('هذا الحساب محذوف ولا يمكن تسجيل الدخول إليه. إذا كان الحذف بالخطأ، يُرجى مراجعة الإدارة لاستعادته.');
+  }
   if (user.account_status !== 'active') {
-    throw new Error('هذا الحساب محذوف أو موقوف ولا يمكن تسجيل الدخول إليه.');
+    throw new Error('هذا الحساب موقوف حاليًا. إذا كان السبب انتهاء التجربة أو الرصيد، يُرجى مراجعة الإدارة لإعادة تفعيله أو شحنه.');
   }
   if (user.device_fingerprint !== deviceFingerprint) {
     throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');

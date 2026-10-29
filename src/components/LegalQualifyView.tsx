@@ -1,5 +1,5 @@
 import { getCurrentAccount } from '../services/authService.ts';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { qualifyLegalCase, resumeSavedAiTask } from '../services/aiService.ts';
 import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
@@ -60,21 +60,23 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
   const [fontSizePt, setFontSizePt] = useState<number>(18);
   const [fontFamily, setFontFamily] = useState<'traditional' | 'amiri'>('traditional');
   const [isLiveEditing, setIsLiveEditing] = useState<boolean>(false);
+  const resultOperationRef = useRef(0);
+  const clearPersistenceRef = useRef(false);
 
   useEffect(() => {
-    persistentStorage.setItem('judicial_qualify_dispute', disputeDetails);
+    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_qualify_dispute'); else persistentStorage.setItem('judicial_qualify_dispute', disputeDetails);
   }, [disputeDetails]);
 
   useEffect(() => {
-    persistentStorage.setItem('judicial_qualify_goals', clientGoals);
+    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_qualify_goals'); else persistentStorage.setItem('judicial_qualify_goals', clientGoals);
   }, [clientGoals]);
 
   useEffect(() => {
-    persistentStorage.setItem('judicial_qualify_result', qualificationResult);
+    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_qualify_result'); else persistentStorage.setItem('judicial_qualify_result', qualificationResult);
   }, [qualificationResult]);
 
   useEffect(() => {
-    persistentStorage.setItem('judicial_qualify_docname', uploadedDocName);
+    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_qualify_docname'); else persistentStorage.setItem('judicial_qualify_docname', uploadedDocName);
   }, [uploadedDocName]);
 
   // Append extracted document text directly to the dispute/facts field.
@@ -92,7 +94,13 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     setQualifyError('');
   };
 
+  useEffect(() => { clearPersistenceRef.current = false; });
+
   const clearAllFields = () => {
+    resultOperationRef.current += 1;
+    setIsLoading(false);
+    setQualifyError('');
+    clearPersistenceRef.current = true;
     setDisputeDetails('');
     setClientGoals('');
     setQualificationResult('');
@@ -101,6 +109,9 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     persistentStorage.removeItem('judicial_qualify_goals');
     persistentStorage.removeItem('judicial_qualify_result');
     persistentStorage.removeItem('judicial_qualify_docname');
+    const storageUser = String(getActiveLawyerUserId() || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    try { localStorage.removeItem(`amin_ai_job_qualify_${storageUser}`); } catch {}
+    try { const prefix = `amin_legal_followup_qualify_` + (String(getActiveLawyerUserId() || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')) + '_'; for (let i = localStorage.length - 1; i >= 0; i -= 1) { const key = localStorage.key(i); if (key && key.startsWith(prefix)) { localStorage.removeItem(key); localStorage.removeItem(`${key}_pending_job`); } } } catch {}
   };
 
 
@@ -108,6 +119,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
 
   useEffect(() => {
     let active = true;
+    const operationId = resultOperationRef.current;
     let jobId = '';
     const userId = getActiveLawyerUserId();
     const storageUser = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -116,15 +128,15 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     setIsLoading(true);
     setQualifyError('');
     void resumeSavedAiTask('qualify', jobId, (chunk) => {
-      if (active) setQualificationResult((current) => current + chunk);
+      if (active && operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
     }, userId).then((result) => {
-      if (!active) return;
+      if (!active || operationId !== resultOperationRef.current) return;
       setQualificationResult(result);
       persistentStorage.setItem('judicial_qualify_result', result);
     }).catch((err: any) => {
-      if (active) setQualifyError(err?.message || 'تعذر استعادة المهمة المحفوظة.');
+      if (active && operationId === resultOperationRef.current) setQualifyError(err?.message || 'تعذر استعادة المهمة المحفوظة.');
     }).finally(() => {
-      if (active) setIsLoading(false);
+      if (active && operationId === resultOperationRef.current) setIsLoading(false);
     });
     return () => { active = false; };
   }, []);
@@ -144,14 +156,15 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
       return;
     }
 
+    const operationId = ++resultOperationRef.current;
     setIsLoading(true);
     setQualifyError('');
     setQualificationResult('');
     try {
       const result = await qualifyLegalCase(disputeDetails, clientGoals, (chunk) => {
-        setQualificationResult((current) => current + chunk);
+        if (operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
       }, getActiveLawyerUserId());
-      if (result) {
+      if (result && operationId === resultOperationRef.current) {
         setQualificationResult(result);
         persistentStorage.setItem('judicial_qualify_result', result);
         try {
@@ -160,10 +173,11 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
         } catch {}
       }
     } catch (err: any) {
+      if (operationId !== resultOperationRef.current) return;
       console.warn('Qualify error:', err);
       setQualifyError(err?.message || 'تعذر استكمال التكييف القانوني حالياً.');
     } finally {
-      setIsLoading(false);
+      if (operationId === resultOperationRef.current) setIsLoading(false);
     }
   };
 
