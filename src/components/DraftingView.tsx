@@ -39,6 +39,9 @@ import { persistentStorage } from '../utils/persistentStorage.ts';
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
 
+const sanitizeDraftJobUserId = (value: string | null | undefined): string =>
+  String(value || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+
 interface DraftingViewProps {
   initialFormData?: Partial<DraftingFormData>;
   userId: string;
@@ -101,6 +104,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const [wordTemplates, setWordTemplates] = useState<LegalDocTemplate[]>([]);
   const [templateMode, setTemplateMode] = useState<'auto' | 'manual'>('auto');
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const resultOperationRef = useRef(0);
+  const clearPersistenceRef = useRef(false);
 
   // General task types only. The AI decides which vault references are useful;
   // the user is not asked to choose an internal template/subtype.
@@ -130,15 +135,15 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   }, [userId]);
 
   useEffect(() => {
-    persistentStorage.setJSON('amin_judicial_draft_form', formData);
+    if (clearPersistenceRef.current) persistentStorage.removeItem('amin_judicial_draft_form'); else persistentStorage.setJSON('amin_judicial_draft_form', formData);
   }, [formData]);
 
   useEffect(() => {
-    persistentStorage.setItem('amin_judicial_draft_result', generatedBrief || '');
+    if (clearPersistenceRef.current) persistentStorage.removeItem('amin_judicial_draft_result'); else persistentStorage.setItem('amin_judicial_draft_result', generatedBrief || '');
   }, [generatedBrief]);
 
   useEffect(() => {
-    persistentStorage.setItem('amin_judicial_draft_docname', uploadedDocName || '');
+    if (clearPersistenceRef.current) persistentStorage.removeItem('amin_judicial_draft_docname'); else persistentStorage.setItem('amin_judicial_draft_docname', uploadedDocName || '');
   }, [uploadedDocName]);
 
   useEffect(() => {
@@ -150,7 +155,14 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     }
   }, [initialFormData]);
 
+  useEffect(() => { clearPersistenceRef.current = false; });
+
   const clearForm = () => {
+    resultOperationRef.current += 1;
+    setIsLoading(false);
+    setIsRefining(false);
+    setDraftError('');
+    clearPersistenceRef.current = true;
     setFormData({
       courtType: '',
       circuit: '',
@@ -175,6 +187,14 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     persistentStorage.removeItem('amin_judicial_draft_form');
     persistentStorage.removeItem('amin_judicial_draft_result');
     persistentStorage.removeItem('amin_judicial_draft_docname');
+    try {
+      const storageUser = sanitizeDraftJobUserId(userId);
+      const jobKey = `amin_judicial_draft_job_id_${storageUser}`;
+      const legacyJobKey = `amin_judicial_draft_job_id_${String(userId || 'default')}`;
+      localStorage.removeItem(jobKey);
+      if (legacyJobKey !== jobKey) localStorage.removeItem(legacyJobKey);
+    } catch {}
+    try { const prefix = `amin_legal_followup_draft_` + (String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')) + '_'; for (let i = localStorage.length - 1; i >= 0; i -= 1) { const key = localStorage.key(i); if (key && key.startsWith(prefix)) { localStorage.removeItem(key); localStorage.removeItem(`${key}_pending_job`); } } } catch {}
   };
 
   const [draftError, setDraftError] = useState<string>('');
@@ -182,20 +202,37 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   // Recover an in-flight server-side job after refresh, app backgrounding, or reopening.
   useEffect(() => {
     let active = true;
+    const operationId = resultOperationRef.current;
     let jobId = '';
-    try { jobId = localStorage.getItem(`amin_judicial_draft_job_id_${String(userId || 'default')}`) || ''; } catch {}
+    const storageUser = sanitizeDraftJobUserId(userId);
+    const jobKey = `amin_judicial_draft_job_id_${storageUser}`;
+    const legacyJobKey = `amin_judicial_draft_job_id_${String(userId || 'default')}`;
+    try {
+      jobId = localStorage.getItem(jobKey) || '';
+      // Migrate an older unsanitized key only when the canonical key is absent.
+      if (!jobId && legacyJobKey !== jobKey) {
+        const legacyJobId = localStorage.getItem(legacyJobKey) || '';
+        if (legacyJobId) {
+          jobId = legacyJobId;
+          try {
+            localStorage.setItem(jobKey, legacyJobId);
+            localStorage.removeItem(legacyJobKey);
+          } catch {}
+        }
+      }
+    } catch {}
     if (!jobId) return () => { active = false; };
     setIsLoading(true);
     setDraftError('');
     void resumeDraftCounterBrief(jobId, (chunk) => {
-      if (active) setGeneratedBrief((current) => {
+      if (active && operationId === resultOperationRef.current) setGeneratedBrief((current) => {
         if (!current) return chunk;
         if (chunk.startsWith(current)) return chunk;
         if (current.startsWith(chunk)) return current;
         return current + chunk;
       });
     }, userId).then(async (result) => {
-      if (!active) return;
+      if (!active || operationId !== resultOperationRef.current) return;
       setGeneratedBrief(result);
       persistentStorage.setItem('amin_judicial_draft_result', result);
       try {
@@ -206,9 +243,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         setRefineNote('اكتملت مهمة الصياغة المحفوظة.');
       }
     }).catch((err: any) => {
-      if (active) setDraftError(err?.message || 'تعذر استعادة مهمة الصياغة المحفوظة.');
+      if (active && operationId === resultOperationRef.current) setDraftError(err?.message || 'تعذر استعادة مهمة الصياغة المحفوظة.');
     }).finally(() => {
-      if (active) setIsLoading(false);
+      if (active && operationId === resultOperationRef.current) setIsLoading(false);
     });
     return () => { active = false; };
   }, [userId]);
@@ -227,6 +264,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       return;
     }
 
+    const operationId = ++resultOperationRef.current;
     setIsLoading(true);
     setRefineNote('');
     setDraftError('');
@@ -238,9 +276,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         customJudicialWorkType: formData.customJudicialWorkType,
         userId,
       }, (chunk) => {
-        setGeneratedBrief((current) => current + chunk);
+        if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
       });
-      if (aiText) {
+      if (aiText && operationId === resultOperationRef.current) {
         setGeneratedBrief(aiText);
         persistentStorage.setItem('amin_judicial_draft_result', aiText);
         try {
@@ -252,6 +290,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         }
       }
     } catch (err: any) {
+      if (operationId !== resultOperationRef.current) return;
       console.warn('Draft error:', err);
       const rawMessage = String(err?.message || '');
       const looksLikeNetworkFailure = /failed to fetch|network request failed|networkerror|load failed|fetch failed/i.test(rawMessage);
@@ -264,21 +303,22 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         setDraftError(err?.message || 'تعذر استكمال الصياغة حالياً.');
       }
     } finally {
-      setIsLoading(false);
+      if (operationId === resultOperationRef.current) setIsLoading(false);
     }
   };
 
   const handleRefine = async (type: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck') => {
     if (!generatedBrief) return;
+    const operationId = ++resultOperationRef.current;
     setIsRefining(true);
     setRefineNote('');
     const previousDraft = generatedBrief;
     setGeneratedBrief('');
     try {
       const refined = await refineDraftText(previousDraft, type, (chunk) => {
-        setGeneratedBrief((current) => current + chunk);
+        if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
       }, userId);
-      if (refined) {
+      if (refined && operationId === resultOperationRef.current) {
         setGeneratedBrief(refined);
         persistentStorage.setItem('amin_judicial_draft_result', refined);
         const notes: Record<string, string> = {
@@ -292,7 +332,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     } catch (err: any) {
       console.warn('Refine attempt handled silently:', err);
     } finally {
-      setIsRefining(false);
+      if (operationId === resultOperationRef.current) setIsRefining(false);
     }
   };
 
