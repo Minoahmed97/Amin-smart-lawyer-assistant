@@ -1,16 +1,21 @@
 
 import { generateDeepLegalResponse } from './counter-brief.ts';
+import { executeWithKeyRotation } from '../keyRotation.ts';
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
 
 export default async function handler(req: any, res: any) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
 
   try {
     let body = req.body;
 
     if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch {}
+      try {
+        body = JSON.parse(body);
+      } catch {}
     }
 
     if (body && typeof body.messages === 'string') {
@@ -70,40 +75,174 @@ export default async function handler(req: any, res: any) {
 
     const latestUserMessage = lastMessage.content.trim();
 
-    // اكتشاف أوامر تعديل المستند
-    const isDocumentEditIntent =
-      /^(?:من فضلك\s+|لو سمحت\s+|عايزك\s+|ممكن\s+)*(?:عدل|عدّل|تعديل|غير|غيّر|بدل|بدّل|احذف|امسح|شيل|أضف|اضف|زود|استبدل|صحح|عدّللي|عدلي|ضيف)/i.test(latestUserMessage) &&
-      !/(?:اشرح|وضح|اعرض|وريني|اكتبلي في الشات|هاتلي في الشات)/i.test(latestUserMessage);
+    // اكتشاف طلب تعديل النتيجة
+    const normalizedMessage = latestUserMessage
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .trim();
 
-    let prompt = '';
+    const isDocumentEditIntent =
+      /^(?:(?:من فضلك|لو سمحت|عايزك|ممكن|ياريت)\s+)*(?:عدل|عدلي|تعديل|غير|بدل|احذف|امسح|شيل|اضف|زود|استبدل|صحح|ضيف)\b/i.test(normalizedMessage) &&
+      !/(?:اشرح|وضح|اعرض|وريني|اكتبلي في الشات|هاتلي في الشات)/i.test(normalizedMessage);
+
+    let answer = '';
+    let updatedResult: string | null = null;
 
     if (isDocumentEditIntent) {
 
-      // تعديل المستند الأصلي وإرجاع النسخة الكاملة المعدلة
-      prompt = `أنت مساعد قانوني مصري متخصص.
+      /*
+       * تعديل موضعي:
+       * لا نطلب إعادة توليد المستند بالكامل.
+       * النموذج يحدد النص الأصلي والنص البديل فقط.
+       */
 
-المحامي يطلب إجراء تعديل على المستند الحالي.
+      const editPrompt = `أنت محرر مستندات قانونية مصرية.
+
+المطلوب تنفيذ تعديل موضعي على المستند التالي.
 
 [طلب المحامي]
 ${latestUserMessage}
 
-تعليمات إلزامية:
-1. نفّذ التعديل المطلوب داخل المستند الأصلي فقط.
-2. حافظ على جميع الفقرات والبنود الأخرى دون تغيير.
-3. لا تحذف أي جزء غير مطلوب حذفه.
-4. لا تختصر المستند.
-5. لا تضف مقدمات أو تعليقات أو شروحات.
-6. أرجع المستند كاملاً بعد تنفيذ التعديل.
-7. حافظ على التنسيق والعناوين والترتيب الأصلي قدر الإمكان.
-8. لا تخترع وقائع أو نصوصاً قانونية أو أحكاماً قضائية.
+[المستند الحالي]
+${result}
 
-[المستند الأصلي]
-${result}`;
+تعليمات إلزامية:
+
+1. حدد النص الموجود فعلياً في المستند الذي يجب تغييره.
+2. أرجع النص القديم حرفياً دون إعادة صياغته.
+3. أرجع النص البديل المطلوب فقط.
+4. لا تعيد كتابة المستند بالكامل.
+5. لا تعدل أي فقرة أخرى.
+6. لا تختلق وقائع أو أسماء أو مواد قانونية.
+7. إذا كان التعديل غير واضح أو لا يمكن تحديد موضعه بدقة، أرجع status بقيمة unclear.
+8. إذا كان المطلوب إضافة نص جديد، حدد نصاً موجوداً يتم إدراج الإضافة بعده.
+9. لا تختصر النص القديم ولا تستخدم علامات الحذف بدلاً منه.
+10. اختر موضعاً فريداً لا يتكرر داخل المستند.
+11. إذا كان الطلب يتطلب تعديلات متعددة أو إعادة صياغة شاملة لا يمكن تمثيلها باستبدال موضعي واحد، أرجع unclear.
+
+أرجع JSON صالحاً فقط بهذا الشكل:
+
+{
+  "status": "ok",
+  "oldText": "النص الأصلي المطابق حرفياً",
+  "newText": "النص البديل"
+}
+
+في حالة الإضافة، اجعل newText يحتوي على النص الأصلي المحدد ثم الإضافة المطلوبة بعده.
+
+في حالة عدم وضوح الطلب:
+
+{
+  "status": "unclear",
+  "oldText": "",
+  "newText": ""
+}
+
+ممنوع إضافة أي شرح خارج JSON.`;
+
+      // طلب قصير مخصص للتعديل بدلاً من مولد المستندات الطويلة
+      const editResponse = await executeWithKeyRotation(
+        async (ai, key, model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: editPrompt,
+            config: {
+              temperature: 0.1,
+              maxOutputTokens: 8192,
+              responseMimeType: 'application/json'
+            }
+          });
+
+          const text = typeof response.text === 'string'
+            ? response.text.trim()
+            : '';
+
+          if (!text) {
+            throw new Error('لم يصل رد صالح لتنفيذ التعديل.');
+          }
+
+          return text;
+        }
+      );
+
+      let editData: any;
+
+      try {
+        const cleanJson = String(editResponse)
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```$/, '')
+          .trim();
+
+        editData = JSON.parse(cleanJson);
+
+      } catch {
+        throw new Error('تعذر قراءة التعديل المطلوب. حاول توضيح الجزء المراد تغييره.');
+      }
+
+      if (
+        !editData ||
+        editData.status !== 'ok' ||
+        typeof editData.oldText !== 'string' ||
+        typeof editData.newText !== 'string' ||
+        !editData.oldText.length
+      ) {
+        return res.status(422).json({
+          error: 'لم أتمكن من تحديد موضع التعديل بدقة. حدد الجملة أو الفقرة المطلوب تعديلها.',
+          updatedResult: null
+        });
+      }
+
+      const oldText = editData.oldText;
+      const newText = editData.newText;
+
+      // التحقق من وجود النص الأصلي فعلياً
+      const firstIndex = result.indexOf(oldText);
+
+      if (firstIndex === -1) {
+        return res.status(422).json({
+          error: 'تعذر العثور على النص المطلوب تعديله داخل النتيجة الأصلية.',
+          updatedResult: null
+        });
+      }
+
+      // منع تعديل موضع خاطئ إذا تكرر النص
+      const secondIndex = result.indexOf(
+        oldText,
+        firstIndex + oldText.length
+      );
+
+      if (secondIndex !== -1) {
+        return res.status(422).json({
+          error: 'النص المطلوب تعديله متكرر داخل المستند. يرجى تحديد الفقرة المقصودة بدقة.',
+          updatedResult: null
+        });
+      }
+
+      // تنفيذ الاستبدال مع الحفاظ على باقي المستند حرفياً
+      const modifiedDocument =
+        result.slice(0, firstIndex) +
+        newText +
+        result.slice(firstIndex + oldText.length);
+
+      if (!modifiedDocument.trim()) {
+        throw new Error('لا يمكن استبدال المستند بنتيجة فارغة.');
+      }
+
+      if (modifiedDocument === result) {
+        answer = 'النص المطلوب موجود بالفعل ولا يحتاج إلى تعديل.';
+        updatedResult = null;
+      } else {
+        updatedResult = modifiedDocument;
+        answer = 'تم تنفيذ التعديل المطلوب على النتيجة.';
+      }
 
     } else {
 
-      // المحادثة العادية دون تعديل مربع النتيجة
-      prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة.
+      /*
+       * المحادثة القانونية العادية:
+       * الحفاظ على نفس الوظيفة السابقة.
+       */
+
+      const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة.
 
 هذه متابعة لمهمة (${taskLabel}).
 
@@ -111,7 +250,7 @@ ${result}`;
 
 إذا طلب عرض المذكرة أو جزء منها في الشات، اعرض المطلوب في الشات.
 
-لا تقم بتعديل المستند الأساسي في هذه الحالة.
+لا تقم بتعديل المستند الأساسي.
 
 [النتيجة الحالية للمستند للاطلاع والاستعانة بها]
 ${result}
@@ -119,47 +258,17 @@ ${result}
 [طلب أو سؤال المحامي]
 ${latestUserMessage}`;
 
-    }
+      const rawAnswer = await generateDeepLegalResponse(prompt);
 
-    // الحفاظ على مهلة الانتظار الحالية
-    const rawAnswer = await Promise.race([
-      generateDeepLegalResponse(prompt),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('AI_TIMEOUT')), 90000)
-      )
-    ]) as string;
+      answer = rawAnswer
+        .replace(/^```(?:text|markdown|json)?\s*/i, '')
+        .replace(/\s*```$/, '')
+        .trim();
 
-    let answer = '';
-    let updatedResult: string | null = null;
-
-    const cleanedAnswer = rawAnswer
-      .replace(/^```(?:text|markdown|json)?\s*/i, '')
-      .replace(/\s*```$/, '')
-      .trim();
-
-    // الفصل بين تعديل المستند والرد داخل الشات
-    if (isDocumentEditIntent) {
-
-      if (!cleanedAnswer || cleanedAnswer.length <= 10) {
-        throw new Error('لم يتم إرجاع مستند معدل صالح.');
-      }
-
-      // المستند المعدل يذهب إلى مربع النتيجة
-      updatedResult = cleanedAnswer;
-
-      // الشات يعرض رسالة تأكيد فقط
-      answer = 'تم تنفيذ التعديل المطلوب على النتيجة.';
-
-    } else {
-
-      // الرد العادي يظهر في الشات فقط
-      answer = cleanedAnswer;
-
-      // عدم المساس بمربع النتيجة
       updatedResult = null;
-
     }
 
+    // الحفاظ على نظام احتساب العمليات الحالي
     const usage = await consumeOperation(req, 'gemini-operation');
 
     return res.status(200).json({
@@ -178,9 +287,19 @@ ${latestUserMessage}`;
 
     const isTimeout = err?.message === 'AI_TIMEOUT';
 
-    return res.status(isTimeout ? 504 : 500).json({
+    const statusCode = Number(err?.statusCode || err?.status);
+
+    const status =
+      isTimeout ? 504 :
+      Number.isInteger(statusCode) &&
+      statusCode >= 400 &&
+      statusCode < 600
+        ? statusCode
+        : 500;
+
+    return res.status(status).json({
       error: isTimeout
-        ? 'استغرق التعديل وقتاً أطول من المعتاد. حاول مرة أخرى.'
+        ? 'استغرق الطلب وقتاً أطول من المعتاد. حاول مرة أخرى.'
         : (err?.message || 'تعذر إتمام الطلب. حاول مرة أخرى بعد قليل.')
     });
 
