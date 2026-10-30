@@ -327,7 +327,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-300 mt-1">
-                الاصق المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيقوم المساعد بتفنيد محتواه واستخراج نقاط ضعف وإعداد الرد القانوني المناسب.
+                الصق المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيتم تفنيد محتواه واستخراج نقاط الضعف وإعداد الرد القانوني المناسب.
               </p>
             </div>
           </div>
@@ -360,6 +360,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
+            userId={userId}
             recoveryScope="deconstruct"
             onProcessingChange={setIsUploadingDoc}
             onTextExtracted={(text, fileName) => {
@@ -424,7 +425,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 rows={8}
                 value={opponentBriefText}
                 onChange={(e) => setOpponentBriefText(e.target.value)}
-                placeholder="الاصق نص مذكرة الخصم هنا أو ارفع ملف وورد أو ملف بي دي إف أعلاه..."
+                placeholder="الصق نص مذكرة الخصم هنا أو ارفع ملف وورد أو ملف بي دي إف أعلاه..."
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-xs sm:text-sm font-sans leading-relaxed focus:outline-none focus:border-[#b45309]"
               ></textarea>
             </div>
@@ -779,7 +780,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     تقرير التفنيد والرد والمذكرة المقابلة سيظهر هنا
                   </h4>
                   <p className="text-xs max-w-md leading-relaxed text-slate-400">
-                    الاصق مذكرة الخصم أو ارفع ملف وورد أو ملف بي دي إف على اليمين ثم اضغط زر التفنيد والرد.
+                    الصق مذكرة الخصم أو ارفع ملف وورد أو ملف بي دي إف على اليمين ثم اضغط زر التفنيد والرد.
                   </p>
                 </div>
               )}
