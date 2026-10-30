@@ -109,7 +109,7 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
     setTimeout(() => setSuccessNote(null), 3500);
   };
 
-  const handleUploadedText = (text: string, fileName: string, _fileType?: string, sourceFile?: File) => {
+  const handleUploadedText = async (text: string, fileName: string, _fileType?: string, sourceFile?: File): Promise<void> => {
     const cleanTitle = fileName.replace(/\.[^/.]+$/, '');
     const classification = classifyLegalDocument(fileName, text);
     const saved = saveLawModel({
@@ -125,22 +125,34 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
     refreshModels();
     setSelectedModel(saved);
     if (sourceFile) {
-      void saveLegalVaultOriginalFile(sourceFile, userId, text)
-        .then(() => refreshOriginalFiles())
-        .catch((error) => {
-          console.warn('Original vault file could not be saved:', error);
-          setSuccessNote(`تم حفظ النص، لكن تعذر حفظ الملف الأصلي على هذا الجهاز: ${fileName}.`);
-        });
-      if (sourceFile.name.toLowerCase().endsWith('.docx')) {
-        void saveLegalDocTemplate(sourceFile, userId, text)
-          .then((template) => {
-            if (template) { void refreshWordTemplates(); setSuccessNote(`تم حفظ النص والملف الأصلي وقالب وورد: ${fileName}. التصنيف الأولي: ${template.courtType} — ${template.workType}.`); }
-          })
-          .catch((error) => console.warn('Word template index could not be saved:', error));
+      let originalSaved = false;
+      try {
+        await saveLegalVaultOriginalFile(sourceFile, userId, text);
+        await refreshOriginalFiles();
+        originalSaved = true;
+      } catch (error) {
+        console.warn('Original vault file could not be saved:', error);
       }
-      setSuccessNote(`تم حفظ النص وتصنيف المستند مبدئيًا. جارٍ حفظ الملف الأصلي على هذا الجهاز: ${fileName}.`);
+
+      let wordTemplateSaved: LegalDocTemplate | null = null;
+      if (sourceFile.name.toLowerCase().endsWith('.docx')) {
+        try {
+          wordTemplateSaved = await saveLegalDocTemplate(sourceFile, userId, text);
+          if (wordTemplateSaved) await refreshWordTemplates();
+        } catch (error) {
+          console.warn('Word template index could not be saved:', error);
+        }
+      }
+
+      if (!originalSaved) {
+        setSuccessNote(`تم حفظ النص المستخرج في الخزينة، لكن تعذر حفظ الملف الأصلي على هذا الجهاز: ${fileName}.`);
+      } else if (wordTemplateSaved) {
+        setSuccessNote(`تم حفظ النص والملف الأصلي وقالب وورد: ${fileName}. التصنيف الأولي: ${wordTemplateSaved.courtType} — ${wordTemplateSaved.workType}.`);
+      } else {
+        setSuccessNote(`تم حفظ النص والملف الأصلي في الخزينة: ${fileName}.`);
+      }
     } else {
-      setSuccessNote(`تم حفظ النص فقط؛ لم يصل الملف الأصلي إلى الخزنة. أعد رفع المستند إذا كنت تريد الاحتفاظ بنسخته الأصلية.`);
+      setSuccessNote('تم حفظ النص فقط؛ لم يصل الملف الأصلي إلى الخزنة. أعد رفع المستند إذا كنت تريد الاحتفاظ بنسخته الأصلية.');
     }
     setTimeout(() => setSuccessNote(null), 6000);
   };

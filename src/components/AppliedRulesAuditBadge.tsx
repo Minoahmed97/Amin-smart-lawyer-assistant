@@ -21,7 +21,7 @@ interface AppliedRulesAuditBadgeProps {
 }
 
 export const AppliedRulesAuditBadge: React.FC<AppliedRulesAuditBadgeProps> = ({
-  workType = 'مذكرة بدفاع',
+  workType = 'يُحدَّد وفق الوقائع',
   customInstructions,
   courtType,
   circuit,

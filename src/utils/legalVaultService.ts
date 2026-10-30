@@ -167,46 +167,108 @@ function modelMatchesRequestedType(model: LawModelItem, requestedType: string): 
   return bestOverlap >= 0.5;
 }
 
-export function findSimilarModels( criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; }, userId?: string ): LawModelItem[] {
-  const models = getAllLawModels(userId);
-  if (!models.length) return [];
+type LawVaultSearchCriteria = {
+  courtType?: string;
+  briefType?: string;
+  judicialWorkType?: string;
+  factsOrSubject?: string;
+};
 
+const VAULT_TOPIC_STOP_WORDS = new Set([
+  'من', 'في', 'على', 'الى', 'عن', 'مع', 'بين', 'لدى', 'امام', 'ان', 'كان', 'كانت', 'يكون', 'تكون',
+  'التي', 'الذي', 'الذين', 'هذا', 'هذه', 'ذلك', 'تلك', 'هناك', 'حيث', 'لما', 'بما', 'مما', 'وقد',
+  'كما', 'ثم', 'او', 'ولا', 'لا', 'لم', 'لن', 'ما', 'هو', 'هي', 'هم', 'نحن', 'انا', 'كل', 'بعض',
+  'اي', 'حال', 'بشان', 'بموجب', 'طبقا', 'وفقا', 'بناء', 'عليه', 'عليها', 'اليه', 'منها', 'عنه',
+  'لها', 'له', 'حتى', 'منذ', 'خلال', 'بعد', 'قبل', 'عند', 'دون', 'غير', 'كانوا', 'محكمه',
+  'المحكمه', 'دعوي', 'الدعوي', 'قضيه', 'القضيه', 'نزاع', 'النزاع', 'قانون', 'قانوني', 'قانونيه',
+  'قضائي', 'قضائيه', 'مستند', 'المستند', 'مذكره', 'دفاع', 'طلب', 'الطلب', 'المدعي', 'المدعى',
+  'الخصم', 'الموكل', 'محامي', 'المحامي', 'طرف', 'اطراف', 'الاطراف', 'الاوراق', 'اوراق', 'وقائع',
+  'الوقائع', 'موضوع', 'الموضوع', 'المطلوب', 'المهمة', 'مهمه', 'العمل', 'صياغه', 'صيغه', 'مستندات',
+]);
+
+function topicTokens(value: string): Set<string> {
+  const tokens = normalizeVaultText(value)
+    .split(' ')
+    .filter((token) => token.length >= 3 && !VAULT_TOPIC_STOP_WORDS.has(token));
+  // Use the whole bounded text sample; an early-token cutoff can miss the
+  // decisive subject matter that appears later in a long pleading.
+  return new Set(tokens);
+}
+
+function rankVaultModels(models: LawModelItem[], criteria: LawVaultSearchCriteria): Array<{ model: LawModelItem; score: number; index: number; modelDocFamily: string; modelLegalFamily: string }> {
   const requestedType = criteria.judicialWorkType || criteria.briefType || '';
+  const requestedDocFamily = documentFamily(requestedType);
+  const requestedLegalFamily = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
   const normalizedCourt = normalizeVaultText(criteria.courtType || '');
-  const normalizedBrief = normalizeVaultText(criteria.briefType || '');
-  const normalizedWorkType = normalizeVaultText(criteria.judicialWorkType || '');
+  const courtTokens = topicTokens(criteria.courtType || '');
+  const requestedTokens = topicTokens(String(criteria.factsOrSubject || '').slice(0, 16000));
 
-  // Retrieve style references by document-type metadata, not by case facts or
-  // similarity between the current case and the body of an old document.
-  const scored = models.map((model, index) => {
-    const typeText = normalizeVaultText(modelTypeText(model));
-    const categoryText = normalizeVaultText(model.category || '');
-    const titleText = normalizeVaultText(model.title || '');
-    const notesText = normalizeVaultText(model.notes || '');
-    let score = (model.weight || 3) * 2;
+  // Compare every saved model against the current matter. Topic overlap is
+  // deliberately the strongest signal; court, legal branch, and work type are
+  // secondary signals, while saved weight is only a final tie-breaker.
+  const modelTokens = models.map((model) => topicTokens(
+    `${model.title || ''} ${model.category || ''} ${model.judicialWorkType || ''} ${model.notes || ''} ${String(model.content || '').slice(0, 24000)}`,
+  ));
+  const documentFrequency = new Map<string, number>();
+  modelTokens.forEach((tokens) => tokens.forEach((token) => documentFrequency.set(token, (documentFrequency.get(token) || 0) + 1)));
+  const tokenWeight = (token: string) => 1 + Math.log((models.length + 1) / ((documentFrequency.get(token) || 0) + 1));
+  const totalTopicWeight = [...requestedTokens].reduce((sum, token) => sum + tokenWeight(token), 0);
 
-    if (normalizedWorkType) {
-      if (modelMatchesRequestedType(model, requestedType)) score += 120;
-      else if (typeText.includes(normalizedWorkType) || normalizedWorkType.includes(typeText)) score += 35;
-      if (titleText.includes(normalizedWorkType) || categoryText.includes(normalizedWorkType)) score += 15;
+  return models.map((model, index) => {
+    const meta = `${model.judicialWorkType || ''} ${model.title || ''} ${model.category || ''} ${model.notes || ''}`;
+    const normalizedMeta = normalizeVaultText(meta);
+    const normalizedContent = normalizeVaultText(String(model.content || '').slice(0, 12000));
+    const modelMetaTokens = topicTokens(meta);
+    const modelLegalFamily = legalFamily(`${meta} ${String(model.content || '').slice(0, 5000)}`);
+    const modelDocFamily = documentFamily(`${model.judicialWorkType || ''} ${model.title || ''} ${model.category || ''}`);
+    let score = 0;
+
+    if (totalTopicWeight > 0) {
+      const matchedTopicWeight = [...requestedTokens]
+        .filter((token) => modelTokens[index].has(token))
+        .reduce((sum, token) => sum + tokenWeight(token), 0);
+      score += Math.round((matchedTopicWeight / totalTopicWeight) * 260);
+
+      const matchedMetadataWeight = [...requestedTokens]
+        .filter((token) => modelMetaTokens.has(token))
+        .reduce((sum, token) => sum + tokenWeight(token), 0);
+      score += Math.round((matchedMetadataWeight / totalTopicWeight) * 18);
     }
-    if (normalizedBrief) {
-      if (typeText.includes(normalizedBrief) || normalizedBrief.includes(typeText)) score += 40;
-      if (titleText.includes(normalizedBrief) || categoryText.includes(normalizedBrief)) score += 20;
-    }
+
     if (normalizedCourt) {
-      if (categoryText && (categoryText.includes(normalizedCourt) || normalizedCourt.includes(categoryText))) score += 20;
-      if (notesText.includes(normalizedCourt)) score += 8;
+      if (normalizedMeta.includes(normalizedCourt) || normalizedContent.includes(normalizedCourt)) {
+        score += 30;
+      } else if (courtTokens.size) {
+        const courtOverlap = [...courtTokens].filter((token) => modelTokens[index].has(token)).length / courtTokens.size;
+        if (courtOverlap >= 0.6) score += 21;
+        else if (courtOverlap >= 0.35) score += 9;
+      }
     }
 
-    // Stable tie-break: preserve the existing vault order. The factsOrSubject
-    // field intentionally does not affect retrieval, because doing so favored
-    // old documents with similar facts and increased content bleed.
-    return { model, score, index };
-  });
+    if (requestedLegalFamily) {
+      if (modelLegalFamily === requestedLegalFamily) score += 22;
+      else if (modelLegalFamily && modelLegalFamily !== requestedLegalFamily) score -= 18;
+    }
 
-  scored.sort((a, b) => b.score - a.score || a.index - b.index);
-  return scored.map((item) => item.model);
+    if (requestedDocFamily) {
+      if (modelDocFamily === requestedDocFamily) score += 18;
+      else if (modelDocFamily && modelDocFamily !== requestedDocFamily) score -= 4;
+      if (modelMatchesRequestedType(model, requestedType)) score += 16;
+    } else if (requestedType) {
+      const requestedTypeTokens = topicTokens(requestedType);
+      if ([...requestedTypeTokens].some((token) => modelMetaTokens.has(token))) score += 16;
+    }
+
+    // Weight is a small tie-breaker only. It must never override a much closer
+    // case subject, court, or judicial-work type.
+    score += Math.max(1, Math.min(5, Number(model.weight) || 3));
+    return { model, score, index, modelDocFamily, modelLegalFamily };
+  }).sort((a, b) => b.score - a.score || a.index - b.index);
+}
+
+export function findSimilarModels(criteria: LawVaultSearchCriteria, userId?: string): LawModelItem[] {
+  const models = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
+  return rankVaultModels(models, criteria).map((item) => item.model);
 }
 
 function countPhrase(text: string, phrase: string): number {
@@ -313,12 +375,12 @@ function documentFamily(value: string): string {
   return text;
 }
 
-export function getLawyerStyleContext( searchCriteria?: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string; } | string, userId?: string ): string {
-  let criteria: { courtType?: string; briefType?: string; judicialWorkType?: string; factsOrSubject?: string } = {};
+export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | string, userId?: string): string {
+  let criteria: LawVaultSearchCriteria = {};
   if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
   else if (searchCriteria) criteria = searchCriteria;
 
-  const models = getAllLawModels(userId);
+  const models = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
   const requestedType = criteria.judicialWorkType || criteria.briefType || '';
   const requestedDocFamily = documentFamily(requestedType);
   const requestedLegalFamily = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
@@ -326,55 +388,20 @@ export function getLawyerStyleContext( searchCriteria?: { courtType?: string; br
     return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تدّعِ استخدام أسلوب مرجعي؛ اكتب وفق المعلومات الحالية فقط.]`;
   }
 
-  // Rank references in the order the lawyer requested: document type first,
-  // legal/court family second, then related metadata. Never choose a model just
-  // because it exists; unrelated legal families receive a strong penalty.
-  const ranked = models.map((model, index) => {
-    const meta = `${model.judicialWorkType || ''} ${model.title || ''} ${model.category || ''} ${model.notes || ''}`;
-    const modelDocFamily = documentFamily(`${model.judicialWorkType || ''} ${model.title || ''} ${model.category || ''}`);
-    const modelLegalFamily = legalFamily(`${meta} ${model.content || ''}`.slice(0, 5000));
-    let score = (model.weight || 3) * 2;
-    if (requestedDocFamily && modelDocFamily === requestedDocFamily) score += 100;
-    else if (requestedDocFamily && modelDocFamily && modelDocFamily !== requestedDocFamily) score -= 8;
-    if (requestedLegalFamily && modelLegalFamily === requestedLegalFamily) score += 75;
-    else if (requestedLegalFamily && modelLegalFamily && modelLegalFamily !== requestedLegalFamily) score -= 55;
-    const normalizedCourt = normalizeVaultText(criteria.courtType || '');
-    const normalizedMeta = normalizeVaultText(meta);
-    if (normalizedCourt && normalizedMeta.includes(normalizedCourt)) score += 45;
-    const requestedTokens = normalizeVaultText(`${criteria.courtType || ''} ${requestedType}`).split(/\s+/).filter(t => t.length >= 3);
-    const modelTokens = new Set(normalizedMeta.split(/\s+/).filter(t => t.length >= 3));
-    if (requestedTokens.length) {
-      const overlap = requestedTokens.filter(t => modelTokens.has(t)).length / requestedTokens.length;
-      score += Math.round(overlap * 25);
-    }
-    return { model, score, index, modelDocFamily, modelLegalFamily };
-  }).sort((a, b) => b.score - a.score || a.index - b.index);
-
-  const best = ranked[0];
-  if (!best || !String(best.model.content || '').trim()) {
+  // All saved models participate in the comparison. The AI receives one best
+  // reference, not an arbitrary fixed batch, to keep one coherent lawyer style.
+  const best = rankVaultModels(models, criteria)[0];
+  if (!best) {
     return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا يوجد نموذج يحتوي على نص قابل للاستخدام في خزنة هذا الحساب. اكتب وفق المعلومات الحالية فقط.]`;
   }
 
-  // Include the actual reference, not merely a statistical description of it.
-  // Keep the reference bounded so it does not overwhelm the case materials.
-  const selected = ranked.slice(0, 2).filter((item, index) => {
-    if (index === 0) return true;
-    const sameLegalFamily = !requestedLegalFamily || item.modelLegalFamily === requestedLegalFamily;
-    const sameDocFamily = !requestedDocFamily || item.modelDocFamily === requestedDocFamily;
-    return sameLegalFamily || sameDocFamily;
-  });
-  const remainingBudget = 21000;
-  let used = 0;
-  const referenceBlocks = selected.map((item, index) => {
-    const content = String(item.model.content || '').trim();
-    const allowance = Math.max(0, Math.min(index === 0 ? 12000 : 8000, remainingBudget - used));
-    const excerpt = content.slice(0, allowance);
-    used += excerpt.length;
-    const metadata = [item.model.title, item.model.judicialWorkType, item.model.category].filter(Boolean).join(' — ');
-    return `[النموذج المرجعي ${index + 1}${metadata ? `: ${metadata}` : ''}]\n${excerpt}${content.length > excerpt.length ? '\n[اقتُصر النص على جزء من النموذج بسبب حد السياق.]' : ''}`;
-  }).filter(Boolean);
-
-  const typeLine = requestedType ? `نوع المستند المطلوب: ${requestedType}.` : 'يُحدد نوع المستند من طلب المستخدم الحالي.';
+  const content = String(best.model.content || '').trim();
+  const excerpt = content.slice(0, 18000);
+  const metadata = [best.model.title, best.model.judicialWorkType, best.model.category].filter(Boolean).join(' — ');
+  const typeLine = requestedType ? `نوع المستند المطلوب: ${requestedType}.` : 'يُحدد نوع المستند من طلب المستخدم الحالي ووقائعه.';
   const familyLine = requestedLegalFamily ? `الفرع القانوني الأقرب: ${requestedLegalFamily}.` : 'حدّد الفرع القانوني من وقائع وطلبات القضية الحالية.';
-  return `[بصمة أسلوب المحامي — مرجع فعلي من خزنة هذا الحساب]\n${typeLine}\n${familyLine}\nتم اختيار النموذج وفق أقرب نوع مستند وفرع قانوني وجهة قضاء متاحة. النصوص التالية مراجع أسلوب وبناء فعلية وليست وقائع للقضية الحالية.\n\n${referenceBlocks.join('\n\n')}\n\n[تعليمات استخدام المرجع]\n1) اقرأ النموذج المرجعي نفسه واستخلص منه طريقة المحامي الفعلية في الديباجة، والترويسة، وترتيب الأقسام، وعرض الوقائع، والانتقال إلى الدفوع، وطول الفقرات، والعبارات الانتقالية، وصياغة الطلبات والخاتمة. لا تكتفِ بوصف عام مثل طول الجمل.\n2) أنت مسؤول عن التحليل القانوني المستقل للقضية الجديدة: استخرج الدفوع والطلبات المناسبة من وقائعها ومستنداتها الحالية، ولا تستورد دفوع النموذج القديم لمجرد وجودها فيه.\n3) انقل عناصر هوية المكتب الثابتة والترويسة والتوقيع من المرجع عند وضوحها، مع تحديث أي بيانات مرتبطة بالقضية الحالية فقط إذا كانت معروفة. لا تخترع اسم مكتب أو محامٍ أو رقمًا أو تاريخًا.\n4) لا تنقل من المرجع أسماء أطراف القضية القديمة، أو وقائعها، أو تواريخها، أو أرقامها، أو مستنداتها، أو طلباتها الخاصة بها. إذا احتجت معلومة للقضية الجديدة ولم تكن موجودة في مدخلاتها، فلا تخترعها.\n5) إذا كان المرجع من النوع نفسه فاقتدِ ببنائه بدرجة قوية. وإذا كان من فرع قانوني قريب أو نوع غير مطابق، فاستفد من طريقة الكتابة والترويسة والبناء العام فقط، وعدّل هيكل المستند ليناسب نوع العمل القضائي المطلوب حاليًا.\n6) الأولوية: صحة التحليل القانوني للقضية الحالية، ثم محاكاة أسلوب المحامي وبنائه، دون نسخ مضمون القضية القديمة.\n7) إذا لم يوجد نموذج مطابق، لا ترفض الصياغة؛ استخدم أفضل نموذج قريب تم اختياره وفق نوع المستند والفرع القانوني وجهة القضاء.`;
+  const courtLine = criteria.courtType ? `المحكمة أو الجهة: ${criteria.courtType}.` : 'تُراعى جهة القضاء التي تحددها وقائع المهمة.';
+  const referenceBlock = `[النموذج المرجعي المختار${metadata ? `: ${metadata}` : ''}]\n${excerpt}${content.length > excerpt.length ? '\n[اقتُصر النص على جزء من النموذج بسبب حد السياق.]' : ''}`;
+
+  return `[بصمة أسلوب المحامي — مرجع فعلي من خزنة هذا الحساب]\n${typeLine}\n${familyLine}\n${courtLine}\nتمت مقارنة جميع النماذج المحفوظة في الحساب واختيار المرجع الأقرب لموضوع المهمة، ثم جهة القضاء ونوع العمل القضائي. النموذج التالي هو المرجع الأساسي لهذه المهمة؛ لا تستخدم نماذج أخرى لمجرد أنها محفوظة. النص مرجع أسلوب وبناء وليس مصدراً لوقائع القضية الحالية.\n\n${referenceBlock}\n\n[تعليمات استخدام المرجع]\n1) اقتدِ بالنموذج المرجعي في بصمة المحامي الفعلية: الديباجة، والترويسة، وترتيب الأقسام، وتسلسل عرض الوقائع والحجج، والعبارات الانتقالية، وطول الفقرات، وصياغة الطلبات والخاتمة، بقدر ما يناسب نوع العمل الحالي.\n2) إذا كان المرجع من الموضوع نفسه أو من موضوع قريب، استفد من بنيته وطريقة معالجة هذا النوع من النزاع، لكن لا تنقل أي تحليل أو دفع أو طلب باعتباره صالحاً للقضية الحالية دون أن تسنده وقائعها ومستنداتها.\n3) استخلص نوع المستند المطلوب من اختيار المحامي أو من وقائع المهمة وتعليماته. لا تفترض أن المطلوب مذكرة دفاع لمجرد أن بعض النماذج المحفوظة مذكرات.\n4) لا تنقل أسماء أطراف القضية المرجعية أو وقائعها أو تواريخها أو أرقامها أو مستنداتها أو طلباتها أو دفوعها الخاصة.\n5) انقل عناصر هوية المكتب الثابتة والترويسة والتوقيع من المرجع فقط إذا كانت واضحة وثابتة، ولا تخترع أي بيانات.\n6) صحة التحليل القانوني للقضية الحالية وطلبات المحامي تتقدم دائماً على التشابه الأسلوبي؛ لا تختلق واقعة أو مادة أو حكماً أو رقم طعن.\n7) إذا كان نوع المستند الحالي مختلفاً عن المرجع، فاحتفظ ببصمة المحامي العامة وعدّل هيكل المستند بالقدر اللازم لطبيعة العمل المطلوب، ولا تحوّله إلى نوع المرجع.`;
 }
