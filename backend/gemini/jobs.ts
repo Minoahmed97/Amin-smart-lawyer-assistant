@@ -24,6 +24,7 @@ const PUSH_TABLE = 'app_push_subscriptions';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
 const JOB_STALE_TIMEOUT_MS = 4 * 60 * 1000 + 10 * 1000;
+const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة الملف.';
 
 function safeDiagnosticMessage(value: unknown) {
   return String(value || 'unknown')
@@ -224,6 +225,40 @@ async function patchJob(id: string, userId: string, values: Record<string, unkno
     body: JSON.stringify({ ...values, updated_at: new Date().toISOString() }),
   });
   if (!res.ok) throw new Error(`تعذر تحديث حالة المهمة (${res.status}).`);
+}
+
+// OCR only: atomically claim the terminal transition. The database condition
+// makes cancellation and completion mutually exclusive, even when they race.
+async function finalizeOcrJob(
+  id: string,
+  userId: string,
+  values: Record<string, unknown>,
+): Promise<boolean> {
+  const res = await supabase(
+    `${JOB_TABLE}?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.ocr&status=not.in.(completed,failed)`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ ...values, updated_at: new Date().toISOString() }),
+    },
+  );
+  if (!res.ok) throw new Error(`تعذر إنهاء مهمة OCR (${res.status}).`);
+  const changedRows = await res.json().catch(() => []);
+  return Array.isArray(changedRows) && changedRows.length > 0;
+}
+
+async function isUserCancelledOcrJob(jobId: string, userId: string): Promise<boolean> {
+  try {
+    const response = await supabase(
+      `${JOB_TABLE}?select=status,error&id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.ocr&limit=1`,
+    );
+    if (!response.ok) return false;
+    const rows = await response.json();
+    const job = Array.isArray(rows) ? rows[0] : null;
+    return job?.status === 'failed' && job?.error === USER_CANCELLED_OCR_MESSAGE;
+  } catch {
+    return false;
+  }
 }
 
 async function claimQueuedJob(jobId: string) {
@@ -432,6 +467,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   try {
     phase = 'mark-running';
     await patchJob(jobId, userId, { status: 'running', error: null });
+    if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     const fakeReq = {
       ...originalReq,
       method: 'POST',
@@ -440,6 +476,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     };
     phase = 'run-handler';
     await TASK_HANDLERS[taskType](fakeReq, fakeRes);
+    if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     phase = 'flush-partial-result';
     await pendingWrite;
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
@@ -455,27 +492,49 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
       phase = 'persist-handler-failure';
       console.error('AI job handler returned failure:', JSON.stringify({ jobId, taskType, phase, statusCode: fakeRes.statusCode, error: safeDiagnosticMessage(error), hasPartialResult: Boolean(fullText.trim()) }));
-      await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
+      if (taskType === 'ocr') {
+        const finalized = await finalizeOcrJob(jobId, userId, {
+          status: 'failed', error, partial_result: fullText, payload: {}, completed_at: new Date().toISOString(),
+        });
+        if (!finalized) return;
+      } else {
+        await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
+      }
       await sendCompletionPush(userId, jobId, taskType, 'failed');
       return;
     }
     phase = 'persist-success';
-    await patchJob(jobId, userId, {
+    const completedAt = new Date().toISOString();
+    const completionValues = {
       status: 'completed',
       result: fullText,
       partial_result: fullText,
       payload: {},
       error: null,
-      completed_at: new Date().toISOString(),
-    });
+      completed_at: completedAt,
+    };
+    if (taskType === 'ocr') {
+      const finalized = await finalizeOcrJob(jobId, userId, completionValues);
+      if (!finalized) return;
+    } else {
+      await patchJob(jobId, userId, completionValues);
+    }
     await sendCompletionPush(userId, jobId, taskType, 'completed');
   } catch (err: any) {
+    if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     await pendingWrite.catch(() => {});
     const message = String(err?.message || 'تعذر إكمال العملية.').slice(0, 1000);
     console.error('AI job processing failed:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(message), hasPartialResult: Boolean(fullText.trim()) }));
     try {
       phase = 'persist-caught-failure';
-      await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
+      if (taskType === 'ocr') {
+        const finalized = await finalizeOcrJob(jobId, userId, {
+          status: 'failed', error: message, partial_result: fullText, payload: {}, completed_at: new Date().toISOString(),
+        });
+        if (!finalized) return;
+      } else {
+        await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
+      }
       await sendCompletionPush(userId, jobId, taskType, 'failed');
     } catch (persistError: any) {
       console.error('AI job failure could not be persisted:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(persistError?.message || persistError) }));
@@ -499,6 +558,38 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ subscribed: true });
       }
       const { session } = await requireActiveSession(req);
+      if (requestBody?.action === 'cancel-ocr') {
+        const jobId = String(requestBody?.jobId || '').trim();
+        if (!/^[0-9a-f-]{36}$/i.test(jobId)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
+        const cancelled = await supabase(
+          `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(session.userId)}&task_type=eq.ocr&status=not.in.(completed,failed)`,
+          {
+            method: 'PATCH',
+            headers: { Prefer: 'return=representation' },
+            body: JSON.stringify({
+              status: 'failed',
+              error: USER_CANCELLED_OCR_MESSAGE,
+              payload: {},
+              updated_at: new Date().toISOString(),
+              completed_at: new Date().toISOString(),
+            }),
+          },
+        );
+        if (!cancelled.ok) return res.status(503).json({ error: 'تعذر إلغاء مهمة OCR على الخادم.' });
+        const changedRows = await cancelled.json().catch(() => []);
+        if (Array.isArray(changedRows) && changedRows.length) return res.status(200).json({ cancelled: true });
+        const existingResponse = await supabase(
+          `${JOB_TABLE}?select=status,error&id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(session.userId)}&task_type=eq.ocr&limit=1`,
+        );
+        if (!existingResponse.ok) return res.status(503).json({ error: 'تعذر التحقق من حالة مهمة OCR.' });
+        const existingRows = await existingResponse.json();
+        const existing = Array.isArray(existingRows) ? existingRows[0] : null;
+        if (!existing) return res.status(404).json({ error: 'لم يتم العثور على مهمة OCR لهذا الحساب.' });
+        return res.status(200).json({
+          cancelled: existing.status === 'failed' && existing.error === USER_CANCELLED_OCR_MESSAGE,
+          status: existing.status,
+        });
+      }
       const taskType = String(requestBody?.taskType || 'counter-brief');
       const payload = safePayload(requestBody?.payload || requestBody, taskType);
       
