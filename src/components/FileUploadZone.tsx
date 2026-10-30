@@ -154,8 +154,6 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
       onTextExtractedRef.current(text, item.fileName, item.mimeType || undefined, sourceFile);
       await updateRecord(item.id, { deliveredToWorkflow: true });
     } catch (error: any) {
-      // OCR is already complete and persisted; a workflow callback/storage issue
-      // must not downgrade this file to failed and cause another OCR charge.
       console.warn('Extracted file text could not be acknowledged by its workflow:', error);
       if (mountedRef.current && activeContextRef.current === taskContextKey) {
         setWarnings((previous) => [...previous, `اكتمل استخراج ${item.fileName}، لكن تعذر تثبيت تسليمه إلى حقول الواجهة. ستظل النتيجة محفوظة دون إعادة OCR.`]);
@@ -226,8 +224,6 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
             const isMissingJob = Number(resumeError?.statusCode) === 404 || /لم يتم العثور على المهمة/.test(String(resumeError?.message || ''));
             if (!isMissingJob) throw resumeError;
             if (!mountedRef.current || activeContextRef.current !== taskContextKey) return;
-            // The browser may have refreshed after persisting the job ID but before
-            // the server accepted the POST. Re-send the same ID; the API is idempotent.
             await checkServerOCRReadiness();
             extracted = await extractTextFromAnyFile(sourceFile, recoveryScope, {
               userId: effectiveUserId,
@@ -306,8 +302,6 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
       item.status !== 'completed' && isDirectOcrFile(item) && !(item.status === 'processing' && item.jobId),
     );
     if (needsReadinessCheck) {
-      // Persist a real preparation stage while the server checks the OCR pool;
-      // the aggregate indicator must not remain at 0% during this phase.
       for (const item of eligible) {
         if (!isCurrent()) return;
         if (item.status !== 'completed' && isDirectOcrFile(item) && !(item.status === 'processing' && item.jobId)) {
@@ -395,8 +389,6 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
           setStoredItems(refreshed);
         }
 
-        // Backward compatibility: restore OCR jobs created by older versions
-        // that have no corresponding IndexedDB file record.
         const latestFileRecords = await getFileBatchItems(effectiveUserId, recoveryScope).catch(() => records);
         const knownJobIds = new Set(latestFileRecords.map((item) => item.jobId).filter(Boolean));
         const legacyJobs = getSavedOcrJobs(recoveryScope, effectiveUserId).filter((job) => !knownJobIds.has(job.jobId));
@@ -477,7 +469,6 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
     onProcessingChange?.(true);
 
     try {
-      // Save the original bytes and their stable order before starting any OCR request.
       await saveFileBatchItems(newItems);
       if (mountedRef.current) {
         setStoredItems((previous) => [...previous, ...newItems].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.batchId.localeCompare(b.batchId) || a.order - b.order));
@@ -645,7 +636,7 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
       )}
 
       {storedItems.length > 0 && (
-        <div className="mt-3 space-y-2" aria-live="polite">
+        <div className="mt-3 space-y-1.5" aria-live="polite">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <h5 className="text-xs font-bold text-slate-200">الملفات المحفوظة في هذه الواجهة ({storedItems.length})</h5>
             <div className="flex items-center gap-2">
@@ -666,24 +657,44 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
             const isCurrent = item.id === currentFileId;
             const isBusy = item.status === 'preparing' || item.status === 'processing';
             return (
-              <div key={item.id} className={`flex items-center gap-2.5 rounded-xl border p-2 ${isCurrent ? 'border-amber-500/60 bg-amber-950/30' : 'border-slate-700 bg-slate-950/60'}`}>
-                <div className="w-14 h-14 rounded-lg overflow-hidden border border-slate-700 bg-slate-900 flex items-center justify-center flex-shrink-0">
+              <div
+                key={item.id}
+                className={`flex items-center gap-2 rounded-lg border px-2 py-1 min-h-[46px] ${
+                  isCurrent ? 'border-amber-500/60 bg-amber-950/30' : 'border-slate-700 bg-slate-950/60'
+                }`}
+              >
+                <div className="w-7 h-9 rounded-md overflow-hidden border border-slate-700 bg-slate-900 flex items-center justify-center flex-shrink-0 opacity-90">
                   {isImageFile(item) && previewUrls[item.id]
                     ? <img src={previewUrls[item.id]} alt={`معاينة ${item.fileName}`} className="w-full h-full object-cover" />
                     : isImageFile(item)
-                      ? <ImageIcon className="w-6 h-6 text-slate-500" />
-                      : <FileText className="w-6 h-6 text-slate-400" />}
+                      ? <ImageIcon className="w-4 h-4 text-slate-500" />
+                      : <FileText className="w-4 h-4 text-slate-400" />}
                 </div>
-                <div className="min-w-0 flex-1 space-y-1">
+                <div className="min-w-0 flex-1 space-y-0.5">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-bold text-white truncate" title={item.fileName}>{item.order + 1}. {item.fileName}</span>
-                    <span className={`text-[10px] font-bold whitespace-nowrap ${item.status === 'completed' ? 'text-emerald-300' : item.status === 'failed' ? 'text-rose-300' : 'text-amber-200'}`}>{statusLabel(item)}{item.status === 'preparing' || item.status === 'processing' ? ` · ${percent}%` : ''}</span>
+                    <span className="text-[10px] font-bold text-white truncate" title={item.fileName}>
+                      {item.order + 1}. {item.fileName}
+                    </span>
+                    <span className={`text-[9px] font-bold whitespace-nowrap ${
+                      item.status === 'completed' ? 'text-emerald-300' : item.status === 'failed' ? 'text-rose-300' : 'text-amber-200'
+                    }`}>
+                      {statusLabel(item)}{isBusy ? ` · ${percent}%` : ''}
+                    </span>
                   </div>
-                  <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                    <div className={`h-full transition-all duration-300 ${item.status === 'failed' ? 'bg-rose-500' : 'bg-gradient-to-r from-amber-500 to-emerald-500'}`} style={{ width: `${percent}%` }} />
+                  <div className="w-full h-1 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        item.status === 'failed' ? 'bg-rose-500' : 'bg-gradient-to-r from-amber-500 to-emerald-500'
+                      }`}
+                      style={{ width: `${percent}%` }}
+                    />
                   </div>
-                  {item.error && <p className="text-[10px] text-rose-300 leading-relaxed">{item.error}</p>}
-                  {!item.error && <p className="text-[10px] text-slate-500">{(item.size / 1024).toFixed(0)} كيلوبايت · {item.stageLabel || statusLabel(item)}</p>}
+                  {item.error
+                    ? <p className="text-[9px] text-rose-300 truncate">{item.error}</p>
+                    : <p className="text-[9px] text-slate-500 truncate">
+                        {(item.size / 1024).toFixed(0)} كيلوبايت · {item.stageLabel || statusLabel(item)}
+                      </p>
+                  }
                 </div>
                 <button
                   type="button"
@@ -692,7 +703,7 @@ export const FileUploadZone: React.FC<FileUploadZoneProps> = ({
                   title="حذف النسخة المحلية لهذا الملف"
                   className="p-1 text-slate-500 hover:text-rose-300 disabled:opacity-30 flex-shrink-0"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <X className="w-3 h-3" />
                 </button>
               </div>
             );
