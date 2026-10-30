@@ -12,7 +12,7 @@ Clock3,
 Image as ImageIcon,
 } from 'lucide-react';
 import { checkServerOCRReadiness, extractTextFromAnyFile } from '../utils/fileExtractor.ts';
-import { acknowledgeSavedOcrJob, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
+import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 import {
 createFileBatchId,
@@ -36,6 +36,17 @@ userId?: string;
 }
 
 const ACTIVE_FILE_TASKS = new Map<string, Promise<void>>();
+const ACTIVE_FILE_TASK_CONTROLLERS = new Map<string, AbortController>();
+const CANCELLED_FILE_TASKS = new Set<string>();
+
+const makeFileTaskKey = (userId: string, scope: string, fileId: string) => `${userId}::${scope}::${fileId}`;
+const isFileTaskCancelled = (userId: string, scope: string, fileId: string) =>
+  CANCELLED_FILE_TASKS.has(makeFileTaskKey(userId, scope, fileId));
+const makeFileTaskAbortError = () => {
+  const error = new Error('تم إلغاء معالجة الملف.');
+  error.name = 'AbortError';
+  return error;
+};
 
 const isImageFile = (item: Pick<StoredFileBatchItem, 'fileName' | 'mimeType'>) =>
 item.mimeType.startsWith('image/') || /.(jpe?g|png|webp|bmp)$/i.test(item.fileName);
@@ -100,7 +111,7 @@ const [warnings, setWarnings] = useState<string[]>([]);
 const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
 const effectiveUserId = String(userId || getActiveLawyerUserId()).trim();
-const contextKey = ${effectiveUserId}::${recoveryScope};
+const contextKey = `${effectiveUserId}::${recoveryScope}`;
 const activeContextRef = useRef(contextKey);
 activeContextRef.current = contextKey;
 
@@ -141,7 +152,9 @@ const updateRecord = async (
 id: string,
 changes: Partial<Omit<StoredFileBatchItem, 'id' | 'userId' | 'scope' | 'blob'>>,
 ): Promise<StoredFileBatchItem> => {
+if (isFileTaskCancelled(effectiveUserId, recoveryScope, id)) throw makeFileTaskAbortError();
 const updated = await updateFileBatchItem(id, effectiveUserId, recoveryScope, changes);
+if (isFileTaskCancelled(effectiveUserId, recoveryScope, id)) throw makeFileTaskAbortError();
 if (mountedRef.current && activeContextRef.current === contextKey) {
 setStoredItems((previous) => previous.map((item) => item.id === id ? updated : item));
 }
@@ -149,32 +162,38 @@ return updated;
 };
 
 const deliverCompletedText = async (item: StoredFileBatchItem, text: string, sourceFile: File, taskContextKey: string) => {
-if (!mountedRef.current || activeContextRef.current !== taskContextKey || item.deliveredToWorkflow) return;
+if (!mountedRef.current || activeContextRef.current !== taskContextKey || item.deliveredToWorkflow || isFileTaskCancelled(effectiveUserId, recoveryScope, item.id)) return;
 try {
 onTextExtractedRef.current(text, item.fileName, item.mimeType || undefined, sourceFile);
 await updateRecord(item.id, { deliveredToWorkflow: true });
 } catch (error: any) {
 // OCR is already complete and persisted; a workflow callback/storage issue
 // must not downgrade this file to failed and cause another OCR charge.
+if (error?.name === 'AbortError' || isFileTaskCancelled(effectiveUserId, recoveryScope, item.id)) return;
 console.warn('Extracted file text could not be acknowledged by its workflow:', error);
 if (mountedRef.current && activeContextRef.current === taskContextKey) {
-setWarnings((previous) => [...previous, اكتمل استخراج ${item.fileName}، لكن تعذر تثبيت تسليمه إلى حقول الواجهة. ستظل النتيجة محفوظة دون إعادة OCR.]);
+setWarnings((previous) => [...previous, `اكتمل استخراج ${item.fileName}، لكن تعذر تثبيت تسليمه إلى حقول الواجهة. ستظل النتيجة محفوظة دون إعادة OCR.`]);
 }
 }
 };
 
 const processStoredItem = async (originalItem: StoredFileBatchItem): Promise<void> => {
-const taskContextKey = ${effectiveUserId}::${recoveryScope};
-const taskKey = ${taskContextKey}::${originalItem.id};
-if (!mountedRef.current || activeContextRef.current !== taskContextKey) return;
+const taskContextKey = `${effectiveUserId}::${recoveryScope}`;
+const taskKey = makeFileTaskKey(effectiveUserId, recoveryScope, originalItem.id);
+if (!mountedRef.current || activeContextRef.current !== taskContextKey || CANCELLED_FILE_TASKS.has(taskKey)) return;
 const existingTask = ACTIVE_FILE_TASKS.get(taskKey);
 if (existingTask) {
 await existingTask;
 return;
 }
 
+const taskController = new AbortController();
+ACTIVE_FILE_TASK_CONTROLLERS.set(taskKey, taskController);
+const isCancelled = () => taskController.signal.aborted || CANCELLED_FILE_TASKS.has(taskKey);
+
 const task = (async () => {  
   let item = originalItem;  
+  if (isCancelled()) return;
   const sourceFile = restoreFileFromBatchItem(item);  
   if (item.status === 'completed') {  
     if (item.extractedText && !item.deliveredToWorkflow && mountedRef.current) {  
@@ -192,9 +211,11 @@ const task = (async () => {
     ...(jobId ? { jobId } : {}),  
     error: undefined,  
   });  
+  if (isCancelled()) return;
   if (mountedRef.current && activeContextRef.current === taskContextKey) setCurrentFileId(item.id);  
 
-  const onJobStatus = async (status: 'queued' | 'processing' | 'completed' | 'failed') => {  
+  const onJobStatus = async (status: 'queued' | 'processing' | 'completed' | 'failed') => {
+    if (isCancelled()) return;  
     const stageLabel = status === 'queued'  
       ? 'تم إدراج المهمة في طابور OCR'  
       : status === 'completed'  
@@ -213,7 +234,7 @@ const task = (async () => {
   try {  
     if (shouldResumeExistingJob && jobId) {  
       try {  
-        const text = await resumeSavedOcrTask(jobId, recoveryScope, effectiveUserId, onJobStatus);  
+        const text = await resumeSavedOcrTask(jobId, recoveryScope, effectiveUserId, { onStatus: onJobStatus, signal: taskController.signal });  
         extracted = {  
           fileName: item.fileName,  
           fileType: item.mimeType || item.fileName.split('.').pop() || 'unknown',  
@@ -232,6 +253,7 @@ const task = (async () => {
         extracted = await extractTextFromAnyFile(sourceFile, recoveryScope, {  
           userId: effectiveUserId,  
           jobId,  
+          signal: taskController.signal,
           onStage: async (stage) => {  
             await updateRecord(item.id, {  
               status: stage,  
@@ -245,6 +267,7 @@ const task = (async () => {
       extracted = await extractTextFromAnyFile(sourceFile, recoveryScope, {  
         userId: effectiveUserId,  
         jobId,  
+        signal: taskController.signal,
         onStage: async (stage) => {  
           await updateRecord(item.id, {  
             status: stage,  
@@ -255,6 +278,7 @@ const task = (async () => {
       });  
     }  
 
+    if (isCancelled()) return;
     if (!extracted?.text?.trim()) throw new Error('لم تُرجع خدمة استخراج النص نصًا صالحًا.');  
     const completed = await updateRecord(item.id, {  
       status: 'completed',  
@@ -268,6 +292,7 @@ const task = (async () => {
       await deliverCompletedText(completed, extracted.text, sourceFile, taskContextKey);  
     }  
   } catch (error: any) {  
+    if (isCancelled() || error?.name === 'AbortError') return;
     const pendingOnServer = Boolean(error?.savedJobPending);  
     const failureText = String(error?.message || 'حدث خطأ أثناء استخراج النص.');  
     await updateRecord(item.id, {  
@@ -288,18 +313,21 @@ const task = (async () => {
 })();  
 
 ACTIVE_FILE_TASKS.set(taskKey, task);  
-try {  
-  await task;  
-} finally {  
-  if (ACTIVE_FILE_TASKS.get(taskKey) === task) ACTIVE_FILE_TASKS.delete(taskKey);  
+try {
+  await task;
+} catch (error: any) {
+  if (error?.name !== 'AbortError') throw error;
+} finally {
+  if (ACTIVE_FILE_TASKS.get(taskKey) === task) ACTIVE_FILE_TASKS.delete(taskKey);
+  if (ACTIVE_FILE_TASK_CONTROLLERS.get(taskKey) === taskController) ACTIVE_FILE_TASK_CONTROLLERS.delete(taskKey);
 }
 
 };
 
 const processRecords = async (records: StoredFileBatchItem[], isCurrent: () => boolean = () => mountedRef.current && activeContextRef.current === contextKey) => {
 const eligible = records.filter((item) =>
-item.status === 'waiting' || item.status === 'preparing' || item.status === 'processing' ||
-(item.status === 'completed' && Boolean(item.extractedText) && !item.deliveredToWorkflow),
+!isFileTaskCancelled(effectiveUserId, recoveryScope, item.id) && (item.status === 'waiting' || item.status === 'preparing' || item.status === 'processing' ||
+(item.status === 'completed' && Boolean(item.extractedText) && !item.deliveredToWorkflow)),
 );
 if (!eligible.length || !isCurrent()) return;
 
@@ -311,8 +339,12 @@ if (needsReadinessCheck) {
   // the aggregate indicator must not remain at 0% during this phase.  
   for (const item of eligible) {  
     if (!isCurrent()) return;  
-    if (item.status !== 'completed' && isDirectOcrFile(item) && !(item.status === 'processing' && item.jobId)) {  
-      await updateRecord(item.id, { status: 'preparing', stageLabel: 'التحقق من جاهزية خدمة OCR' });  
+    if (!isFileTaskCancelled(effectiveUserId, recoveryScope, item.id) && item.status !== 'completed' && isDirectOcrFile(item) && !(item.status === 'processing' && item.jobId)) {
+      try {
+        await updateRecord(item.id, { status: 'preparing', stageLabel: 'التحقق من جاهزية خدمة OCR' });
+      } catch (error: any) {
+        if (error?.name !== 'AbortError') throw error;
+      }
     }  
   }  
   try {  
@@ -530,11 +562,22 @@ setErrorMsg(error?.message || 'تعذر تجهيز الملفات الفاشلة
 };
 
 const handleRemoveStoredItem = async (item: StoredFileBatchItem) => {
-if (item.status === 'preparing' || item.status === 'processing') return;
+const taskKey = makeFileTaskKey(effectiveUserId, recoveryScope, item.id);
+CANCELLED_FILE_TASKS.add(taskKey);
 try {
 await deleteFileBatchItem(item.id, effectiveUserId, recoveryScope);
+const activeController = ACTIVE_FILE_TASK_CONTROLLERS.get(taskKey);
+activeController?.abort();
+if (item.jobId) {
+  acknowledgeSavedOcrJob(recoveryScope, effectiveUserId, item.jobId);
+  if (!activeController && (item.status === 'preparing' || item.status === 'processing')) {
+    await cancelSavedOcrTask(item.jobId);
+  }
+}
 setStoredItems((previous) => previous.filter((record) => record.id !== item.id));
+setCurrentFileId((current) => current === item.id ? '' : current);
 } catch (error: any) {
+CANCELLED_FILE_TASKS.delete(taskKey);
 setErrorMsg(error?.message || 'تعذر حذف الملف المحفوظ.');
 }
 };
@@ -576,7 +619,7 @@ return (
 onDragOver={handleDragOver}
 onDragLeave={handleDragLeave}
 onDrop={handleDrop}
-className={rounded-2xl border-2 transition-all p-3.5 my-2.5 ${   isDragging   ? 'border-amber-400 bg-amber-950/40 shadow-lg shadow-amber-900/30'   : isProcessing   ? 'border-amber-500/80 bg-slate-900/90'   : 'border-dashed border-amber-600/40 bg-slate-900/80 hover:border-[#b45309] hover:bg-slate-900'   }}
+className={`rounded-2xl border-2 transition-all p-3.5 my-2.5 ${isDragging ? 'border-amber-400 bg-amber-950/40 shadow-lg shadow-amber-900/30' : isProcessing ? 'border-amber-500/80 bg-slate-900/90' : 'border-dashed border-amber-600/40 bg-slate-900/80 hover:border-[#b45309] hover:bg-slate-900'}`}
 >
 <input  
 ref={fileInputRef}  
@@ -664,20 +707,20 @@ className="hidden"
         const isCurrent = item.id === currentFileId;  
         const isBusy = item.status === 'preparing' || item.status === 'processing';  
         return (  
-          <div key={item.id} className={`flex items-center gap-2.5 rounded-xl border p-2 ${isCurrent ? 'border-amber-500/60 bg-amber-950/30' : 'border-slate-700 bg-slate-950/60'}`}>  
-            <div className="w-14 h-14 rounded-lg overflow-hidden border border-slate-700 bg-slate-900 flex items-center justify-center flex-shrink-0">  
+          <div key={item.id} className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 ${isCurrent ? 'border-amber-500/60 bg-amber-950/30' : 'border-slate-700 bg-slate-950/60'}`}>  
+            <div className="w-9 h-9 rounded-md overflow-hidden border border-slate-700 bg-slate-900 flex items-center justify-center flex-shrink-0">  
               {isImageFile(item) && previewUrls[item.id]  
                 ? <img src={previewUrls[item.id]} alt={`معاينة ${item.fileName}`} className="w-full h-full object-cover" />  
                 : isImageFile(item)  
-                  ? <ImageIcon className="w-6 h-6 text-slate-500" />  
-                  : <FileText className="w-6 h-6 text-slate-400" />}  
+                  ? <ImageIcon className="w-4 h-4 text-slate-500" />  
+                  : <FileText className="w-4 h-4 text-slate-400" />}  
             </div>  
-            <div className="min-w-0 flex-1 space-y-1">  
+            <div className="min-w-0 flex-1 space-y-0.5">  
               <div className="flex items-center justify-between gap-2">  
                 <span className="text-[11px] font-bold text-white truncate" title={item.fileName}>{item.order + 1}. {item.fileName}</span>  
                 <span className={`text-[10px] font-bold whitespace-nowrap ${item.status === 'completed' ? 'text-emerald-300' : item.status === 'failed' ? 'text-rose-300' : 'text-amber-200'}`}>{statusLabel(item)}{item.status === 'preparing' || item.status === 'processing' ? ` · ${percent}%` : ''}</span>  
               </div>  
-              <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">  
+              <div className="w-full h-1 rounded-full bg-slate-800 overflow-hidden">  
                 <div className={`h-full transition-all duration-300 ${item.status === 'failed' ? 'bg-rose-500' : 'bg-gradient-to-r from-amber-500 to-emerald-500'}`} style={{ width: `${percent}%` }} />  
               </div>  
               {item.error && <p className="text-[10px] text-rose-300 leading-relaxed">{item.error}</p>}  
@@ -686,9 +729,9 @@ className="hidden"
             <button  
               type="button"  
               onClick={() => void handleRemoveStoredItem(item)}  
-              disabled={isBusy}  
-              title="حذف النسخة المحلية لهذا الملف"  
-              className="p-1 text-slate-500 hover:text-rose-300 disabled:opacity-30 flex-shrink-0"  
+              aria-label={isBusy ? `إلغاء المعالجة وحذف ${item.fileName}` : `حذف ${item.fileName}`}
+              title={isBusy ? 'إلغاء معالجة الملف وحذفه' : 'حذف الملف المحفوظ'}
+              className="p-1.5 text-slate-400 hover:text-rose-300 hover:bg-rose-950/40 rounded-md flex-shrink-0"
             >  
               <X className="w-3.5 h-3.5" />  
             </button>  
