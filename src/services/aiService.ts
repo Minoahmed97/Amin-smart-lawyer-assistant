@@ -57,6 +57,7 @@ export interface SavedOcrJob {
 
 export interface SavedOcrTaskLifecycle {
   onStatus?: (status: 'queued' | 'processing' | 'completed' | 'failed') => void | Promise<void>;
+  signal?: AbortSignal;
 }
 
 function sanitizeStoragePart(value: string): string {
@@ -169,6 +170,30 @@ async function enableCompletionPushNotifications(): Promise<void> {
   }
 }
 
+function createOcrAbortError(): Error {
+  const error = new Error('تم إلغاء معالجة الملف وحذفه من القائمة.');
+  error.name = 'AbortError';
+  return error;
+}
+
+async function cancelServerOcrJob(jobId: string, headers: Record<string, string>): Promise<void> {
+  if (!jobId) return;
+  try {
+    await fetch('/api/gemini/jobs', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'cancel-ocr', jobId }),
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    console.warn('The OCR job cancellation request could not reach the server:', error);
+  }
+}
+
+export async function cancelSavedOcrTask(jobId: string): Promise<void> {
+  await cancelServerOcrJob(jobId, getRequestHeaders());
+}
+
 async function requestSavedJob<T extends Record<string, any>>(
   type: SavedJobType,
   payload: T,
@@ -225,9 +250,19 @@ async function requestSavedJob<T extends Record<string, any>>(
   };
 
   const headers = getRequestHeaders();
+  const cancelIfAborted = async () => {
+    if (type === 'ocr' && lifecycle?.signal?.aborted) {
+      await cancelServerOcrJob(jobId, headers);
+      clearJobReference();
+      throw createOcrAbortError();
+    }
+  };
   let created = Boolean(resumeId);
   if (!resumeId) {
     await enableCompletionPushNotifications();
+    // Do not create a durable server job if the user removed the file while
+    // notification setup was waiting for permission or service-worker readiness.
+    await cancelIfAborted();
     let receivedHttpResponse = false;
     try {
       const createResponse = await fetch('/api/gemini/jobs', {
@@ -258,6 +293,7 @@ async function requestSavedJob<T extends Record<string, any>>(
     }
   }
 
+  await cancelIfAborted();
   let lastText = '';
   let lastReportedOcrStatus = '';
   let transientFailures = 0;
@@ -266,11 +302,13 @@ async function requestSavedJob<T extends Record<string, any>>(
   let lastProgressAt = Date.now();
   let lastUpdatedAt = '';
   while (Date.now() - startedAt < 1000 * 60 * 20) {
+    await cancelIfAborted();
     try {
       const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
         method: 'GET',
         headers,
         cache: 'no-store',
+        ...(type === 'ocr' && lifecycle?.signal ? { signal: lifecycle.signal } : {}),
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -330,6 +368,9 @@ async function requestSavedJob<T extends Record<string, any>>(
         throw failure;
       }
     } catch (err: any) {
+      if (type === 'ocr' && lifecycle?.signal?.aborted) {
+        await cancelIfAborted();
+      }
       const statusCode = Number(err?.statusCode);
       const permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429;
       if (err?.noProgressTimeout || err?.terminalJobError || permanentClientError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) {
