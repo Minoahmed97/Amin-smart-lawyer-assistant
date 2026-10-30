@@ -6,7 +6,6 @@ import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
-import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 import {
   Compass,
   Scale,
@@ -30,6 +29,7 @@ import { copyTextSafely, shareLegalDoc } from '../utils/clipboardHelper.ts';
 import { exportLegalDocToWord } from '../utils/exportHelper.ts';
 
 interface LegalQualifyViewProps {
+  userId: string;
   onDraftBriefFromQualify: (facts: string) => void;
   onOpenSubscribe?: () => void;
   onCreditsUpdated?: (newCredits: number) => void;
@@ -37,6 +37,7 @@ interface LegalQualifyViewProps {
 }
 
 export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
+  userId,
   onDraftBriefFromQualify,
   onOpenSubscribe,
   onCreditsUpdated,
@@ -109,9 +110,9 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     persistentStorage.removeItem('judicial_qualify_goals');
     persistentStorage.removeItem('judicial_qualify_result');
     persistentStorage.removeItem('judicial_qualify_docname');
-    const storageUser = String(getActiveLawyerUserId() || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const storageUser = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
     try { localStorage.removeItem(`amin_ai_job_qualify_${storageUser}`); } catch {}
-    try { const prefix = `amin_legal_followup_qualify_` + (String(getActiveLawyerUserId() || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')) + '_'; for (let i = localStorage.length - 1; i >= 0; i -= 1) { const key = localStorage.key(i); if (key && key.startsWith(prefix)) { localStorage.removeItem(key); localStorage.removeItem(`${key}_pending_job`); } } } catch {}
+    try { const prefix = `amin_legal_followup_qualify_` + (String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')) + '_'; for (let i = localStorage.length - 1; i >= 0; i -= 1) { const key = localStorage.key(i); if (key && key.startsWith(prefix)) { localStorage.removeItem(key); localStorage.removeItem(`${key}_pending_job`); } } } catch {}
   };
 
 
@@ -121,7 +122,6 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     let active = true;
     const operationId = resultOperationRef.current;
     let jobId = '';
-    const userId = getActiveLawyerUserId();
     const storageUser = String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
     try { jobId = localStorage.getItem(`amin_ai_job_qualify_${storageUser}`) || ''; } catch {}
     if (!jobId) return () => { active = false; };
@@ -139,7 +139,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
       if (active && operationId === resultOperationRef.current) setIsLoading(false);
     });
     return () => { active = false; };
-  }, []);
+  }, [userId]);
 
 
   const handleQualify = async (e: React.FormEvent) => {
@@ -163,7 +163,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     try {
       const result = await qualifyLegalCase(disputeDetails, clientGoals, (chunk) => {
         if (operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
-      }, getActiveLawyerUserId());
+      }, userId);
       if (result && operationId === resultOperationRef.current) {
         setQualificationResult(result);
         persistentStorage.setItem('judicial_qualify_result', result);
@@ -257,6 +257,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
+            userId={userId}
             recoveryScope="qualify"
             onProcessingChange={setIsUploadingDoc}
             onTextExtracted={handleExtractedDocumentText}
@@ -596,7 +597,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
           </div>
         </div>
       </div>
-      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={getActiveLawyerUserId()} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} onResultChange={(nextResult) => { setQualificationResult(nextResult); persistentStorage.setItem('judicial_qualify_result', nextResult); }} />}
+      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={userId} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} onResultChange={(nextResult) => { setQualificationResult(nextResult); persistentStorage.setItem('judicial_qualify_result', nextResult); }} />}
     </div>
   );
 };
