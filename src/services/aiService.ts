@@ -55,6 +55,10 @@ export interface SavedOcrJob {
   error?: string;
 }
 
+export interface SavedOcrTaskLifecycle {
+  onStatus?: (status: 'queued' | 'processing' | 'completed' | 'failed') => void | Promise<void>;
+}
+
 function sanitizeStoragePart(value: string): string {
   return String(value || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
@@ -174,15 +178,36 @@ async function requestSavedJob<T extends Record<string, any>>(
   storageScope?: string,
   ocrMetadata?: { fileName: string; mimeType: string },
   forcedJobId?: string,
+  lifecycle?: SavedOcrTaskLifecycle,
 ): Promise<string> {
   const key = jobStorageKey(type, userId, storageScope);
-  const storage = typeof localStorage !== 'undefined' ? localStorage : null;
+  let storage: Storage | null = null;
+  try {
+    if (typeof localStorage !== 'undefined') storage = localStorage;
+  } catch {
+    // IndexedDB in the upload component remains the durable source of the OCR job ID.
+  }
   // A manual run always gets a new id. Reusing an old localStorage id is only
   // allowed when the caller explicitly invokes one of the resume functions.
   // Keep the newly generated id before POST so a lost response can be recovered
   // idempotently without charging for a second generation.
   const jobId = resumeId || forcedJobId || makeJobId();
-  if (storage) storage.setItem(key, jobId);
+  const reportOcrStatus = async (status: 'queued' | 'processing' | 'completed' | 'failed') => {
+    try {
+      await lifecycle?.onStatus?.(status);
+    } catch (error) {
+      // A local UI/IndexedDB status write must not interrupt or duplicate a server OCR job.
+      console.warn('Could not persist the current OCR task status:', error);
+    }
+  };
+  try {
+    storage?.setItem(key, jobId);
+  } catch (error) {
+    console.warn('OCR job ID could not be mirrored to localStorage; the IndexedDB file record remains authoritative:', error);
+  }
+  const hasLocalJobReference = () => {
+    try { return storage?.getItem(key) === jobId; } catch { return false; }
+  };
   if (type === 'ocr' && storageScope && ocrMetadata && !resumeId) {
     upsertSavedOcrJob(storageScope, userId, {
       jobId,
@@ -193,7 +218,7 @@ async function requestSavedJob<T extends Record<string, any>>(
     });
   }
   const clearJobReference = () => {
-    if (storage?.getItem(key) === jobId) storage.removeItem(key);
+    try { if (hasLocalJobReference()) storage?.removeItem(key); } catch {}
     if (type === 'ocr' && storageScope) {
       writeSavedOcrJobs(storageScope, userId, readSavedOcrJobs(storageScope, userId).filter((row) => row.jobId !== jobId));
     }
@@ -216,15 +241,25 @@ async function requestSavedJob<T extends Record<string, any>>(
         clearJobReference();
         throw new Error(error?.error || `تعذر حفظ المهمة (${createResponse.status}).`);
       }
+      const createdData = await createResponse.json().catch(() => ({}));
       created = true;
+      if (type === 'ocr') {
+        const initialStatus = String(createdData?.status || 'queued');
+        const normalizedInitialStatus: 'queued' | 'processing' | 'completed' | 'failed' = initialStatus === 'running' ? 'processing'
+          : initialStatus === 'completed' ? 'completed'
+            : initialStatus === 'failed' ? 'failed'
+              : 'queued';
+        await reportOcrStatus(normalizedInitialStatus);
+      }
     } catch (err: any) {
       // Only a transport failure can mean the server accepted the idempotent POST
       // but its response was lost. HTTP/application errors must be shown immediately.
-      if (receivedHttpResponse || !storage?.getItem(key)) throw err;
+      if (receivedHttpResponse || (!hasLocalJobReference() && !forcedJobId)) throw err;
     }
   }
 
   let lastText = '';
+  let lastReportedOcrStatus = '';
   let transientFailures = 0;
   const startedAt = Date.now();
   const NO_PROGRESS_TIMEOUT_MS = 4 * 60 * 1000 + 30 * 1000;
@@ -249,6 +284,16 @@ async function requestSavedJob<T extends Record<string, any>>(
       }
       const data = await response.json();
       transientFailures = 0;
+      if (type === 'ocr') {
+        const currentStatus = String(data?.status || '');
+        const normalizedStatus = currentStatus === 'completed' || currentStatus === 'failed'
+          ? currentStatus
+          : currentStatus === 'queued' || currentStatus === 'running' ? 'processing' : '';
+        if (normalizedStatus && normalizedStatus !== lastReportedOcrStatus) {
+          lastReportedOcrStatus = normalizedStatus;
+          await reportOcrStatus(normalizedStatus as 'processing' | 'completed' | 'failed');
+        }
+      }
       const currentText = String(data?.partialResult || data?.result || '');
       const updatedAt = String(data?.updatedAt || '');
       if ((currentText.length > lastText.length) || (updatedAt && updatedAt !== lastUpdatedAt)) {
@@ -321,8 +366,16 @@ export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: 
   return requestSavedJob(type, {}, onChunk, userId, jobId);
 }
 
-export async function runSavedOcrTask( base64Data: string, mimeType: string, fileName: string, storageScope: string, userId?: string, ): Promise<{ text: string; jobId: string }> {
-  const jobId = makeJobId();
+export async function runSavedOcrTask(
+  base64Data: string,
+  mimeType: string,
+  fileName: string,
+  storageScope: string,
+  userId?: string,
+  requestedJobId?: string,
+  lifecycle?: SavedOcrTaskLifecycle,
+): Promise<{ text: string; jobId: string }> {
+  const jobId = requestedJobId || makeJobId();
   const text = await requestSavedJob(
     'ocr',
     { base64Data, mimeType, fileName, recoveryScope: sanitizeStoragePart(storageScope) },
@@ -332,12 +385,18 @@ export async function runSavedOcrTask( base64Data: string, mimeType: string, fil
     storageScope,
     { fileName, mimeType },
     jobId,
+    lifecycle,
   );
   return { text, jobId };
 }
 
-export async function resumeSavedOcrTask(jobId: string, storageScope: string, userId?: string): Promise<string> {
-  return requestSavedJob('ocr', {}, undefined, userId, jobId, storageScope);
+export async function resumeSavedOcrTask(
+  jobId: string,
+  storageScope: string,
+  userId?: string,
+  lifecycle?: SavedOcrTaskLifecycle,
+): Promise<string> {
+  return requestSavedJob('ocr', {}, undefined, userId, jobId, storageScope, undefined, undefined, lifecycle);
 }
 
 async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, onChunk?: (text: string) => void ): Promise<any> {
