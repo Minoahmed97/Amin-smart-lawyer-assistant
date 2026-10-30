@@ -563,7 +563,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: params.courtType,
     judicialWorkType: params.judicialWorkType,
-    factsOrSubject: params.opponentBriefText,
+    factsOrSubject: [params.caseNature, params.additionalFacts, params.opponentBriefText].filter(Boolean).join('\n'),
   }, params.userId);
 
   const payload = {
