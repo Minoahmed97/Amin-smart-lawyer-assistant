@@ -244,6 +244,7 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
         {/* Multi-Format File Uploader */}
         <div className="mt-4 pt-4 border-t border-slate-800">
           <FileUploadZone
+            userId={userId}
             recoveryScope="vault"
             onTextExtracted={handleUploadedText}
             title="إيداع مستندات في الخزينة (وورد / بي دي إف / صور ممسوحة ضوئيًا)"
