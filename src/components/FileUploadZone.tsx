@@ -26,7 +26,7 @@ updateFileBatchItem,
 import type { StoredFileBatchItem } from '../utils/fileBatchStorage.ts';
 
 interface FileUploadZoneProps {
-onTextExtracted: (text: string, fileName: string, fileType?: string, sourceFile?: File) => void;
+onTextExtracted: (text: string, fileName: string, fileType?: string, sourceFile?: File) => void | Promise<void>;
 title?: string;
 description?: string;
 maxFiles?: number;
@@ -164,8 +164,28 @@ return updated;
 const deliverCompletedText = async (item: StoredFileBatchItem, text: string, sourceFile: File, taskContextKey: string) => {
 if (!mountedRef.current || activeContextRef.current !== taskContextKey || item.deliveredToWorkflow || isFileTaskCancelled(effectiveUserId, recoveryScope, item.id)) return;
 try {
-onTextExtractedRef.current(text, item.fileName, item.mimeType || undefined, sourceFile);
-await updateRecord(item.id, { deliveredToWorkflow: true });
+await onTextExtractedRef.current(text, item.fileName, item.mimeType || undefined, sourceFile);
+if (recoveryScope === 'vault') {
+  // The vault callback has now saved the extracted model and original file.
+  // Persist delivery using the item's own account/scope even if the user has
+  // navigated away while IndexedDB was finishing; this prevents a duplicate
+  // model from being imported when the vault is opened again.
+  const deliveredRecord = await updateFileBatchItem(item.id, effectiveUserId, recoveryScope, { deliveredToWorkflow: true });
+  if (mountedRef.current && activeContextRef.current === taskContextKey) {
+    setStoredItems((previous) => previous.map((record) => record.id === item.id ? deliveredRecord : record));
+  }
+  try {
+    await deleteFileBatchItem(item.id, effectiveUserId, recoveryScope);
+    if (mountedRef.current && activeContextRef.current === taskContextKey) {
+      setStoredItems((previous) => previous.filter((record) => record.id !== item.id));
+    }
+  } catch (cleanupError) {
+    // The delivered row is hidden by its flag and cleaned up on the next visit.
+    console.warn('Could not remove completed vault upload record:', cleanupError);
+  }
+} else {
+  await updateRecord(item.id, { deliveredToWorkflow: true });
+}
 } catch (error: any) {
 // OCR is already complete and persisted; a workflow callback/storage issue
 // must not downgrade this file to failed and cause another OCR charge.
@@ -409,8 +429,16 @@ setCurrentFileId('');
 onProcessingChange?.(false);
 void (async () => {
 try {
-const records = await getFileBatchItems(effectiveUserId, recoveryScope);
+let records = await getFileBatchItems(effectiveUserId, recoveryScope);
 if (!active) return;
+if (recoveryScope === 'vault') {
+  const deliveredItems = records.filter((item) => item.status === 'completed' && item.deliveredToWorkflow);
+  for (const item of deliveredItems) {
+    try { await deleteFileBatchItem(item.id, effectiveUserId, recoveryScope); }
+    catch (cleanupError) { console.warn('Could not clean up an already delivered vault upload:', cleanupError); }
+  }
+  records = records.filter((item) => !(item.status === 'completed' && item.deliveredToWorkflow));
+}
 setStoredItems(records);
 const activeRecords = records.filter((item) =>
 item.status === 'waiting' || item.status === 'preparing' || item.status === 'processing' ||
@@ -445,7 +473,7 @@ if (activeRecords.length) {
           const text = await resumeSavedOcrTask(job.jobId, recoveryScope, effectiveUserId);  
           if (!text.trim()) continue;  
           if (activeContextRef.current !== restoringContextKey) return;  
-          onTextExtractedRef.current(text, job.fileName, job.mimeType || undefined);  
+          await onTextExtractedRef.current(text, job.fileName, job.mimeType || undefined);  
           recoveredNames.push(job.fileName);  
           recoveredChars += text.length;  
           acknowledgeSavedOcrJob(recoveryScope, effectiveUserId, job.jobId);  
@@ -603,9 +631,12 @@ if (event.dataTransfer.files?.length) void processFilesBatch(event.dataTransfer.
 };
 
 const currentBatchItems = useMemo(
-() => storedItems.filter((item) => !activeBatchId || item.batchId === activeBatchId),
-[storedItems, activeBatchId],
+() => storedItems.filter((item) => (!activeBatchId || item.batchId === activeBatchId) && !(recoveryScope === 'vault' && item.status === 'completed' && item.deliveredToWorkflow)),
+[storedItems, activeBatchId, recoveryScope],
 );
+const visibleStoredItems = recoveryScope === 'vault'
+  ? storedItems.filter((item) => !(item.status === 'completed' && item.deliveredToWorkflow))
+  : storedItems;
 const completedCount = currentBatchItems.filter((item) => item.status === 'completed').length;
 const overallProgress = currentBatchItems.length
 ? Math.round(currentBatchItems.reduce((sum, item) => sum + statusProgress(item.status), 0) / currentBatchItems.length)
@@ -685,10 +716,10 @@ className="hidden"
     </div>  
   )}  
 
-  {storedItems.length > 0 && (  
+  {visibleStoredItems.length > 0 && (  
     <div className="mt-3 space-y-2" aria-live="polite">  
       <div className="flex items-center justify-between flex-wrap gap-2">  
-        <h5 className="text-xs font-bold text-slate-200">الملفات المحفوظة في هذه الواجهة ({storedItems.length})</h5>  
+        <h5 className="text-xs font-bold text-slate-200">الملفات المحفوظة في هذه الواجهة ({visibleStoredItems.length})</h5>  
         <div className="flex items-center gap-2">  
           {!isProcessing && pendingCount > 0 && (  
             <button type="button" onClick={() => void handleContinuePending()} className="text-[10px] px-2 py-1 rounded-lg border border-amber-600/50 text-amber-200 hover:bg-amber-950/70 flex items-center gap-1">  
@@ -702,7 +733,7 @@ className="hidden"
           )}  
         </div>  
       </div>  
-      {storedItems.map((item) => {  
+      {visibleStoredItems.map((item) => {  
         const percent = statusProgress(item.status);  
         const isCurrent = item.id === currentFileId;  
         const isBusy = item.status === 'preparing' || item.status === 'processing';  
