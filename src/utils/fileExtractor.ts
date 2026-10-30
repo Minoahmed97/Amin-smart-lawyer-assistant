@@ -300,6 +300,7 @@ export interface FileExtractionOptions {
   jobId?: string;
   onStage?: (stage: 'preparing' | 'processing') => void | Promise<void>;
   onJobStatus?: SavedOcrTaskLifecycle['onStatus'];
+  signal?: AbortSignal;
 }
 
 async function extractUsingSavedOcr(
@@ -309,8 +310,10 @@ async function extractUsingSavedOcr(
   suppliedBase64?: string,
   suppliedMimeType?: string,
 ): Promise<{ text: string; jobId: string }> {
+  if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
   const base64Data = suppliedBase64 || await fileToBase64(file);
   const mimeType = suppliedMimeType || resolveMimeType(file);
+  if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
   await options.onStage?.('processing');
   return runSavedOcrTask(
     base64Data,
@@ -319,7 +322,7 @@ async function extractUsingSavedOcr(
     recoveryScope,
     options.userId || getActiveLawyerUserId(),
     options.jobId,
-    { onStatus: options.onJobStatus },
+    { onStatus: options.onJobStatus, signal: options.signal },
   );
 }
 
@@ -391,6 +394,7 @@ export async function extractTextFromAnyFile(
 
     // The original bytes are stored by FileUploadZone. This durable server job
     // reuses the same job ID after refresh instead of submitting another OCR task.
+    if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
     const savedTask = await extractUsingSavedOcr(file, recoveryScope, options, base64Data, mimeType);
     extractedText = savedTask.text;
     backgroundJobId = savedTask.jobId;
