@@ -285,6 +285,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
 
             <div style={{ display: activeTab === 'qualify' ? 'block' : 'none' }}>
               <LegalQualifyView
+                userId={userId}
                 onDraftBriefFromQualify={handleDraftFromQualify}
                 onOpenSubscribe={() => setIsSubscribeOpen(true)}
                 onCreditsUpdated={handleCreditsUpdated}
