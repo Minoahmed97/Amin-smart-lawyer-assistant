@@ -60,8 +60,21 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const [formData, setFormData] = useState<DraftingFormData>(() => {
     const saved = persistentStorage.getJSON<DraftingFormData>('amin_judicial_draft_form');
     if (saved) {
+      const restored = { ...saved };
+      const restoredWorkType = String(restored.judicialWorkType || '').trim();
+      const restoredCustomWorkType = String(restored.customJudicialWorkType || '').trim();
+      const restoredBriefType = String(restored.briefType || '').trim();
+      // Older saved forms may contain a generic defense-memo value without an
+      // actual selected task. Do not let that stale value silently force every
+      // new drafting request to become a defense memo.
+      if (!restoredWorkType && /^(مذكرة بدفاع|مذكرة دفاع)$/.test(restoredBriefType)) {
+        restored.briefType = '';
+      }
+      if (restoredWorkType === '__custom__') {
+        restored.briefType = restoredCustomWorkType;
+      }
       return {
-        ...saved,
+        ...restored,
         ...(initialFormData && Object.keys(initialFormData).length > 0 ? initialFormData : {}),
       };
     }
@@ -112,18 +125,96 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const judicialWorkCategories = [
     {
       categoryId: 'general',
-      categoryTitle: 'المهام القانونية',
+      categoryTitle: 'الأعمال القانونية والقضائية',
       options: [
-        { id: 'إنشاء صيغة قانونية', label: 'إنشاء صيغة قانونية', roleHint: '' },
-        { id: 'صحيفة دعوى', label: 'كتابة دعوى / صحيفة دعوى', roleHint: 'مدعٍ' },
-        { id: 'طلب قانوني', label: 'إعداد طلب قانوني', roleHint: 'طالب' },
-        { id: 'مذكرة', label: 'كتابة مذكرة', roleHint: '' },
-        { id: 'تفنيد مستند أو مذكرة', label: 'تفنيد مستند أو مذكرة', roleHint: '' },
-        { id: 'الرد على مستند أو مذكرة', label: 'الرد على مستند أو مذكرة', roleHint: '' },
-        { id: 'عقد أو اتفاقية', label: 'كتابة عقد / اتفاقية', roleHint: '' },
-        { id: 'إنذار أو مكاتبة قانونية', label: 'إنذار / مكاتبة قانونية', roleHint: 'منذر' },
-        { id: 'طعن أو استئناف', label: 'طعن / استئناف', roleHint: 'طاعن' },
-        { id: '__custom__', label: 'مهمة قانونية أخرى (اكتبها باليد)', roleHint: 'طالب' },
+        { id: 'صحيفة دعوى', label: 'صحيفة افتتاح دعوى', roleHint: 'مدعٍ' },
+        { id: 'صحيفة دعوى مدنية', label: 'صحيفة دعوى مدنية', roleHint: 'مدعٍ' },
+        { id: 'صحيفة دعوى تجارية', label: 'صحيفة دعوى تجارية', roleHint: 'مدعٍ' },
+        { id: 'صحيفة دعوى تعويض', label: 'صحيفة دعوى تعويض', roleHint: 'مدعٍ' },
+        { id: 'صحيفة دعوى صحة توقيع أو صحة ونفاذ', label: 'دعوى صحة توقيع / صحة ونفاذ', roleHint: 'مدعٍ' },
+        { id: 'صحيفة دعوى مستعجلة', label: 'صحيفة دعوى مستعجلة أو وقتية', roleHint: 'مدعٍ' },
+        { id: 'طلب عارض أو طلبات إضافية', label: 'طلب عارض / تعديل طلبات', roleHint: '' },
+        { id: 'طلب تدخل أو إدخال خصم', label: 'طلب تدخل أو إدخال خصم', roleHint: '' },
+        { id: 'مذكرة بدفاع', label: 'مذكرة بدفاع', roleHint: '' },
+        { id: 'مذكرة رد وتعقيب', label: 'مذكرة رد وتعقيب', roleHint: '' },
+        { id: 'مذكرة ختامية', label: 'مذكرة ختامية', roleHint: '' },
+        { id: 'مذكرة شارحة', label: 'مذكرة شارحة', roleHint: '' },
+        { id: 'مذكرة تكميلية', label: 'مذكرة تكميلية', roleHint: '' },
+        { id: 'حافظة مستندات', label: 'حافظة مستندات وفهرس مستندات', roleHint: '' },
+        { id: 'تعقيب على تقرير خبير', label: 'تعقيب على تقرير خبير', roleHint: '' },
+        { id: 'طلب ندب خبير أو مناقشة خبير', label: 'طلب ندب خبير / مناقشة خبير', roleHint: '' },
+        { id: 'صحيفة استئناف', label: 'صحيفة استئناف', roleHint: 'مستأنف' },
+        { id: 'أسباب استئناف', label: 'أسباب استئناف', roleHint: 'مستأنف' },
+        { id: 'مذكرة بدفاع في الاستئناف', label: 'مذكرة بدفاع أمام محكمة الاستئناف', roleHint: '' },
+        { id: 'رد على استئناف', label: 'رد على استئناف / استئناف فرعي', roleHint: '' },
+        { id: 'صحيفة طعن بالنقض', label: 'صحيفة طعن بالنقض', roleHint: 'طاعن' },
+        { id: 'أسباب الطعن بالنقض', label: 'مذكرة بأسباب الطعن بالنقض', roleHint: 'طاعن' },
+        { id: 'التماس إعادة النظر', label: 'التماس إعادة النظر', roleHint: 'ملتمس' },
+        { id: 'معارضة في حكم', label: 'معارضة في حكم', roleHint: 'معارض' },
+        { id: 'إشكال في التنفيذ', label: 'إشكال في التنفيذ', roleHint: 'مستشكل' },
+        { id: 'منازعة تنفيذ', label: 'منازعة تنفيذ موضوعية أو وقتية', roleHint: '' },
+        { id: 'طلب وقف تنفيذ', label: 'طلب وقف تنفيذ', roleHint: 'طالب' },
+        { id: 'صحيفة دعوى إلغاء قرار إداري', label: 'دعوى إلغاء قرار إداري أمام مجلس الدولة', roleHint: 'مدعٍ' },
+        { id: 'طلب وقف تنفيذ قرار إداري', label: 'طلب وقف تنفيذ قرار إداري', roleHint: 'طالب' },
+        { id: 'دعوى تعويض أمام مجلس الدولة', label: 'دعوى تعويض إدارية', roleHint: 'مدعٍ' },
+        { id: 'دعوى أو طعن تأديبي', label: 'دعوى / طعن تأديبي', roleHint: '' },
+        { id: 'مذكرة أمام هيئة مفوضي الدولة', label: 'مذكرة أمام هيئة مفوضي الدولة', roleHint: '' },
+        { id: 'صحيفة جنحة مباشرة', label: 'صحيفة جنحة مباشرة', roleHint: 'مدعٍ بالحق المدني' },
+        { id: 'مذكرة دفاع جنائي', label: 'مذكرة دفاع جنائي', roleHint: 'متهم' },
+        { id: 'معارضة جنائية', label: 'معارضة جنائية', roleHint: 'معارض' },
+        { id: 'استئناف جنائي', label: 'استئناف جنائي', roleHint: 'مستأنف' },
+        { id: 'طلب إخلاء سبيل', label: 'طلب إخلاء سبيل / استبدال تدبير', roleHint: '' },
+        { id: 'إنذار رسمي على يد محضر', label: 'إنذار رسمي على يد محضر', roleHint: 'منذر' },
+        { id: 'إعادة إعلان', label: 'إعادة إعلان', roleHint: '' },
+        { id: 'إعلان صحيفة دعوى أو حكم', label: 'إعلان صحيفة دعوى / حكم / قرار', roleHint: '' },
+        { id: 'تظلم من قرار إداري', label: 'تظلم من قرار إداري', roleHint: 'متظلم' },
+        { id: 'طلب تجديد من الشطب أو السير في الدعوى', label: 'طلب تجديد من الشطب / السير في الدعوى', roleHint: '' },
+        { id: 'طلب استخراج صورة رسمية أو شهادة', label: 'طلب صورة رسمية / شهادة / إفادة', roleHint: 'طالب' },
+        { id: 'محضر إثبات حالة أو إخطار قانوني', label: 'محضر إثبات حالة / إخطار قانوني', roleHint: '' },
+        { id: 'عقد بيع', label: 'صياغة عقد بيع', roleHint: '' },
+        { id: 'عقد إيجار', label: 'صياغة عقد إيجار', roleHint: '' },
+        { id: 'عقد مقاولة أو توريد', label: 'عقد مقاولة / توريد', roleHint: '' },
+        { id: 'عقد شراكة أو اتفاق خدمات', label: 'عقد شراكة / اتفاق خدمات', roleHint: '' },
+        { id: 'مخالصة أو إقرار أو اتفاق تسوية', label: 'مخالصة / إقرار / اتفاق تسوية', roleHint: '' },
+        { id: 'مراجعة أو تعديل عقد', label: 'مراجعة / تعديل / إعادة صياغة عقد', roleHint: '' },
+        { id: 'استشارة أو رأي قانوني مكتوب', label: 'استشارة / رأي قانوني مكتوب', roleHint: '' },
+        { id: 'دعوى فسخ أو بطلان عقد', label: 'دعوى فسخ / بطلان عقد', roleHint: 'مدعٍ' },
+        { id: 'دعوى إلزام بتنفيذ التزام أو تسليم', label: 'دعوى إلزام بتنفيذ التزام / تسليم', roleHint: 'مدعٍ' },
+        { id: 'دعوى مطالبة مالية أو مديونية', label: 'دعوى مطالبة مالية / مديونية', roleHint: 'مدعٍ' },
+        { id: 'دعوى طرد أو إخلاء أو تسليم عين', label: 'دعوى طرد / إخلاء / تسليم عين', roleHint: 'مدعٍ' },
+        { id: 'دعوى ريع أو مقابل انتفاع', label: 'دعوى ريع / مقابل انتفاع', roleHint: 'مدعٍ' },
+        { id: 'دعوى تثبيت ملكية أو فرز وتجنيب', label: 'دعوى تثبيت ملكية / فرز وتجنيب', roleHint: 'مدعٍ' },
+        { id: 'دعوى قسمة تركة أو ميراث', label: 'دعوى قسمة تركة / ميراث', roleHint: 'مدعٍ' },
+        { id: 'دعوى إيجارات أو أجرة', label: 'دعوى إيجارات / أجرة / امتداد عقد', roleHint: '' },
+        { id: 'دعوى نفقة أو زيادة أو تخفيض نفقة', label: 'دعوى نفقة / زيادة أو تخفيض نفقة', roleHint: 'طالب' },
+        { id: 'دعوى طلاق أو خلع أو إثبات زواج', label: 'دعوى طلاق / خلع / إثبات زواج', roleHint: 'مدعٍ' },
+        { id: 'دعوى حضانة أو رؤية أو ضم صغير', label: 'دعوى حضانة / رؤية / ضم صغير', roleHint: 'طالب' },
+        { id: 'دعوى إثبات نسب أو إنكار نسب', label: 'دعوى إثبات نسب / إنكار نسب', roleHint: '' },
+        { id: 'دعوى عمالية أو مستحقات عامل', label: 'دعوى عمالية / مستحقات وأجور', roleHint: 'مدعٍ' },
+        { id: 'دعوى فصل تعسفي أو تعويض عمالي', label: 'دعوى فصل تعسفي / تعويض عمالي', roleHint: 'مدعٍ' },
+        { id: 'دعوى تأمينات أو معاشات', label: 'دعوى تأمينات اجتماعية / معاشات', roleHint: 'مدعٍ' },
+        { id: 'دعوى تجارية أو مطالبة بقيمة شيك', label: 'دعوى تجارية / مطالبة بقيمة شيك', roleHint: 'مدعٍ' },
+        { id: 'دعوى إفلاس أو إعادة هيكلة', label: 'دعوى إفلاس / إعادة هيكلة', roleHint: '' },
+        { id: 'دعوى مسؤولية أو تعويض مدني', label: 'دعوى مسؤولية مدنية / تعويض', roleHint: 'مدعٍ' },
+        { id: 'تظلم أو طعن على قرار إداري وظيفي', label: 'تظلم / طعن على قرار وظيفي (تعيين أو ترقية أو نقل أو جزاء)', roleHint: 'متظلم' },
+        { id: 'دعوى تسوية أو مستحقات وظيفية', label: 'دعوى تسوية / مستحقات وظيفية', roleHint: 'مدعٍ' },
+        { id: 'دعوى عقد إداري أو مستحقات تعاقدية', label: 'دعوى عقد إداري / مستحقات تعاقدية', roleHint: 'مدعٍ' },
+        { id: 'مذكرة أو تقرير أمام هيئة مفوضي الدولة', label: 'مذكرة / تقرير أمام هيئة مفوضي الدولة', roleHint: '' },
+        { id: 'بلاغ أو شكوى للنيابة العامة', label: 'بلاغ / شكوى للنيابة العامة', roleHint: 'مبلغ' },
+        { id: 'مذكرة دفاع أو طلب في تحقيق جنائي', label: 'مذكرة دفاع / طلب أثناء التحقيق الجنائي', roleHint: 'متهم' },
+        { id: 'تظلم من أمر أو قرار جنائي', label: 'تظلم من أمر / قرار جنائي', roleHint: 'متظلم' },
+        { id: 'طلب تنفيذ حكم أو سند تنفيذي', label: 'طلب تنفيذ حكم / سند تنفيذي', roleHint: 'طالب التنفيذ' },
+        { id: 'طلب حجز أو بيع أو توزيع حصيلة تنفيذ', label: 'طلب حجز / بيع / توزيع حصيلة تنفيذ', roleHint: 'طالب التنفيذ' },
+        { id: 'طلب إيداع أو صرف أو تسليم أمانة', label: 'طلب إيداع / صرف / تسليم أمانة', roleHint: 'طالب' },
+        { id: 'طلب تمكين أو تسليم أو حيازة', label: 'طلب تمكين / تسليم / حيازة', roleHint: 'طالب' },
+        { id: 'عقد وكالة أو اتفاق تمثيل قانوني', label: 'عقد وكالة / اتفاق تمثيل قانوني', roleHint: '' },
+        { id: 'عقد عمل أو اتفاق إنهاء خدمة', label: 'عقد عمل / اتفاق إنهاء خدمة', roleHint: '' },
+        { id: 'عقد تأسيس أو تعديل شركة', label: 'عقد تأسيس / تعديل شركة', roleHint: '' },
+        { id: 'اتفاق صلح أو تسوية نزاع', label: 'اتفاق صلح / تسوية نزاع', roleHint: '' },
+        { id: 'إقرار أو تعهد أو تفويض', label: 'إقرار / تعهد / تفويض', roleHint: '' },
+        { id: 'مراجعة قانونية أو تدقيق مستند', label: 'مراجعة قانونية / تدقيق مستند أو محرر', roleHint: '' },
+        { id: 'رد أو مذكرة بشأن مستند مقدم', label: 'رد / مذكرة بشأن مستند مقدم', roleHint: '' },
+        { id: '__custom__', label: 'عمل قانوني أو قضائي آخر (اكتب اسمه)', roleHint: '' },
       ],
     },
   ];
@@ -274,6 +365,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         ...formData,
         judicialWorkType: formData.judicialWorkType === '__custom__' ? '' : formData.judicialWorkType,
         customJudicialWorkType: formData.customJudicialWorkType,
+        briefType: formData.judicialWorkType === '__custom__'
+          ? (formData.customJudicialWorkType || '').trim()
+          : formData.briefType,
         userId,
       }, (chunk) => {
         if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
@@ -514,12 +608,15 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   setFormData((prev) => ({
                     ...prev,
                     judicialWorkType: '__custom__',
+                    customJudicialWorkType: '',
+                    briefType: '',
                   }));
                 } else {
                   const roleHint = judicialWorkCategories[0].options.find((o) => o.id === val)?.roleHint || '';
                   setFormData((prev) => ({
                     ...prev,
                     judicialWorkType: val,
+                    customJudicialWorkType: '',
                     briefType: val,
                     clientRole: (!prev.clientRole || prev.clientRole === 'مدعى عليه') && roleHint ? roleHint : prev.clientRole,
                   }));
@@ -554,7 +651,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                       ...prev,
                       customJudicialWorkType: e.target.value,
                       judicialWorkType: '__custom__',
-                      briefType: e.target.value || prev.briefType,
+                      briefType: e.target.value,
                     }))
                   }
                   placeholder="مثال: إعداد طلب عارض أو الرد على مستند محدد..."
@@ -564,7 +661,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
             )}
 
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              لا تحتاج إلى اختيار نموذج. بعد تحديد المهمة، يفحص المساعد خزنة حسابك فقط ويستخدم النموذج المطابق أو الأقرب إن كان مفيداً، وإلا يكتب من الصفر.
+              اترك الاختيار فارغاً ليحدد المساعد نوع المستند من الوقائع، أو اختر نوع العمل من القائمة، أو اكتب أي عمل غير مدرج. القائمة موسعة وليست حصراً للأعمال القانونية والقضائية.
             </p>
           </div>
 
@@ -852,7 +949,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
             {generatedBrief && (
               <AppliedRulesAuditBadge
-                workType={formData.customJudicialWorkType || formData.judicialWorkType || formData.briefType || 'مذكرة بدفاع'}
+                workType={formData.customJudicialWorkType || formData.judicialWorkType || formData.briefType || 'يُحدَّد وفق الوقائع'}
                 courtType={formData.courtType}
                 circuit={formData.circuit}
                 customInstructions={formData.customInstructions}
