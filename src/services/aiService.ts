@@ -131,9 +131,9 @@ function jobStorageKey(type: SavedJobType, userId?: string, storageScope?: strin
   return `amin_ai_job_${type}_${user}`;
 }
 
-async function enableCompletionPushNotifications(): Promise<void> {
+export async function enableCompletionPushNotifications(): Promise<'enabled' | 'denied' | 'unsupported' | 'failed'> {
   try {
-    if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return 'unsupported';
     // Fetch the public key from the backend so the browser and server always
     // use the same VAPID configuration; the private key never leaves the server.
     const keyResponse = await fetch('/api/gemini/jobs?action=push-public-key', {
@@ -141,14 +141,13 @@ async function enableCompletionPushNotifications(): Promise<void> {
       headers: getRequestHeaders(),
       cache: 'no-store',
     });
-    if (!keyResponse.ok) return;
+    if (!keyResponse.ok) return 'failed';
     const keyData = await keyResponse.json().catch(() => ({}));
     const publicKey = String(keyData?.publicKey || '').trim();
-    if (!publicKey) return;
-    let permission = Notification.permission;
-    if (permission === 'default') permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
-    const registration = await navigator.serviceWorker.register('/sw.js');
+    if (!publicKey) return 'failed';
+    const permission = Notification.permission;
+    if (permission !== 'granted') return permission === 'denied' ? 'denied' : 'failed';
+    await navigator.serviceWorker.register('/sw.js');
     const readyRegistration = await navigator.serviceWorker.ready;
     let subscription = await readyRegistration.pushManager.getSubscription();
     if (!subscription) {
@@ -156,17 +155,22 @@ async function enableCompletionPushNotifications(): Promise<void> {
       const base64 = (publicKey + padding).replace(/-/g, '+').replace(/_/g, '/');
       const raw = atob(base64);
       const applicationServerKey = Uint8Array.from(raw, (character) => character.charCodeAt(0));
-      subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
+      subscription = await readyRegistration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
     }
     const response = await fetch('/api/gemini/jobs', {
       method: 'POST',
       headers: getRequestHeaders(),
       body: JSON.stringify({ action: 'subscribe-push', subscription: subscription.toJSON() }),
     });
-    if (!response.ok) console.warn('Could not save completion notification subscription.');
+    if (!response.ok) {
+      console.warn('Could not save completion notification subscription.');
+      return 'failed';
+    }
+    return 'enabled';
   } catch (error) {
     // Notification permission or push setup must never block the requested legal task.
     console.warn('Completion notifications are unavailable on this device/browser:', error);
+    return 'failed';
   }
 }
 
@@ -259,7 +263,7 @@ async function requestSavedJob<T extends Record<string, any>>(
   };
   let created = Boolean(resumeId);
   if (!resumeId) {
-    await enableCompletionPushNotifications();
+    // Push permission is requested only from the explicit notification-enable button.
     // Do not create a durable server job if the user removed the file while
     // notification setup was waiting for permission or service-worker readiness.
     await cancelIfAborted();
