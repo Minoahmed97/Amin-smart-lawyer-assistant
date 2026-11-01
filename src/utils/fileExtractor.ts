@@ -296,10 +296,7 @@ async function extractTextFromPdfPages(
         const canvas = document.createElement('canvas');
         canvas.width = Math.ceil(viewport.width);
         canvas.height = Math.ceil(viewport.height);
-        const context = canvas.getContext('2d', { alpha: false });
-        if (!context) throw new Error(`تعذر تجهيز الصفحة ${pageNumber} من ملف PDF.`);
-
-        await page.render({ canvas, canvasContext: context, viewport }).promise;
+        await page.render({ canvas, viewport }).promise;
         const renderedBlob = await new Promise<Blob>((resolve, reject) => {
           canvas.toBlob(
             (blob) => blob ? resolve(blob) : reject(new Error(`تعذر تحويل الصفحة ${pageNumber} إلى صورة.`)),
