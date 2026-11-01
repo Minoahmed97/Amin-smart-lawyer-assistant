@@ -277,19 +277,8 @@ async function extractTextFromPdfPages(
       await options.onStage?.('processing');
       const page = await pdf.getPage(pageNumber);
       try {
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items
-          .map((item: any) => typeof item?.str === 'string' ? item.str : '')
-          .filter(Boolean)
-          .join(' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-
-        if (pageText.length >= 40) {
-          pageResults.push(`--- صفحة ${pageNumber} ---\n${pageText}`);
-          continue;
-        }
-
+        // Always rasterize every PDF page and send it through the existing OCR service.
+        // Some scanned PDFs contain a misleading/incomplete hidden text layer.
         const baseViewport = page.getViewport({ scale: 1 });
         const scale = Math.min(2, 1800 / Math.max(baseViewport.width, baseViewport.height));
         const viewport = page.getViewport({ scale });
