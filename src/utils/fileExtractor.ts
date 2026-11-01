@@ -1,4 +1,8 @@
 import mammoth from 'mammoth';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 import { getSessionToken } from '../services/authService.ts';
 import { runSavedOcrTask } from '../services/aiService.ts';
 import type { SavedOcrTaskLifecycle } from '../services/aiService.ts';
@@ -250,6 +254,85 @@ export async function extractTextViaServerOCR(base64Data: string, mimeType: stri
   }
 }
 
+/**
+ * Extract PDF page text locally when available; rasterize only pages without
+ * a usable text layer and send each rendered page through the existing image OCR endpoint.
+ */
+async function extractTextFromPdfPages(
+  file: File,
+  options: FileExtractionOptions,
+): Promise<string> {
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    isEvalSupported: false,
+  });
+  const pdf = await loadingTask.promise;
+  const pageResults: string[] = [];
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      if (options.signal?.aborted) {
+        throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
+      }
+      await options.onStage?.('processing');
+      const page = await pdf.getPage(pageNumber);
+      try {
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items
+          .map((item: any) => typeof item?.str === 'string' ? item.str : '')
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        if (pageText.length >= 40) {
+          pageResults.push(`--- صفحة ${pageNumber} ---\n${pageText}`);
+          continue;
+        }
+
+        const baseViewport = page.getViewport({ scale: 1 });
+        const scale = Math.min(2, 1800 / Math.max(baseViewport.width, baseViewport.height));
+        const viewport = page.getViewport({ scale: Math.max(1, scale) });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        const context = canvas.getContext('2d', { alpha: false });
+        if (!context) throw new Error(`تعذر تجهيز الصفحة ${pageNumber} من ملف PDF.`);
+
+        await page.render({ canvas, canvasContext: context, viewport }).promise;
+        const renderedBlob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob(
+            (blob) => blob ? resolve(blob) : reject(new Error(`تعذر تحويل الصفحة ${pageNumber} إلى صورة.`)),
+            'image/jpeg',
+            0.88,
+          );
+        });
+        canvas.width = 0;
+        canvas.height = 0;
+
+        const pageFile = new File(
+          [renderedBlob],
+          `${file.name.replace(/\.pdf$/i, '')}-page-${pageNumber}.jpg`,
+          { type: 'image/jpeg' },
+        );
+        const compressed = await compressAndResizeImage(pageFile, 1800, 0.82);
+        const pageOcrText = await extractTextViaServerOCR(
+          compressed.base64Data,
+          compressed.mimeType,
+          pageFile.name,
+        );
+        pageResults.push(`--- صفحة ${pageNumber} ---\n${pageOcrText}`);
+      } finally {
+        page.cleanup();
+      }
+    }
+  } finally {
+    await loadingTask.destroy();
+  }
+
+  return pageResults.filter(Boolean).join('\n\n').trim();
+}
+
 export async function extractTextFromDocx(file: File): Promise<string> {
   if (file.name.startsWith('~$')) {
     throw new Error(
@@ -382,22 +465,22 @@ export async function extractTextFromAnyFile(
     file.type.startsWith('image/')
   ) {
     const isImage = file.type.startsWith('image/') || /\.(jpe?g|png|webp|bmp)$/i.test(lowerName);
-    let base64Data = '';
-    let mimeType = resolveMimeType(file);
-    if (isImage) {
-      const compressed = await compressAndResizeImage(file, 1800, 0.82);
-      base64Data = compressed.base64Data;
-      mimeType = compressed.mimeType;
+    if (!isImage) {
+      // Process PDF pages individually; existing image uploads keep their original path.
+      extractedText = await extractTextFromPdfPages(file, options);
     } else {
-      base64Data = await fileToBase64(file);
+      const compressed = await compressAndResizeImage(file, 1800, 0.82);
+      if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
+      const savedTask = await extractUsingSavedOcr(
+        file,
+        recoveryScope,
+        options,
+        compressed.base64Data,
+        compressed.mimeType,
+      );
+      extractedText = savedTask.text;
+      backgroundJobId = savedTask.jobId;
     }
-
-    // The original bytes are stored by FileUploadZone. This durable server job
-    // reuses the same job ID after refresh instead of submitting another OCR task.
-    if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-    const savedTask = await extractUsingSavedOcr(file, recoveryScope, options, base64Data, mimeType);
-    extractedText = savedTask.text;
-    backgroundJobId = savedTask.jobId;
   } else {
     try {
       await options.onStage?.('processing');
