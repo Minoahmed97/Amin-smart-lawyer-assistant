@@ -85,7 +85,9 @@ function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
 }
 
 async function request(options: any, model: string, stream: boolean): Promise<OpenRouterRequest> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  const apiKey = String(options?.providerApiKey || process.env.OPENROUTER_API_KEY || '').trim();
+  const providerBaseUrl = String(options?.providerBaseUrl || 'https://openrouter.ai/api/v1').replace(/\\/$/, '');
+  const isOpenRouter = /openrouter\\.ai\\/api\\/v1$/i.test(providerBaseUrl);
   if (!apiKey) {
     const error: any = new Error('اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
     error.statusCode = 503;
@@ -119,13 +121,15 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   resetTimeout();
   let response: Response;
   try {
-    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    response = await fetch(`${providerBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app',
-        'X-Title': 'Amin Smart Lawyer Assistant',
+        ...(isOpenRouter ? {
+          'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app',
+          'X-Title': 'Amin Smart Lawyer Assistant',
+        } : {}),
       },
       body: JSON.stringify(buildPayload(options, model, stream)),
       signal: controller.signal,
@@ -146,7 +150,8 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
       if (timedOut) throw createTimeoutError(activeTimeoutMs, stream);
     }
     clearRequestTimeout();
-    const error: any = new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
+    const providerName = isOpenRouter ? 'OpenRouter' : 'مزود الذكاء الاصطناعي الاحتياطي';
+    const error: any = new Error(`${providerName} request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
     error.status = response.status;
     error.statusCode = response.status;
     throw error;
@@ -160,13 +165,20 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   };
 }
 
-export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number) {
+export function createOpenRouterCompatibleClient(
+  defaultTimeoutMs = 120000,
+  requestDeadlineAt?: number,
+  providerBaseUrl = 'https://openrouter.ai/api/v1',
+  providerApiKey?: string,
+) {
   const applyDefaultTimeout = (options: any) => ({
     ...options,
     requestTimeoutMs: Number(options?.requestTimeoutMs) >= 1000
       ? options.requestTimeoutMs
       : defaultTimeoutMs,
     ...(Number.isFinite(requestDeadlineAt) ? { requestDeadlineAt } : {}),
+    providerBaseUrl,
+    ...(providerApiKey ? { providerApiKey } : {}),
   });
   return {
     models: {
