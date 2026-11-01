@@ -50,11 +50,11 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
               <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2 flex-wrap">
                 <span>موسوعة الدفوع القضائية المصرية</span>
                 <span className="text-[11px] bg-amber-950 text-amber-300 px-2 py-0.5 rounded border border-amber-500/40 font-medium">
-                  مؤصلة بنصوص القوانين وأحكام النقض
+                  نماذج استرشادية تحتاج مراجعة
                 </span>
               </h2>
               <p className="text-xs sm:text-sm text-slate-300 mt-1">
-                استعرض الدفوع الجوهرية والشكلية مع صيغ الإدراج المباشر في المذكرات.
+                استعرض نماذج أولية للدفوع. لا تُعد أرقام المواد أو مبادئ النقض الواردة هنا معتمدة أو محدثة قبل مراجعتها من مصدر رسمي.
               </p>
             </div>
           </div>
@@ -62,7 +62,7 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
       </div>
 
       {/* Search and Category Filter */}
-      <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-4 shadow-lg flex flex-col md:flex-row items-stretch md:items-center gap-4">
+      <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-xs sm:text-sm text-amber-100 leading-7">تنبيه مهني: هذه الموسوعة أداة تذكير واستئناس وليست مرجعاً تشريعياً موثقاً. قد تتغير النصوص أو تكون بعض الإحالات أو المبادئ القضائية غير دقيقة؛ تحقّق من النص الرسمي الساري ومن الحكم كاملاً ورقم الطعن وتاريخه قبل الاستناد إليها أو إدراجها في مذكرة أو اتخاذ إجراء. ولا تستخدم أي دفع إلا بعد ثبوت انطباقه على وقائع ومستندات القضية.</div>\n\n      <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-4 shadow-lg flex flex-col md:flex-row items-stretch md:items-center gap-4">
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
           <input
