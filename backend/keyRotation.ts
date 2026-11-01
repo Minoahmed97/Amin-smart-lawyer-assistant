@@ -287,19 +287,18 @@ async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, mod
   }
 
   console.log('🔄 جاري تشغيل بديل Groq المباشر لـ OCR...');
-  
+
   const remainingMs = Math.max(1000, deadlineAt - Date.now());
-  
-  // الاتصال المباشر بخوادم Groq لمنع أخطاء الـ 402 الخاصة بـ OpenRouter
+  // Pass Groq's endpoint and its server-side key into the compatible adapter.
+  // Without these explicit options the adapter defaults to OPENROUTER_API_KEY.
   const client = createOpenRouterCompatibleClient(
-    Math.min(60000, remainingMs), 
-    deadlineAt, 
-    'https://api.groq.com/openai/v1', 
-    fallbackConfig.apiKey
+    Math.min(60000, remainingMs),
+    deadlineAt,
+    'https://api.groq.com/openai/v1',
+    fallbackConfig.apiKey,
   );
-  
-  const modelToUse = fallbackConfig.model || 'meta-llama/llama-3.2-11b-vision-preview';
-  
+
+  const modelToUse = fallbackConfig.model || 'qwen/qwen3.8-27b';
   return await action(client as unknown as GoogleGenAI, fallbackConfig.apiKey, modelToUse);
 }
 
