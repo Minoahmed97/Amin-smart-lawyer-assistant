@@ -1,6 +1,8 @@
 import mammoth from 'mammoth';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import { getSessionToken } from '../services/authService.ts';
-import { runSavedOcrTask, runSavedPdfOcrTask } from '../services/aiService.ts';
+import { runSavedOcrTask } from '../services/aiService.ts';
 import type { SavedOcrTaskLifecycle } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from './legalVaultService.ts';
 
@@ -102,6 +104,54 @@ export async function compressAndResizeImage( file: File, maxDimension = 1800, q
     console.warn('Image compression failed:', error);
     throw new Error('تعذر تجهيز الصورة وإيصال حجمها إلى أقل من 1MB. جرّب صورة أوضح أو أصغر.');
   }
+}
+
+/** تحويل صفحات PDF إلى صور JPEG لاستخدام مسار OCR الحالي الخاص بالصور. */
+async function renderPdfPagesForOcr(file: File): Promise<{ firstPageBase64: string; remainingPages: Array<{ base64Data: string; mimeType: string }> }> {
+  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  const pdfDocument = await pdfjsLib.getDocument({
+    data: await file.arrayBuffer(),
+    useWorkerFetch: false,
+    isEvalSupported: false,
+  }).promise;
+  const pages: Array<{ base64Data: string; mimeType: string }> = [];
+  let totalBytes = 0;
+  try {
+    if (pdfDocument.numPages < 1 || pdfDocument.numPages > 30) {
+      throw new Error('عدد صفحات ملف PDF يتجاوز الحد المدعوم حاليًا (30 صفحة).');
+    }
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, 1800 / Math.max(baseViewport.width, baseViewport.height));
+      const viewport = page.getViewport({ scale: Math.max(0.5, scale) });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) throw new Error('تعذر تجهيز صفحة PDF كصورة.');
+      context.fillStyle = '#FFFFFF';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: context, viewport, canvas } as any).promise;
+      let blob: Blob | null = null;
+      for (const quality of [0.82, 0.76, 0.70, 0.64, 0.58, 0.52]) {
+        blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+        if (blob && blob.size <= 1024 * 1024) break;
+      }
+      canvas.width = 1;
+      canvas.height = 1;
+      if (!blob || blob.size > 1024 * 1024) throw new Error(`تعذر ضغط صفحة PDF رقم ${pageNumber} إلى الحجم المسموح.`);
+      totalBytes += blob.size;
+      if (totalBytes > 3 * 1024 * 1024) throw new Error('حجم صفحات PDF بعد تحويلها إلى صور تجاوز الحد الآمن للإرسال (3MB). قسّم الملف إلى أجزاء أصغر ثم أعد المحاولة.');
+      pages.push({ base64Data: await fileToBase64(blob), mimeType: 'image/jpeg' });
+      page.cleanup();
+    }
+  } finally {
+    await pdfDocument.destroy();
+  }
+  const [first, ...remainingPages] = pages;
+  if (!first) throw new Error('ملف PDF لا يحتوي على صفحات قابلة للقراءة.');
+  return { firstPageBase64: first.base64Data, remainingPages };
 }
 
 export function resolveMimeType(file: File): string {
@@ -309,6 +359,7 @@ async function extractUsingSavedOcr(
   options: FileExtractionOptions,
   suppliedBase64?: string,
   suppliedMimeType?: string,
+  extraPayload: Record<string, unknown> = {},
 ): Promise<{ text: string; jobId: string }> {
   if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
   const base64Data = suppliedBase64 || await fileToBase64(file);
@@ -323,6 +374,7 @@ async function extractUsingSavedOcr(
     options.userId || getActiveLawyerUserId(),
     options.jobId,
     { onStatus: options.onJobStatus, signal: options.signal },
+    extraPayload,
   );
 }
 
@@ -394,17 +446,14 @@ export async function extractTextFromAnyFile(
       extractedText = savedTask.text;
       backgroundJobId = savedTask.jobId;
     } else {
-      // PDFs are uploaded directly to private Supabase Storage; only their
-      // storage reference is sent through the Vercel Function request.
+      const rendered = await renderPdfPagesForOcr(file);
+      base64Data = rendered.firstPageBase64;
+      mimeType = 'image/jpeg';
+      const extraPayload = rendered.remainingPages.length
+        ? { imagePages: JSON.stringify(rendered.remainingPages) }
+        : {};
       if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-      await options.onStage?.('processing');
-      const savedTask = await runSavedPdfOcrTask(
-        file,
-        recoveryScope,
-        options.userId || getActiveLawyerUserId(),
-        options.jobId,
-        { onStatus: options.onJobStatus, signal: options.signal },
-      );
+      const savedTask = await extractUsingSavedOcr(file, recoveryScope, options, base64Data, mimeType, extraPayload);
       extractedText = savedTask.text;
       backgroundJobId = savedTask.jobId;
     }

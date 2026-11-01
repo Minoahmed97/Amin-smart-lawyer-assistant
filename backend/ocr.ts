@@ -118,6 +118,20 @@ export default async function handler(req: any, res: any) {
     }
 
     const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر والجداول والعناوين قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل، ولا تطبع الأرقام أو تغيّر صيغتها. - تعليمات خاصة بالخط اليدوي: افحص شكل الحروف واتصالها والنقاط والمسافات والكلمات المحيطة، خصوصاً في محاضر الشرطة المصرية وتحقيقات النيابة. استخدم سياق الجملة القانونية وموضوع المحضر لترجيح قراءة بين احتمالات تدعمها العلامات المرئية في الصورة فقط؛ لا تستكمل عبارة متوقعة لمجرد شيوعها، ولا تجعل السياق بديلاً عن الحروف غير الظاهرة. - لا تصحح الإملاء أو النحو، ولا تعِد الصياغة، ولا تستبدل التعبير الأصلي بصياغة قانونية مألوفة. - إذا بقيت كلمة غير مؤكدة بعد فحص الصورة والسياق، فاكتب حرفياً [كلمة غير واضحة] مكانها، ولا تخمّنها ولا تخترع أي كلمة. حافظ على الكلمات المقروءة قبلها وبعدها ولا تستبدل الجملة كلها بعلامة واحدة إذا كانت بعض كلماتها واضحة. - لا تضف وقائع أو أسماء أو أرقاماً أو تواريخ أو مواد قانونية أو أحكاماً غير ظاهرة في المستند. - إذا وجدت توقيعاً أو ختماً لا يمكن قراءة محتواه، فاذكر وجوده بإيجاز من دون نسبة اسم أو مضمون إليه. - أخرج النص المستخرج فقط دون مقدمة أو تعليق أو تحليل، ولا تدّعِ دقة مطلقة.`;
+    let pdfImagePages: Array<{ base64Data: string; mimeType: string }> = [];
+    if (typeof body?.imagePages === 'string' && body.imagePages) {
+      let parsedPages: any;
+      try { parsedPages = JSON.parse(body.imagePages); } catch { throw new Error('بيانات صفحات PDF المحوّلة غير صالحة.'); }
+      if (!Array.isArray(parsedPages) || parsedPages.length > 29) throw new Error('عدد صفحات PDF المحوّلة غير صالح.');
+      pdfImagePages = parsedPages.map((page: any) => {
+        const pageData = String(page?.base64Data || '');
+        if (!pageData || pageData.length > 1_450_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(pageData)) {
+          throw new Error('إحدى صور صفحات PDF غير صالحة أو أكبر من الحد المسموح.');
+        }
+        return { base64Data: pageData, mimeType: 'image/jpeg' };
+      });
+    }
+
     let extractedText = '';
     try {
       extractedText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
@@ -130,6 +144,7 @@ export default async function handler(req: any, res: any) {
               parts: [
                 { text: ocrPrompt },
                 { inlineData: { mimeType: safeGeminiMime, data: compactBase64 } },
+                ...pdfImagePages.map((page) => ({ inlineData: { mimeType: page.mimeType, data: page.base64Data } })),
               ],
             },
           ],

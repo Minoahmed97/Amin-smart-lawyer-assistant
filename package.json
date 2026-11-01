@@ -26,7 +26,8 @@
     "tesseract.js": "^7.0.0",
     "vite": "^8.3.0",
     "@vercel/functions": "^2.2.13",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "pdfjs-dist": "5.4.394"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
