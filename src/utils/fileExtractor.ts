@@ -1,6 +1,6 @@
 import mammoth from 'mammoth';
 import { getSessionToken } from '../services/authService.ts';
-import { runSavedOcrTask } from '../services/aiService.ts';
+import { runSavedOcrTask, runSavedPdfOcrTask } from '../services/aiService.ts';
 import type { SavedOcrTaskLifecycle } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from './legalVaultService.ts';
 
@@ -388,16 +388,26 @@ export async function extractTextFromAnyFile(
       const compressed = await compressAndResizeImage(file, 1800, 0.82);
       base64Data = compressed.base64Data;
       mimeType = compressed.mimeType;
+      // Preserve the existing compressed-image OCR route unchanged.
+      if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
+      const savedTask = await extractUsingSavedOcr(file, recoveryScope, options, base64Data, mimeType);
+      extractedText = savedTask.text;
+      backgroundJobId = savedTask.jobId;
     } else {
-      base64Data = await fileToBase64(file);
+      // PDFs are uploaded directly to private Supabase Storage; only their
+      // storage reference is sent through the Vercel Function request.
+      if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
+      await options.onStage?.('processing');
+      const savedTask = await runSavedPdfOcrTask(
+        file,
+        recoveryScope,
+        options.userId || getActiveLawyerUserId(),
+        options.jobId,
+        { onStatus: options.onJobStatus, signal: options.signal },
+      );
+      extractedText = savedTask.text;
+      backgroundJobId = savedTask.jobId;
     }
-
-    // The original bytes are stored by FileUploadZone. This durable server job
-    // reuses the same job ID after refresh instead of submitting another OCR task.
-    if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-    const savedTask = await extractUsingSavedOcr(file, recoveryScope, options, base64Data, mimeType);
-    extractedText = savedTask.text;
-    backgroundJobId = savedTask.jobId;
   } else {
     try {
       await options.onStage?.('processing');
