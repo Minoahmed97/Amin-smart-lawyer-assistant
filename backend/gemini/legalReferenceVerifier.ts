@@ -26,11 +26,46 @@ function extractReferences(text: string): LegalReference[] {
   const refs: LegalReference[] = [];
   const seen = new Set<string>();
   const normalized = westernDigits(text);
-  const casePattern = /(?:الطعن|طعن)\s*(?:رقم)?\s*([0-9]{1,6})\s*(?:لسنة|/|سنه)\s*([0-9]{1,3})\s*(?:ق|هـ|ه)?/g;
-  for (const match of normalized.matchAll(casePattern)) {
-    const ref = { kind: 'case' as const, label: match[0].trim(), number: match[1], year: match[2] };
-    const key = `case:${ref.number}/${ref.year}`;
-    if (!seen.has(key)) { seen.add(key); refs.push(ref); }
+  // Parse appeal citations without a complex regex literal. This module is
+  // imported by shared API dependencies, so malformed regex can break login.
+  const readDigits = (value: string, start: number, maxLength: number): { value: string; end: number } => {
+    let end = start;
+    while (end < value.length && end - start < maxLength) {
+      const code = value.charCodeAt(end);
+      if (code < 48 || code > 57) break;
+      end += 1;
+    }
+    return { value: value.slice(start, end), end };
+  };
+  let searchFrom = 0;
+  while (searchFrom < normalized.length) {
+    const longAt = normalized.indexOf('الطعن', searchFrom);
+    const shortAt = normalized.indexOf('طعن', searchFrom);
+    const appealAt = longAt < 0 ? shortAt : shortAt < 0 ? longAt : Math.min(longAt, shortAt);
+    if (appealAt < 0) break;
+    let cursor = appealAt + (normalized.startsWith('الطعن', appealAt) ? 5 : 3);
+    while (cursor < normalized.length && normalized.charCodeAt(cursor) <= 32) cursor += 1;
+    if (normalized.startsWith('رقم', cursor)) {
+      cursor += 3;
+      while (cursor < normalized.length && normalized.charCodeAt(cursor) <= 32) cursor += 1;
+    }
+    const number = readDigits(normalized, cursor, 6);
+    if (!number.value) { searchFrom = appealAt + 3; continue; }
+    cursor = number.end;
+    while (cursor < normalized.length && normalized.charCodeAt(cursor) <= 32) cursor += 1;
+    if (normalized.startsWith('لسنة', cursor)) cursor += 4;
+    else if (normalized[cursor] === '/') cursor += 1;
+    else { searchFrom = number.end; continue; }
+    while (cursor < normalized.length && normalized.charCodeAt(cursor) <= 32) cursor += 1;
+    const year = readDigits(normalized, cursor, 3);
+    if (year.value) {
+      const ref = { kind: 'case' as const, label: normalized.slice(appealAt, year.end).trim(), number: number.value, year: year.value };
+      const key = `case:${ref.number}/${ref.year}`;
+      if (!seen.has(key)) { seen.add(key); refs.push(ref); }
+      searchFrom = year.end;
+    } else {
+      searchFrom = number.end;
+    }
   }
   const statutePattern = /(?:القانون|قانون)\s*(?:رقم)?\s*([0-9]{1,4})\s*لسنة\s*([0-9]{1,4})/g;
   for (const match of normalized.matchAll(statutePattern)) {
