@@ -248,7 +248,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   }
 
   while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
-    const segmentPrompt = makeContinuationPrompt();
     let activePair = '';
     let activePairLabel = '';
     let segmentResult: any;
@@ -256,9 +255,11 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-          ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-          : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+        // Search is available only on Gemini; OpenRouter is generation-only.
+        const providerSearchEnabled = options.legalResearch &&
+          key !== 'openrouter' &&
+          process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
+        const segmentPrompt = makeContinuationPrompt(providerSearchEnabled, accumulatedText);
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
