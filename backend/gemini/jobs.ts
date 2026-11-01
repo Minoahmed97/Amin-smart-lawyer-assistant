@@ -21,6 +21,8 @@ const TASK_HANDLERS: Record<string, (req: any, res: any) => any> = {
 
 const JOB_TABLE = 'app_ai_generation_jobs';
 const PUSH_TABLE = 'app_push_subscriptions';
+const OCR_STORAGE_BUCKET = 'amin-ocr-private';
+const MAX_OCR_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
 const JOB_STALE_TIMEOUT_MS = 4 * 60 * 1000 + 10 * 1000;
@@ -54,6 +56,66 @@ async function supabase(path: string, init: RequestInit = {}) {
   if (!key.startsWith('sb_')) headers.Authorization = `Bearer ${key}`;
   const signal = init.signal || AbortSignal.timeout(10000);
   return fetch(`${url}/rest/v1/${path}`, { ...init, headers, signal });
+}
+
+function getSupabaseStorageHeaders(contentType = 'application/json') {
+  const { key } = getSupabaseConfig();
+  const headers: Record<string, string> = { apikey: key, 'Content-Type': contentType };
+  if (!key.startsWith('sb_')) headers.Authorization = `Bearer ${key}`;
+  return headers;
+}
+
+async function ensureOcrStorageBucket() {
+  const { url } = getSupabaseConfig();
+  const headers = getSupabaseStorageHeaders();
+  const existing = await fetch(`${url}/storage/v1/bucket/${OCR_STORAGE_BUCKET}`, {
+    method: 'GET', headers, signal: AbortSignal.timeout(10000),
+  });
+  if (existing.ok) return;
+  const response = await fetch(`${url}/storage/v1/bucket`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ id: OCR_STORAGE_BUCKET, name: OCR_STORAGE_BUCKET, public: false, file_size_limit: MAX_OCR_FILE_BYTES, allowed_mime_types: ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png', 'image/webp', 'image/bmp'] }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (response.ok || response.status === 409) return;
+  const detail = await response.text().catch(() => '');
+  if (/already exists|duplicate|exists/i.test(detail)) return;
+  throw new Error(`تعذر تجهيز تخزين ملفات OCR (${response.status})${detail ? `: ${detail.slice(0, 160)}` : ''}`);
+}
+
+async function createOcrUploadUrl(userId: string, jobId: string, fileName: string, mimeType: string) {
+  const { url } = getSupabaseConfig();
+  await ensureOcrStorageBucket();
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').slice(-120) || 'document.pdf';
+  const objectPath = `${userId}/${jobId}/${safeName}`;
+  const response = await fetch(`${url}/storage/v1/object/upload/sign/${OCR_STORAGE_BUCKET}/${objectPath.split('/').map(encodeURIComponent).join('/')}`, {
+    method: 'POST', headers: getSupabaseStorageHeaders(), body: JSON.stringify({}), signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) throw new Error(`تعذر إنشاء رابط رفع ملف OCR (${response.status}).`);
+  const data = await response.json();
+  const signedUrl = String(data?.url || data?.signedURL || '');
+  if (!signedUrl) throw new Error('لم يُرجع التخزين رابط رفع صالحًا.');
+  return { objectPath, signedUrl: /^https?:\/\//i.test(signedUrl) ? signedUrl : `${url}/storage/v1${signedUrl.startsWith('/') ? '' : '/'}${signedUrl}` };
+}
+
+async function downloadOcrObjectAsBase64(objectPath: string): Promise<string> {
+  const { url } = getSupabaseConfig();
+  const encodedPath = objectPath.split('/').map(encodeURIComponent).join('/');
+  const response = await fetch(`${url}/storage/v1/object/${OCR_STORAGE_BUCKET}/${encodedPath}`, { headers: getSupabaseStorageHeaders('application/octet-stream'), signal: AbortSignal.timeout(60000) });
+  if (!response.ok) throw new Error(`تعذر استرجاع ملف PDF من التخزين (${response.status}).`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > MAX_OCR_FILE_BYTES) throw new Error('حجم ملف OCR غير صالح أو يتجاوز 20 ميجابايت.');
+  return bytes.toString('base64');
+}
+
+async function deleteOcrObject(objectPath: string) {
+  if (!objectPath) return;
+  const { url } = getSupabaseConfig();
+  const response = await fetch(`${url}/storage/v1/object/${OCR_STORAGE_BUCKET}`, {
+    method: 'DELETE', headers: getSupabaseStorageHeaders(), body: JSON.stringify({ prefixes: [objectPath] }), signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok && response.status !== 404) throw new Error(`تعذر حذف ملف OCR المؤقت (${response.status}).`);
 }
 
 function configureWebPush() {
@@ -174,7 +236,17 @@ function safePayload(input: any, taskType: string) {
   }
 
   if (taskType === 'ocr') {
-    payload.base64Data = validateBase64Payload(payload.base64Data, 20 * 1024 * 1024);
+    const hasStoragePath = typeof input?.storagePath === 'string' && input.storagePath.length > 0;
+    if (hasStoragePath) {
+      payload.storagePath = String(input.storagePath);
+      if (!/^[0-9a-f-]{36}\/[0-9a-f-]{36}\/[a-zA-Z0-9._-]{1,120}$/i.test(payload.storagePath)) {
+        const error: any = new Error('مسار ملف OCR غير صالح.');
+        error.statusCode = 400;
+        throw error;
+      }
+    } else {
+      payload.base64Data = validateBase64Payload(payload.base64Data, MAX_OCR_FILE_BYTES);
+    }
     limitBodyString(payload.fileName, 255, 'اسم الملف');
     const fileName = String(payload.fileName || '').trim();
     const mimeType = String(payload.mimeType || '').toLowerCase();
@@ -469,6 +541,9 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     phase = 'mark-running';
     await patchJob(jobId, userId, { status: 'running', error: null });
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
+    if (taskType === 'ocr' && payload.storagePath) {
+      payload.base64Data = await downloadOcrObjectAsBase64(payload.storagePath);
+    }
     const fakeReq = {
       ...originalReq,
       method: 'POST',
@@ -542,6 +617,11 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     }
   } finally {
     clearInterval(heartbeat);
+    if (taskType === 'ocr' && payload.storagePath) {
+      await deleteOcrObject(payload.storagePath).catch((error: any) => {
+        console.warn('Temporary OCR file cleanup skipped:', safeDiagnosticMessage(error?.message || error));
+      });
+    }
   }
 }
 
@@ -559,6 +639,20 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ subscribed: true });
       }
       const { session } = await requireActiveSession(req);
+      if (requestBody?.action === 'prepare-ocr-upload') {
+        const jobId = String(requestBody?.jobId || '').trim();
+        const fileName = String(requestBody?.fileName || '').trim();
+        const mimeType = String(requestBody?.mimeType || '').toLowerCase();
+        const fileSize = Number(requestBody?.fileSize || 0);
+        if (!/^[0-9a-f-]{36}$/i.test(jobId)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
+        if (!fileName || !/\.(pdf|doc|docx|jpe?g|png|webp|bmp)$/i.test(fileName) || !Number.isFinite(fileSize) || fileSize < 1 || fileSize > MAX_OCR_FILE_BYTES) {
+          return res.status(413).json({ error: 'حجم الملف أو صيغته غير مدعومين. الحد الأقصى 20 ميجابايت.' });
+        }
+        const allowedMimeTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'application/octet-stream'];
+        if (mimeType && !allowedMimeTypes.includes(mimeType)) return res.status(400).json({ error: 'نوع الملف غير مدعوم.' });
+        const upload = await createOcrUploadUrl(session.userId, jobId, fileName, mimeType || 'application/octet-stream');
+        return res.status(200).json(upload);
+      }
       if (requestBody?.action === 'cancel-ocr') {
         const jobId = String(requestBody?.jobId || '').trim();
         if (!/^[0-9a-f-]{36}$/i.test(jobId)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
@@ -602,6 +696,9 @@ export default async function handler(req: any, res: any) {
 
       const requestedId = String(requestBody?.jobId || '').trim();
       const id = /^[0-9a-f-]{36}$/i.test(requestedId) ? requestedId : crypto.randomUUID();
+      if (taskType === 'ocr' && payload.storagePath && !payload.storagePath.startsWith(`${session.userId}/${id}/`)) {
+        return res.status(403).json({ error: 'ملف OCR لا يخص جلسة الحساب الحالية.' });
+      }
       // Keep the stored task_type compatible with existing production DB constraints.
       // The actual handler for legal chat is recorded in payload._actualTaskType.
       const storedTaskType = taskType === 'legal-chat' ? 'refine' : taskType;
