@@ -125,34 +125,6 @@ export const Header: React.FC<HeaderProps> = ({
 
           <div className="flex items-center gap-2 mr-1">
             <button
-              type="button"
-              onClick={onEnableNotifications}
-              className="flex items-center gap-1.5 bg-slate-800/90 hover:bg-slate-700 text-amber-200 border border-slate-700 px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer transition-all shadow-sm"
-              title="تفعيل إشعارات انتهاء عمليات الذكاء الاصطناعي واستخراج الملفات"
-            >
-              <Bell className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">تفعيل الإشعارات</span>
-            </button>
-            {/* Theme Switcher Toggle */}
-            <button
-              onClick={onToggleTheme}
-              className="flex items-center gap-1.5 bg-slate-800/90 hover:bg-slate-700 text-amber-300 border border-slate-700 px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer transition-all shadow-sm"
-              title={theme === 'warm-light' ? 'التحويل للوضع الليلي' : 'التحويل للوضع المكتبي النهاري'}
-            >
-              {theme === 'warm-light' ? (
-                <>
-                  <Moon className="w-3.5 h-3.5 text-amber-300" />
-                  <span className="hidden sm:inline">ليلي</span>
-                </>
-              ) : (
-                <>
-                  <Sun className="w-3.5 h-3.5 text-amber-300" />
-                  <span className="hidden sm:inline">نهاري</span>
-                </>
-              )}
-            </button>
-
-            <button
               onClick={onChangeRole}
               className={`flex items-center gap-1.5 ${
                 isClient
@@ -271,6 +243,16 @@ export const Header: React.FC<HeaderProps> = ({
                   </button>
 
                   <div className="my-1 border-t border-slate-700/70" />
+
+                  <button
+                    onClick={() => { onEnableNotifications?.(); closeMenu(); }}
+                    className="header-menu-item"
+                    role="menuitem"
+                    title="تفعيل إشعارات انتهاء عمليات الذكاء الاصطناعي واستخراج الملفات"
+                  >
+                    <Bell className="w-4 h-4 text-emerald-300" />
+                    <span>تفعيل الإشعارات</span>
+                  </button>
 
                   <button onClick={() => { onToggleTheme?.(); closeMenu(); }} className="header-menu-item" role="menuitem">
                     {theme === 'warm-light' ? <Moon className="w-4 h-4 text-amber-300" /> : <Sun className="w-4 h-4 text-amber-300" />}
