@@ -292,7 +292,7 @@ async function extractTextFromPdfPages(
 
         const baseViewport = page.getViewport({ scale: 1 });
         const scale = Math.min(2, 1800 / Math.max(baseViewport.width, baseViewport.height));
-        const viewport = page.getViewport({ scale: Math.max(1, scale) });
+        const viewport = page.getViewport({ scale });
         const canvas = document.createElement('canvas');
         canvas.width = Math.ceil(viewport.width);
         canvas.height = Math.ceil(viewport.height);
