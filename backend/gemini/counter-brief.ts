@@ -60,7 +60,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
   const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
-  const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
+  const optimizedPrompt = `${prompt}${evidenceDisciplineInstruction} [تعليمات كفاءة الإخراج]
   const evidenceDisciplineInstruction = `
 
 [ضوابط الدقة القانونية والإثبات — إلزامية في جميع المهام] لا تنشئ واقعة أو مستنداً أو شاهداً أو تقرير خبرة أو إجراءً أو دفعاً أو طلباً أو صفة طرف أو تاريخاً أو رقماً لم يرد في مدخلات القضية الحالية أو مصدر موثوق تم الوصول إليه فعلاً. لا تحول الاحتمال إلى حقيقة. اربط كل استنتاج جوهري بواقعة أو مستند محدد، وبيّن حدود دلالة الدليل وما لا يثبته. ميّز بوضوح بين الثابت بالمستند، والقول المنسوب إلى أحد الأطراف، والاستنتاج، والاحتمال، وما يحتاج إلى مستند أو تحقق. لا تفترض أن الموكل مدعٍ أو مدعى عليه، ولا تخترع أسماء أطراف أو طلبات أو دفوعاً أو تاريخاً إجرائياً. لا تذكر مادة أو حكم نقض أو رقم طعن أو اقتباساً قضائياً إلا إذا كان نصه أو مرجعه متاحاً ويمكن التحقق منه في السياق أو عبر بحث فعلي موثوق؛ لا تعتمد على الذاكرة وحدها ولا على رقم وارد في نموذج خزانة. عند تعذر التحقق، اذكر صراحة أن المرجع يحتاج إلى تحقق، ولا تضع رقماً تخمينياً. افصل بين قابلية الدليل للقبول وبين كفايته لإثبات الواقعة، ولا تنقل عبء الإثبات بين الخصوم دون سند قانوني مؤكد. اختبر أقوى حجة مضادة، ولا تدرج طلباً ختامياً لم يحدده المحامي أو يفوضك فيه. لا تدّعِ إجراء بحث أو مراجعة مصدر لم يحدث فعلاً. هذه الضوابط لا تستبدل التحقق المستقل ولا تجعل المراجعة الذاتية دليلاً على صحة المعلومة.`;
@@ -74,14 +74,21 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
-  const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
-    : optimizedPrompt;
+  const makeContinuationPrompt = (providerSearchEnabled: boolean) => {
+    const providerResearchInstruction = options.legalResearch
+      ? (providerSearchEnabled
+        ? '\\n\\n[بحث قانوني موثق عبر Gemini فقط] استخدم أداة Google Search المدمجة المتاحة في Gemini للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة. لا تستخدم أو تطلب أي أداة بحث أخرى. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية. إذا تعذر التحقق فصرح بذلك ولا تختلقه. افصل بين النص الرسمي والشرح والاستنتاج القانوني.\\n'
+        : '\\n\\n[تعذر البحث المباشر في هذا المسار] لا توجد أداة بحث مفعلة لهذا المزود. لا تحاول استدعاء أي أداة، ولا تكتب أو تعرض وسوم أو كتل tool_call أو JSON أو تعليمات بحث خام. لا تدّعِ إجراء بحث أو الوصول إلى مصادر. اكتب فقط ما تسنده مدخلات القضية، وصرّح بأن التحقق من المراجع يحتاج إلى بحث عبر Gemini.\\n')
+      : '';
+    const basePrompt = `${optimizedPrompt}${providerResearchInstruction}`;
+    return accumulatedText
+      ? `${basePrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\\n\\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
+      : basePrompt;
+  };
 
   if (onChunk) {
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
-      const segmentPrompt = makeContinuationPrompt();
       const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
       let segmentPrefixResolved = !segmentBaseText.length;
@@ -95,9 +102,12 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         await executeWithKeyRotationStream(async (ai, key, model) => {
           activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
           activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-          const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-            ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-            : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+          // Legal research is deliberately restricted to Gemini's native Google Search.
+          // OpenRouter remains a generation fallback, never a search provider.
+          const providerSearchEnabled = options.legalResearch &&
+            key !== 'openrouter' &&
+            process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
+          const segmentPrompt = makeContinuationPrompt(providerSearchEnabled);
 
           return (async function* () {
             let pendingMarkerTail = '';
