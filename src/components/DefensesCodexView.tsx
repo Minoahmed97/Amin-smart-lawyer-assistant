@@ -119,7 +119,7 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
                 <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 sm:p-3.5">
                   <div className="flex items-center gap-1.5 text-amber-300 font-bold mb-1.5">
                     <Scale className="w-3.5 h-3.5 text-amber-400" />
-                    <span>السند القانوني ({def.statute}):</span>
+                    <span>البيان القانوني المسجل ({def.statute}):</span>
                   </div>
                   <p className="text-slate-300 leading-relaxed font-medium">
                     {def.legalBasis}
@@ -128,7 +128,7 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
                 <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 sm:p-3.5">
                   <div className="flex items-center gap-1.5 text-emerald-300 font-bold mb-1.5">
                     <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>مبدأ محكمة النقض:</span>
+                    <span>الإحالة القضائية المسجلة — غير متحققة:</span>
                   </div>
                   <p className="text-slate-300 leading-relaxed font-amiri text-xs sm:text-sm">
                     {def.cassationRule}
@@ -140,7 +140,7 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-bold text-amber-300 flex items-center gap-1">
                     <BookmarkCheck className="w-3.5 h-3.5 text-amber-400" />
-                    صيغة الدفع المقترحة للصياغة القضائية:
+                    صيغة استرشادية فقط — لا تُدرج قبل التحقق من الانطباق:
                   </span>
                   <button
                     onClick={() => copySnippet(def.id, def.draftingSnippet)}
