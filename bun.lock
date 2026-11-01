@@ -16,6 +16,7 @@
         "mammoth": "^1.13.0",
         "jszip": "^3.10.2",
         "motion": "^12.23.24",
+        "pdfjs-dist": "5.4.394",
         "react": "^19.0.1",
         "react-dom": "^19.0.1",
         "tesseract.js": "^7.0.0",
