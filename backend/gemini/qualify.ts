@@ -1,4 +1,4 @@
-import { generateDeepLegalResponse } from './counter-brief.ts';
+import { generateDeepLegalResponse, requiresLegalResearchRequest } from './counter-brief.ts';
 
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
@@ -27,7 +27,7 @@ export default async function handler(req: any, res: any) {
     limitBodyString(disputeDetails, 150000, 'تفاصيل النزاع');
     limitBodyString(clientGoals, 10000, 'الهدف');
 
-    const prompt = `[مهمة التكييف والتحليل القانوني المصري]: ابدأ الإجابة بالخلاصة والرأي القانوني المباشر في سؤال المستخدم، في أول فقرة بعنوان «الخلاصة والرأي القانوني المباشر». أجب عن السؤال المحدد بوضوح أولاً، واذكر التكييف القانوني الأرجح والنتيجة العملية بقدر ما تسمح به الوقائع، ثم اشرح الأسباب والتفاصيل بعد ذلك. لا تبدأ بمقدمة عامة ولا تؤخر الإجابة المباشرة إلى نهاية التقرير. بعد الخلاصة، حلّل الوقائع الثابتة والمختلف عليها والناقصة، وطبيعة النزاع والتكييف الأرجح وأي بديل مؤثر، والصفة والمصلحة والاختصاص والإجراءات والمواعيد عند ارتباطها، والأركان القانونية، وأوجه القوة والضعف والمخاطر، والأدلة والمستندات اللازمة، والدفوع المحتملة والإجراء العملي الأنسب. اجعل طول التحليل مناسباً لتعقيد النزاع، ولا تحصره في عدد ثابت من النقاط. لا تستخدم خزنة المحامي أو نماذجها أو أسلوبها في هذه المهمة؛ يجب أن يعتمد التكييف على تفاصيل النزاع والهدف المقدمين هنا فقط. لا تختلق واقعة أو مادة قانونية أو حكماً أو رقم طعن. إذا لم تكن المعلومة مؤكدة، فاذكر أنها تحتاج إلى تحقق. ============================================================ تفاصيل النزاع أو الاستفسار: ${disputeDetails} ${clientGoals ? `\n[الهدف أو المطلب المطلوب]:\n${clientGoals}\n` : ''} ============================================================ قبل الإخراج، راجع النتيجة للتأكد من أن الخلاصة أجابت مباشرة عن سؤال المستخدم أولاً، وأن التحليل التالي متسق معها ولا يغفل نقطة قانونية أو واقعية مؤثرة.`;
+    const legalResearch = requiresLegalResearchRequest(disputeDetails, clientGoals);\n\n    const prompt = `[مهمة التكييف والتحليل القانوني المصري]: ابدأ الإجابة بالخلاصة والرأي القانوني المباشر في سؤال المستخدم، في أول فقرة بعنوان «الخلاصة والرأي القانوني المباشر». أجب عن السؤال المحدد بوضوح أولاً، واذكر التكييف القانوني الأرجح والنتيجة العملية بقدر ما تسمح به الوقائع، ثم اشرح الأسباب والتفاصيل بعد ذلك. لا تبدأ بمقدمة عامة ولا تؤخر الإجابة المباشرة إلى نهاية التقرير. بعد الخلاصة، حلّل الوقائع الثابتة والمختلف عليها والناقصة، وطبيعة النزاع والتكييف الأرجح وأي بديل مؤثر، والصفة والمصلحة والاختصاص والإجراءات والمواعيد عند ارتباطها، والأركان القانونية، وأوجه القوة والضعف والمخاطر، والأدلة والمستندات اللازمة، والدفوع المحتملة والإجراء العملي الأنسب. اجعل طول التحليل مناسباً لتعقيد النزاع، ولا تحصره في عدد ثابت من النقاط. لا تستخدم خزنة المحامي أو نماذجها أو أسلوبها في هذه المهمة؛ يجب أن يعتمد التكييف على تفاصيل النزاع والهدف المقدمين هنا فقط. لا تختلق واقعة أو مادة قانونية أو حكماً أو رقم طعن. إذا لم تكن المعلومة مؤكدة، فاذكر أنها تحتاج إلى تحقق. ============================================================ تفاصيل النزاع أو الاستفسار: ${disputeDetails} ${clientGoals ? `\n[الهدف أو المطلب المطلوب]:\n${clientGoals}\n` : ''} ============================================================ قبل الإخراج، راجع النتيجة للتأكد من أن الخلاصة أجابت مباشرة عن سؤال المستخدم أولاً، وأن التحليل التالي متسق معها ولا يغفل نقطة قانونية أو واقعية مؤثرة.`;
 
     if (body?.stream === true) {
       res.statusCode = 200;
@@ -57,7 +57,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk);
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
@@ -73,7 +73,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt);
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
