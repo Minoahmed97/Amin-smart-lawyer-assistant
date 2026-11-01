@@ -554,7 +554,7 @@ export default async function handler(req: any, res: any) {
     if (req.method === 'POST') {
       const requestBody = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
       if (requestBody?.action === 'subscribe-push') {
-        const { session } = requireSession(req);
+        const session = requireSession(req);
         await savePushSubscription(session.userId, requestBody.subscription);
         return res.status(200).json({ subscribed: true });
       }
