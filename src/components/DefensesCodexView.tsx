@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { EGYPTIAN_LEGAL_DEFENSES } from '../data/egyptianDefenses.ts';
+import { EGYPTIAN_LEGAL_SOURCES } from '../data/egyptianLegalSources.ts';
 import { BookOpen, Search, Copy, Check, ArrowRight, Scale, ShieldCheck, BookmarkCheck } from 'lucide-react';
 
 interface DefensesCodexViewProps {
@@ -60,6 +61,28 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
           </div>
         </div>
       </div>
+
+      {/* Legal research source directory */}
+      <section className="bg-[#0f172a] border border-slate-700 rounded-2xl p-4 sm:p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <Scale className="w-5 h-5 text-amber-400" />
+          <h3 className="text-sm sm:text-base font-bold text-white">دليل مصادر البحث القانوني المصري</h3>
+        </div>
+        <p className="text-xs text-slate-400 leading-6">روابط للبحث والتحقق، وليست دليلاً على توثيق حكم بعينه. ميّز بين المصدر الرسمي والمستودع المساعد، وافحص أصل المستند قبل الاستشهاد.</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {EGYPTIAN_LEGAL_SOURCES.map((source) => (
+            <div key={source.id} className="rounded-xl border border-slate-700 bg-slate-900/70 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-xs font-bold text-amber-300">{source.court}</span>
+                <span className={`text-[10px] px-2 py-1 rounded-full border ${source.authority === 'رسمي' ? 'text-emerald-300 border-emerald-700 bg-emerald-950/40' : 'text-amber-200 border-amber-700 bg-amber-950/40'}`}>{source.authority}</span>
+              </div>
+              <p className="text-sm text-white font-semibold">{source.title}</p>
+              <p className="text-xs text-slate-400 leading-6">{source.verificationNote}</p>
+              <a href={source.url} target="_blank" rel="noopener noreferrer" className="inline-flex text-xs text-sky-300 hover:text-sky-200 underline underline-offset-4">فتح المصدر الخارجي</a>
+            </div>
+          ))}
+        </div>
+      </section>
 
       {/* Search and Category Filter */}
       <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-xs sm:text-sm text-amber-100 leading-7">تنبيه مهني: هذه الموسوعة أداة تذكير واستئناس وليست مرجعاً تشريعياً موثقاً. قد تتغير النصوص أو تكون بعض الإحالات أو المبادئ القضائية غير دقيقة؛ تحقّق من النص الرسمي الساري ومن الحكم كاملاً ورقم الطعن وتاريخه قبل الاستناد إليها أو إدراجها في مذكرة أو اتخاذ إجراء. ولا تستخدم أي دفع إلا بعد ثبوت انطباقه على وقائع ومستندات القضية.</div>\n\n      <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-4 shadow-lg flex flex-col md:flex-row items-stretch md:items-center gap-4">
