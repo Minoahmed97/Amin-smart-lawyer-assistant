@@ -411,6 +411,50 @@ export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: 
   return requestSavedJob(type, {}, onChunk, userId, jobId);
 }
 
+export async function runSavedPdfOcrTask(
+  file: File,
+  storageScope: string,
+  userId?: string,
+  requestedJobId?: string,
+  lifecycle?: SavedOcrTaskLifecycle,
+): Promise<{ text: string; jobId: string }> {
+  const jobId = requestedJobId || makeJobId();
+  if (lifecycle?.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
+  const prepareResponse = await fetch('/api/gemini/jobs', {
+    method: 'POST',
+    headers: getRequestHeaders(),
+    body: JSON.stringify({ action: 'prepare-ocr-upload', jobId, fileName: file.name, mimeType: file.type || 'application/pdf', fileSize: file.size }),
+    ...(lifecycle?.signal ? { signal: lifecycle.signal } : {}),
+  });
+  const uploadInfo = await prepareResponse.json().catch(() => ({}));
+  if (!prepareResponse.ok || !uploadInfo?.signedUrl || !uploadInfo?.objectPath) {
+    throw new Error(uploadInfo?.error || `تعذر تجهيز رفع ملف PDF (${prepareResponse.status}).`);
+  }
+  if (lifecycle?.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
+  const uploadResponse = await fetch(String(uploadInfo.signedUrl), {
+    method: 'PUT',
+    headers: { 'Content-Type': file.type || 'application/pdf', 'x-upsert': 'false' },
+    body: file,
+    ...(lifecycle?.signal ? { signal: lifecycle.signal } : {}),
+  });
+  if (!uploadResponse.ok) {
+    const detail = await uploadResponse.text().catch(() => '');
+    throw new Error(`تعذر رفع ملف PDF إلى التخزين (${uploadResponse.status})${detail ? `: ${detail.slice(0, 160)}` : ''}.`);
+  }
+  const text = await requestSavedJob(
+    'ocr',
+    { storagePath: String(uploadInfo.objectPath), mimeType: file.type || 'application/pdf', fileName: file.name, recoveryScope: sanitizeStoragePart(storageScope) },
+    undefined,
+    userId,
+    undefined,
+    storageScope,
+    { fileName: file.name, mimeType: file.type || 'application/pdf' },
+    jobId,
+    lifecycle,
+  );
+  return { text, jobId };
+}
+
 export async function runSavedOcrTask(
   base64Data: string,
   mimeType: string,
