@@ -463,11 +463,12 @@ export async function runSavedOcrTask(
   userId?: string,
   requestedJobId?: string,
   lifecycle?: SavedOcrTaskLifecycle,
+  extraPayload: Record<string, unknown> = {},
 ): Promise<{ text: string; jobId: string }> {
   const jobId = requestedJobId || makeJobId();
   const text = await requestSavedJob(
     'ocr',
-    { base64Data, mimeType, fileName, recoveryScope: sanitizeStoragePart(storageScope) },
+    { base64Data, mimeType, fileName, recoveryScope: sanitizeStoragePart(storageScope), ...extraPayload },
     undefined,
     userId,
     undefined,
