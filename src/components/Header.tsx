@@ -15,6 +15,7 @@ import {
   Menu,
   Download,
   LogOut,
+  Bell,
 } from 'lucide-react';
 import { UserRole } from '../utils/deviceFingerprint.ts';
 
@@ -37,6 +38,7 @@ interface HeaderProps {
   theme?: 'warm-light' | 'dark';
   onToggleTheme?: () => void;
   onLogout?: () => void;
+  onEnableNotifications?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -50,6 +52,7 @@ export const Header: React.FC<HeaderProps> = ({
   theme = 'warm-light',
   onToggleTheme,
   onLogout,
+  onEnableNotifications,
 }) => {
   const isClient = false; // The platform is lawyer-only; litigant accounts are not supported.
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -121,6 +124,15 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           <div className="flex items-center gap-2 mr-1">
+            <button
+              type="button"
+              onClick={onEnableNotifications}
+              className="flex items-center gap-1.5 bg-slate-800/90 hover:bg-slate-700 text-amber-200 border border-slate-700 px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer transition-all shadow-sm"
+              title="تفعيل إشعارات انتهاء عمليات الذكاء الاصطناعي واستخراج الملفات"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">تفعيل الإشعارات</span>
+            </button>
             {/* Theme Switcher Toggle */}
             <button
               onClick={onToggleTheme}

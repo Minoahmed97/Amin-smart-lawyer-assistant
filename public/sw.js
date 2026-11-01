@@ -98,7 +98,10 @@ self.addEventListener("push", (event) => {
           ? data.url
           : "/",
     },
-    tag: "amin-ai-task-completion",
+    // Keep each completed operation visible instead of replacing the previous one.
+    tag: typeof data.tag === "string" && data.tag
+      ? data.tag
+      : `amin-ai-${Date.now()}`,
     renotify: true,
   };
   event.waitUntil(self.registration.showNotification(title, options));

@@ -412,6 +412,26 @@ export async function extractTextFromAnyFile(
     throw new Error(`تعذر استخراج نص من "${fileName}".`);
   }
 
+  // DOC/DOCX are normally extracted locally. Notify while the page is active;
+  // fallback jobs use the server Push channel and can notify after the page closes.
+  if (!backgroundJobId && /\.(docx?|doc)$/i.test(fileName)) {
+    try {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && 'serviceWorker' in navigator) {
+        await navigator.serviceWorker.register('/sw.js');
+        const registration = await navigator.serviceWorker.ready;
+        await registration.showNotification('اكتمل استخراج ملف Word', {
+          body: `تم استخراج النص من ${fileName} بنجاح.`,
+          icon: '/pwa-icon-192.png',
+          badge: '/pwa-icon-192.png',
+          tag: `amin-word-${Date.now()}`,
+          data: { url: '/' },
+        });
+      }
+    } catch (notificationError) {
+      console.warn('Word extraction notification could not be displayed:', notificationError);
+    }
+  }
+
   return {
     fileName,
     fileType: file.type || lowerName.split('.').pop() || 'unknown',

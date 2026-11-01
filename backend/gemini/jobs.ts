@@ -86,7 +86,7 @@ async function savePushSubscription(userId: string, subscription: any) {
   if (!response.ok) throw new Error('تعذر حفظ اشتراك الإشعارات في قاعدة البيانات.');
 }
 
-async function sendCompletionPush(userId: string, jobId: string, taskType: string, status: 'completed' | 'failed') {
+async function sendCompletionPush(userId: string, jobId: string, taskType: string, status: 'completed' | 'failed', fileName = '') {
   try {
     if (!configureWebPush()) return;
     const response = await supabase(`${PUSH_TABLE}?select=id,endpoint,subscription&user_id=eq.${encodeURIComponent(userId)}`);
@@ -96,10 +96,11 @@ async function sendCompletionPush(userId: string, jobId: string, taskType: strin
       'counter-brief': 'توليد المذكرة', deconstruct: 'تحليل المستند', qualify: 'التكييف القانوني', refine: 'مراجعة الصياغة', 'legal-chat': 'الدردشة القانونية', ocr: 'استخراج النص من الملف',
     };
     const title = status === 'completed' ? 'اكتملت المهمة القانونية' : 'تعذّر إكمال المهمة القانونية';
-    const body = `${taskNames[taskType] || 'المهمة'} ${status === 'completed' ? 'جاهزة؛ افتح التطبيق لعرض النتيجة.' : 'لم تكتمل؛ افتح التطبيق لمعرفة التفاصيل.'}`;
+    const fileLabel = taskType === 'ocr' && fileName ? ` (${String(fileName).slice(0, 120)})` : '';
+    const body = `${taskNames[taskType] || 'المهمة'}${fileLabel} ${status === 'completed' ? 'اكتملت؛ افتح التطبيق لعرض النتيجة.' : 'لم تكتمل؛ افتح التطبيق لمعرفة التفاصيل.'}`;
     await Promise.all((Array.isArray(subscriptions) ? subscriptions : []).map(async (row: any) => {
       try {
-        await webpush.sendNotification(row.subscription, JSON.stringify({ title, body, url: `/?jobId=${encodeURIComponent(jobId)}` }), { TTL: 60 * 60 * 24 });
+        await webpush.sendNotification(row.subscription, JSON.stringify({ title, body, tag: `amin-ai-${jobId}`, url: `/?jobId=${encodeURIComponent(jobId)}` }), { TTL: 60 * 60 * 24 });
       } catch (error: any) {
         if (error?.statusCode === 404 || error?.statusCode === 410) {
           await supabase(`${PUSH_TABLE}?id=eq.${encodeURIComponent(row.id)}`, { method: 'DELETE' }).catch(() => undefined);
@@ -500,7 +501,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       } else {
         await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
       }
-      await sendCompletionPush(userId, jobId, taskType, 'failed');
+      await sendCompletionPush(userId, jobId, taskType, 'failed', payload.fileName || '');
       return;
     }
     phase = 'persist-success';
@@ -519,7 +520,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     } else {
       await patchJob(jobId, userId, completionValues);
     }
-    await sendCompletionPush(userId, jobId, taskType, 'completed');
+    await sendCompletionPush(userId, jobId, taskType, 'completed', payload.fileName || '');
   } catch (err: any) {
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     await pendingWrite.catch(() => {});
@@ -535,7 +536,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       } else {
         await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
       }
-      await sendCompletionPush(userId, jobId, taskType, 'failed');
+      await sendCompletionPush(userId, jobId, taskType, 'failed', payload.fileName || '');
     } catch (persistError: any) {
       console.error('AI job failure could not be persisted:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(persistError?.message || persistError) }));
     }

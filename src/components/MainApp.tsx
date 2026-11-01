@@ -18,6 +18,7 @@ import {
 } from '../utils/deviceFingerprint.ts';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { initAnalyticsTracking, stopAnalyticsTracking, recordAnalyticsEvent } from '../services/analyticsService.ts';
+import { enableCompletionPushNotifications } from '../services/aiService.ts';
 import { Scale, Shield, AlertOctagon, CreditCard, FolderArchive, AlertTriangle, Megaphone } from 'lucide-react';
 
 interface MainAppProps {
@@ -179,6 +180,25 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     setCredits(newCredits);
   };
 
+  const handleEnableNotifications = async () => {
+    if (typeof Notification === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      window.alert('هذا المتصفح أو الجهاز لا يدعم إشعارات Push المطلوبة.');
+      return;
+    }
+    if (Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        window.alert('لم يتم منح إذن الإشعارات. يمكنك تفعيله من إعدادات الموقع في المتصفح.');
+        return;
+      }
+    }
+    const result = await enableCompletionPushNotifications();
+    if (result === 'enabled') window.alert('تم تفعيل إشعارات انتهاء المهام التي تُعالج على الخادم، وستصلك حتى عند إغلاق التطبيق. استخراج Word المحلي سيعرض إشعارًا إذا ظل التطبيق مفتوحًا أثناء الاستخراج.');
+    else if (result === 'unsupported') window.alert('المتصفح أو الجهاز لا يدعم إشعارات Push المطلوبة.');
+    else if (result === 'denied') window.alert('إذن الإشعارات مرفوض من إعدادات المتصفح. فعّله للموقع ثم أعد المحاولة.');
+    else window.alert('تعذر حفظ اشتراك الإشعارات. تحقق من إعدادات VAPID والاتصال ثم أعد المحاولة.');
+  };
+
   return (
     <div
       className={`min-h-screen min-h-[100dvh] flex flex-col font-sans transition-colors duration-200 overflow-x-hidden ${
@@ -236,6 +256,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         theme={theme}
         onToggleTheme={toggleTheme}
         onLogout={onLogout}
+        onEnableNotifications={handleEnableNotifications}
       />
 
       {/* Subscription & Pricing Modal */}
