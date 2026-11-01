@@ -1,4 +1,4 @@
-import { executeWithKeyRotation } from '../keyRotation.ts';
+import { executeWithKeyRotation, GEMINI_MODELS } from '../keyRotation.ts';
 
 type LegalReference = { kind: 'case' | 'statute'; label: string; number: string; year?: string; article?: string };
 type GroundedSource = { uri: string; title: string; domain: string; official: boolean };
@@ -44,7 +44,7 @@ function extractReferences(text: string): LegalReference[] {
     const possible = articles.find((article) => text.slice(Math.max(0, text.indexOf(ref.label) - 250), text.indexOf(ref.label) + 500).match(new RegExp(`(?:المادة|ماده)\\s*\\(?\\s*${article}\\b`)));
     if (possible) ref.article = possible;
   }
-  return refs.slice(0, 12);
+  return refs.slice(0, 6);
 }
 
 function getGroundedSources(response: any): GroundedSource[] {
@@ -121,7 +121,7 @@ export async function verifyLegalReferences(text: string): Promise<string> {
   try {
     const verification = await executeWithKeyRotation(async (ai) => {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: GEMINI_MODELS[0],
         contents: `ابحث عبر Google Search عن المراجع القانونية المصرية التالية فقط، وأعد نتائج البحث بمصادرها. لا تخترع مصادر ولا تستنتج صحة المرجع من الذاكرة. إذا لم تجد نتيجة، قل ذلك. المراجع:\n${queries}`,
         config: {
           temperature: 0,
@@ -137,7 +137,7 @@ export async function verifyLegalReferences(text: string): Promise<string> {
     }
     const rows: string[] = [];
     for (const reference of references) {
-      const checks = await Promise.all(sources.map(async (source) => ({
+      const checks = await Promise.all(sources.slice(0, 4).map(async (source) => ({
         source,
         result: await inspectSource(source, reference),
       })));
