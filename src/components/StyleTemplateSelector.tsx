@@ -31,7 +31,16 @@ export const StyleTemplateSelector: React.FC<StyleTemplateSelectorProps> = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          const removedBuiltInIds = new Set([
+            'tmpl-criminal-defense-general',
+            'tmpl-appeal-memorandum',
+            'tmpl-family-memo',
+            'tmpl-labor-memo',
+            'tmpl-execution-motion',
+            'tmpl-legal-complaint',
+            'tmpl-oral-pleading',
+          ]);
+          return parsed.filter((item: StyleTemplate) => !removedBuiltInIds.has(item?.id));
         }
       }
     } catch (e) {
