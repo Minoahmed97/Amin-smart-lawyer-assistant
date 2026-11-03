@@ -31,8 +31,7 @@ export const StyleTemplateSelector: React.FC<StyleTemplateSelectorProps> = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const savedIds = new Set(parsed.map((item: StyleTemplate) => item?.id));
-          return [...DEFAULT_STYLE_TEMPLATES.filter((item) => !savedIds.has(item.id)), ...parsed];
+          return parsed;
         }
       }
     } catch (e) {
