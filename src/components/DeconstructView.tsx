@@ -61,6 +61,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   const [responseWorkType, setResponseWorkType] = useState<string>(() => {
     return persistentStorage.getItem('judicial_deconstruct_response_work_type', '__smart__') || '__smart__';
   });
+  const isCriminalCase = /جنائي|جنايات|جنح|اتهام|النيابة|محضر شرطة|تحقيقات النيابة|مخدرات|سرقة|قتل|ضرب|تزوير|إيصال أمانة/i.test(caseNature);
   const [ourPosition, setOurPosition] = useState<string>(() => {
     return persistentStorage.getItem('judicial_deconstruct_position', '');
   });
@@ -459,6 +460,11 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
                   نوع المستند الذي تريد الرد به:
                 </label>
+                {isCriminalCase && (
+                  <button type="button" onClick={() => setResponseWorkType('مرافعة شفوية')} className={`mb-2 px-3 py-2 rounded-lg border text-xs font-semibold ${responseWorkType === 'مرافعة شفوية' ? 'bg-amber-700 border-amber-500 text-white' : 'bg-slate-900 border-slate-700 text-amber-200'}`}>
+                    إعداد مرافعة شفوية للقضية الجنائية
+                  </button>
+                )}
                 <select
                   value={responseWorkType}
                   onChange={(e) => setResponseWorkType(e.target.value)}
@@ -471,7 +477,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                   <option value="حافظة مستندات">حافظة مستندات</option>
                   <option value="إنذار">إنذار</option>
                   <option value="تعقيب">تعقيب</option>
-                  <option value="مرافعة شفوية">مرافعة شفوية أمام المحكمة</option>
+                  
                   <option value="إجراء أو مستند قانوني آخر">إجراء أو مستند قانوني آخر</option>
                 </select>
               </div>
