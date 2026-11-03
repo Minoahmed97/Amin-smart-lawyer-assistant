@@ -62,6 +62,9 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     return persistentStorage.getItem('judicial_deconstruct_response_work_type', '__smart__') || '__smart__';
   });
   const isCriminalCase = /جنائي|جنايات|جنح|اتهام|النيابة|محضر شرطة|تحقيقات النيابة|مخدرات|سرقة|قتل|ضرب|تزوير|إيصال أمانة/i.test(caseNature);
+  useEffect(() => {
+    if (!isCriminalCase && responseWorkType === 'مرافعة شفوية') setResponseWorkType('__smart__');
+  }, [isCriminalCase, responseWorkType]);
   const [ourPosition, setOurPosition] = useState<string>(() => {
     return persistentStorage.getItem('judicial_deconstruct_position', '');
   });
