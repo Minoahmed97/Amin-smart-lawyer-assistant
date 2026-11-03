@@ -18,6 +18,7 @@ import packagesHandler from '../backend/admin/packages.ts';
 import heartbeatHandler from '../backend/analytics/heartbeat.ts';
 import eventHandler from '../backend/analytics/event.ts';
 import deconstructHandler from '../backend/gemini/deconstruct.ts';
+import legalDefenseSearchHandler from '../backend/gemini/legal-defense-search.ts';
 import counterBriefHandler from '../backend/gemini/counter-brief.ts';
 import aiGenerationJobsHandler from '../backend/gemini/jobs.ts';
 import qualifyHandler from '../backend/gemini/qualify.ts';
@@ -66,6 +67,7 @@ const ROUTES: Record<string, Handler> = {
   '/analytics/event': eventHandler,
 
   '/gemini/deconstruct': deconstructHandler,
+  '/gemini/legal-defense-search': legalDefenseSearchHandler,
   '/gemini/counter-brief': counterBriefHandler,
   '/gemini/jobs': aiGenerationJobsHandler,
   '/gemini/qualify': qualifyHandler,
