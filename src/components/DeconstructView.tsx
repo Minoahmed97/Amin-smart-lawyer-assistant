@@ -471,6 +471,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                   <option value="حافظة مستندات">حافظة مستندات</option>
                   <option value="إنذار">إنذار</option>
                   <option value="تعقيب">تعقيب</option>
+                  <option value="مرافعة شفوية">مرافعة شفوية أمام المحكمة</option>
                   <option value="إجراء أو مستند قانوني آخر">إجراء أو مستند قانوني آخر</option>
                 </select>
               </div>
