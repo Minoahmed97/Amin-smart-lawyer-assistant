@@ -30,7 +30,7 @@ export default async function handler(req: any, res: any) {
         url: String(web.uri),
       }));
       return { summary: String(response?.text || '').trim(), sources };
-    }, GEMINI_MODELS, undefined, true, { providerAttempt: 'gemini-primary' });
+    }, GEMINI_MODELS);
 
     if (!result.summary) return res.status(502).json({ error: 'لم يُرجع البحث نتيجة موثوقة. حاول بصياغة أخرى.' });
     return res.status(200).json({ ...result, disclaimer: 'نتائج البحث استرشادية؛ راجع المصدر والنص القانوني الساري قبل الاستناد إليها.' });
