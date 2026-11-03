@@ -1,15 +1,23 @@
 import React, { useState } from 'react';
+import { getSavedOnlineDefenses, saveOnlineDefense } from '../utils/legalDefenseLibrary.ts';
+import { getSessionToken } from '../services/authService.ts';
 import { EGYPTIAN_LEGAL_DEFENSES } from '../data/egyptianDefenses.ts';
 import { BookOpen, Search, Copy, Check, ArrowRight, Scale, ShieldCheck, BookmarkCheck } from 'lucide-react';
 
 interface DefensesCodexViewProps {
   onInsertDefense: (snippet: string) => void;
+  userId?: string;
 }
 
-export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDefense }) => {
+export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDefense, userId }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [onlineQuery, setOnlineQuery] = useState('');
+  const [onlineResults, setOnlineResults] = useState<any[]>([]);
+  const [onlineLoading, setOnlineLoading] = useState(false);
+  const [onlineError, setOnlineError] = useState('');
+  const [savedOnline, setSavedOnline] = useState(() => getSavedOnlineDefenses(userId));
 
   const categories = [
     { id: 'all', label: 'كافة الدفوع' },
@@ -20,7 +28,7 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
     { id: 'إجراءات ومواعيد', label: 'دفوع شكلية' },
   ];
 
-  const filteredDefenses = EGYPTIAN_LEGAL_DEFENSES.filter((def) => {
+  const filteredDefenses = [...EGYPTIAN_LEGAL_DEFENSES, ...savedOnline.map((item: any) => ({ ...item, statute: item.legalBasis, article: 'مصدر إلكتروني', cassationRule: item.summary || '', draftingSnippet: item.draftingSnippet }))].filter((def) => {
     const matchesCategory = selectedCategory === 'all' || def.category === selectedCategory;
     const matchesSearch =
       def.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -30,6 +38,19 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
       def.cassationRule.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesCategory && matchesSearch;
   });
+
+  const searchOnlineDefenses = async () => {
+    if (onlineQuery.trim().length < 3) { setOnlineError('اكتب موضوع الدفع أو كلمتين على الأقل.'); return; }
+    setOnlineLoading(true); setOnlineError(''); setOnlineResults([]);
+    try {
+      const token = getSessionToken();
+      const response = await fetch('/api/gemini/legal-defense-search', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ query: onlineQuery.trim() }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'تعذر البحث على الإنترنت.');
+      setOnlineResults([{ id: 'online-search-result', name: `نتائج البحث عن: ${onlineQuery.trim()}`, category: 'بحث قانوني عبر الإنترنت', summary: data.summary || '', legalBasis: 'راجع المصادر المرفقة وتحقق من النص القانوني الساري.', draftingSnippet: data.summary || '', sources: Array.isArray(data.sources) ? data.sources : [] }]);
+    } catch (error: any) { setOnlineError(error?.message || 'تعذر البحث حالياً.'); }
+    finally { setOnlineLoading(false); }
+  };
 
   const copySnippet = (id: string, snippet: string) => {
     navigator.clipboard.writeText(snippet);
@@ -89,6 +110,22 @@ export const DefensesCodexView: React.FC<DefensesCodexViewProps> = ({ onInsertDe
           ))}
         </div>
       </div>
+
+      <section className="bg-[#0f172a] border border-emerald-700/50 rounded-2xl p-4 shadow-lg space-y-3">
+        <h3 className="text-sm font-bold text-emerald-300">بحث قانوني على الإنترنت</h3>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input value={onlineQuery} onChange={(e) => setOnlineQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void searchOnlineDefenses(); }} placeholder="مثال: الدفع بانتفاء ركن التسليم في إيصال الأمانة" className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white" />
+          <button type="button" onClick={() => void searchOnlineDefenses()} disabled={onlineLoading} className="px-4 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">{onlineLoading ? 'جاري البحث...' : 'ابحث على الإنترنت'}</button>
+        </div>
+        {onlineError && <p className="text-xs text-rose-300">{onlineError}</p>}
+        {onlineResults.map((result) => <div key={result.id} className="rounded-xl border border-slate-700 bg-slate-900 p-3 space-y-2">
+          <p className="text-xs text-slate-200 whitespace-pre-wrap leading-7">{result.summary}</p>
+          {result.sources.map((source: any, index: number) => <p key={index} className="text-xs"><a href={source.url} target="_blank" rel="noopener noreferrer" className="text-sky-300 underline">{source.title || source.url}</a></p>)}
+          <button type="button" onClick={() => { try { const next = saveOnlineDefense({ name: result.name, category: result.category, summary: result.summary, legalBasis: result.legalBasis, draftingSnippet: result.draftingSnippet, sourceTitle: result.sources[0]?.title || 'بحث Google عبر Gemini', sourceUrl: result.sources[0]?.url || '' }, userId); setSavedOnline(next); setOnlineError('تم حفظ نتيجة البحث في موسوعة هذا الحساب على هذا الجهاز.'); } catch (error: any) { setOnlineError(error?.message || 'تعذر الحفظ.'); } }} className="px-3 py-2 rounded-lg bg-emerald-700 text-white text-xs font-bold">إضافة إلى موسوعة الدفوع</button>
+        </div>)}
+        {savedOnline.length > 0 && <p className="text-[11px] text-emerald-300">دفوع الإنترنت المحفوظة لهذا الحساب على هذا الجهاز: {savedOnline.length}</p>}
+        <p className="text-[10px] text-slate-400">المحتوى استرشادي؛ افتح المصدر وتحقق من انطباقه والنصوص السارية قبل الاستناد إليه.</p>
+      </section>
 
       {/* Cards Grid */}
       <div className="space-y-4">
