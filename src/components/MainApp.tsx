@@ -315,7 +315,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
             </div>
 
             <div style={{ display: activeTab === 'defenses' ? 'block' : 'none' }}>
-              <DefensesCodexView onInsertDefense={handleInsertDefenseFromCodex} />
+              <DefensesCodexView userId={userId} onInsertDefense={handleInsertDefenseFromCodex} />
             </div>
 
             <div style={{ display: activeTab === 'vault' ? 'block' : 'none' }}>
