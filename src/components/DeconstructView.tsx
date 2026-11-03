@@ -215,45 +215,57 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     }
   };
 
-  const extractTableSection = (text: string) => {
+  const normalizeOutputHeading = (line: string) =>
+    line
+      .replace(/^\s*#+\s*/, '')
+      .replace(/[\[\]【】*_`]/g, '')
+      .replace(/[\u064B-\u065F\u0670ـ]/g, '')
+      .replace(/^\s*[\d٠-٩۰-۹]+\s*[-.)ـ:：]+\s*/, '')
+      .trim()
+      .toLowerCase();
+
+  const findOutputHeading = (text: string, terms: string[]) => {
     const lines = text.split('\n');
-    const tableLines = lines.filter((l) => l.trim().startsWith('|'));
-    if (tableLines.length > 1) {
-      return tableLines.join('\n');
+    let offset = 0;
+    for (const line of lines) {
+      const normalized = normalizeOutputHeading(line);
+      if (terms.some((term) => normalized.includes(term))) return offset;
+      offset += line.length + 1;
     }
-    return '';
+    return -1;
+  };
+
+  const extractTableSection = (text: string) => {
+    const start = findOutputHeading(text, ['جدول الثغرات']);
+    if (start !== -1) {
+      const end = findOutputHeading(text.slice(start + 1), ['المذكرة المقابلة المقترحة']);
+      return text.slice(start, end === -1 ? undefined : start + 1 + end).trim();
+    }
+    const tableLines = text.split('\n').filter((line) => line.trim().startsWith('|'));
+    return tableLines.length > 1
+      ? tableLines.join('\n')
+      : 'لم يتضمن التقرير المحفوظ جدول ثغرات مستقلًا. أعد تنفيذ التفكيك للحصول على الجدول بالتنسيق الجديد.';
   };
 
   const extractCounterBrief = (text: string) => {
-    const markers = [
-      '2- [المذكرة المقابلة المقترحة]:',
-      '[المذكرة المقابلة المقترحة]:',
-      'باسم الشعب',
-      'مذكرة بدفوع'
-    ];
-    for (const m of markers) {
-      const idx = text.indexOf(m);
-      if (idx !== -1) {
-        return text.substring(idx);
-      }
+    const heading = findOutputHeading(text, ['المذكرة المقابلة المقترحة']);
+    if (heading !== -1) return text.slice(heading).trim();
+    for (const marker of ['باسم الشعب', 'مذكرة بدفوع']) {
+      const idx = text.indexOf(marker);
+      if (idx !== -1) return text.slice(idx).trim();
     }
     return text;
   };
 
   const extractDeconstructOnly = (text: string) => {
-    const markers = [
-      '12- [المذكرة المقابلة المقترحة]:',
-      '12- المذكرة المقابلة المقترحة:',
-      '2- [المذكرة المقابلة المقترحة]:',
-      '[المذكرة المقابلة المقترحة]:',
-    ];
-    const indexes = markers
-      .map((marker) => text.indexOf(marker))
-      .filter((idx) => idx !== -1);
-    const idx = indexes.length ? Math.min(...indexes) : -1;
-    if (idx !== -1) {
-      return text.substring(0, idx).trim();
+    const start = findOutputHeading(text, ['التحليل والتفكيك']);
+    const memo = findOutputHeading(text, ['المذكرة المقابلة المقترحة']);
+    const table = findOutputHeading(text, ['جدول الثغرات']);
+    if (start !== -1) {
+      const ends = [memo, table].filter((idx) => idx > start);
+      return text.slice(start, ends.length ? Math.min(...ends) : undefined).trim();
     }
+    if (memo !== -1) return text.slice(0, memo).trim();
     return text;
   };
 
@@ -271,7 +283,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     }
     if (activeOutputTab === 'table') {
       const tbl = extractTableSection(analysisResult);
-      return tbl || analysisResult;
+      return tbl;
     }
     return analysisResult;
   };
@@ -630,7 +642,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-1.5 mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <button
-                    onClick={() => setActiveOutputTab('full')}
+                    onClick={() => { setActiveOutputTab('full'); if (isLiveEditing) setIsLiveEditing(false); }}
                     className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeOutputTab === 'full'
                         ? 'bg-[#b45309] text-white shadow'
@@ -641,7 +653,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     <span>التقرير كاملاً</span>
                   </button>
                   <button
-                    onClick={() => setActiveOutputTab('counterBrief')}
+                    onClick={() => { setActiveOutputTab('counterBrief'); if (isLiveEditing) setIsLiveEditing(false); }}
                     className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeOutputTab === 'counterBrief'
                         ? 'bg-emerald-700 text-white shadow'
@@ -652,7 +664,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     <span>المذكرة المقابلة فقط</span>
                   </button>
                   <button
-                    onClick={() => setActiveOutputTab('analysis')}
+                    onClick={() => { setActiveOutputTab('analysis'); if (isLiveEditing) setIsLiveEditing(false); }}
                     className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeOutputTab === 'analysis'
                         ? 'bg-rose-700 text-white shadow'
@@ -663,7 +675,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     <span>التحليل والتفكيك فقط</span>
                   </button>
                   <button
-                    onClick={() => setActiveOutputTab('table')}
+                    onClick={() => { setActiveOutputTab('table'); if (isLiveEditing) setIsLiveEditing(false); }}
                     className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                       activeOutputTab === 'table'
                         ? 'bg-blue-700 text-white shadow'
