@@ -1,4 +1,5 @@
 import { getLawyerStyleContext } from '../utils/legalVaultService.ts';
+import { getLegalDefenseLibraryContext } from '../utils/legalDefenseLibrary.ts';
 import { getSessionToken } from './authService.ts';
 
 // Throttling control to prevent burst requests
@@ -578,6 +579,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
     ourPosition: params.ourPosition || '',
     additionalFacts: params.additionalFacts || '',
     vaultContext: lawyerVaultContext,
+    defenseLibraryContext: getLegalDefenseLibraryContext(params.userId),
   };
 
   try {
@@ -608,6 +610,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
       ...requestParams,
       effectiveWorkType,
       vaultContext: lawyerVaultContext,
+      defenseLibraryContext: getLegalDefenseLibraryContext(params.userId),
     }, onChunk, params.userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
