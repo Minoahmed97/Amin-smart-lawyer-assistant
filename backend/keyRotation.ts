@@ -477,6 +477,8 @@ type KeyRotationExecutionOptions = {
   deadlineAt?: number;
   previousProviderError?: string;
   providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
+  /** Allocate more of the existing generation window to Gemini for large legal prompts. */
+  geminiShare?: number;
   /** Previously used key/model pairs are avoided first during continuation. */
   avoidPairs?: string[];
 };
@@ -647,7 +649,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     for (let round = 0; round < 2; round++) {
       const roundStart = overallStart + Math.floor(totalBudget * round / 2);
       const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
+      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * (executionOptions?.geminiShare ?? 0.55));
       if (deadlineAt - Date.now() < 10000) break;
       let anyProviderEmittedText = false;
       try {
