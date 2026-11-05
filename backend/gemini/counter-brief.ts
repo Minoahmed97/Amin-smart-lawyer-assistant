@@ -92,6 +92,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               for await (const chunk of stream) {
                 const candidateReason = chunk?.candidates?.[0]?.finishReason;
                 if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+                // Keep consuming the provider stream after the completion marker so
+                // the final chunk can supply the real finishReason (including MAX_TOKENS).
+                if (segmentCompleted) continue;
                 const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
                 if (!chunkText) continue;
                 receivedText = true;
@@ -102,7 +105,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
                   pendingMarkerTail = '';
                   segmentCompleted = true;
                   if (visibleText) yield { text: visibleText };
-                  break;
+                  continue;
                 }
                 const keepLength = completionMarker.length - 1;
                 const splitAt = Math.max(0, candidateText.length - keepLength);
