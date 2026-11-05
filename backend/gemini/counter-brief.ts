@@ -173,7 +173,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         // Drafting must not treat a marker as sufficient when the model explicitly
         // reports that the response was truncated by its output-token limit.
         const tokenLimitFinish = ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finishReason);
-        if (!tokenLimitFinish) {
+        if (!(options.draftingOnly && tokenLimitFinish)) {
           completed = true;
           break;
         }
