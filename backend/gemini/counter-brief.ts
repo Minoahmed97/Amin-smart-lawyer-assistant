@@ -48,9 +48,25 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
-  const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. احتفظ بجميع الوقائع والطلبات والدفوع والأسماء والتواريخ وسياق القضية المحدد في الطلب الأصلي، ولا تستبدلها أو تغيّرها. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
-    : optimizedPrompt;
+  // Keep the complete original case facts, lawyer-vault context, and legal instructions
+  // in every continuation, but avoid resending the entire growing draft each time.
+  // A bounded tail plus completed section headings preserves continuity with a stable input size.
+  const makeContinuationPrompt = () => {
+    if (!accumulatedText) return optimizedPrompt;
+    const completedHeadings = Array.from(
+      accumulatedText.matchAll(/^#{1,4}\\s+(.+)$/gm),
+      (match) => String(match[1] || '').trim(),
+    ).filter(Boolean);
+    const headingSummary = completedHeadings.length
+      ? completedHeadings.map((heading, index) => String(index + 1) + '. ' + heading).join(' | ')
+      : 'لم تظهر عناوين Markdown صريحة حتى الآن';
+    const recentContext = accumulatedText.slice(-18000);
+    return optimizedPrompt + '\\n\\n[حالة استكمال داخلية — لا تُدرج هذا القسم في المستند]' +
+      '\\nالأقسام والعناوين التي سبق توليدها: ' + headingSummary +
+      '\\nمقتطف النهاية من النص الذي تم توليده بالفعل (لضبط موضع الاستكمال ومنع التكرار):\\n--- بداية المقتطف ---\\n' +
+      recentContext +
+      '\\n--- نهاية المقتطف ---\\n\\nتابع من آخر موضع في النص السابق دون إعادة كتابة المقتطف أو تلخيصه أو إعادة أي قسم مكتمل. المقتطف الأخير جزء من المستند نفسه وليس نصاً مطلوباً نسخه مرة أخرى. احتفظ بجميع الوقائع والطلبات والدفوع والأسماء والتواريخ وسياق القضية المحدد في الطلب الأصلي؛ فهذه البيانات والتعليمات الأصلية كاملة وموجودة أعلاه، ولا تستبدلها أو تغيّرها. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ' + completionMarker + ' في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.';
+  };
 
   if (onChunk) {
     let completed = false;
