@@ -38,11 +38,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
   const maxContinuations = 5;
   const usedPairs = new Set<string>();
-  const promptSize = prompt.length;
-  // Keep the worker inside Vercel's 300-second ceiling, reserving 15 seconds for overhead.
-  const generationBudgetMs = Math.min(285000, 270000 + Math.max(0, Math.ceil((promptSize - 15000) / 1000) * 1000));
-  const geminiShare = promptSize >= 40000 ? 0.85 : promptSize >= 20000 ? 0.75 : 0.55;
-  const deadlineAt = Date.now() + generationBudgetMs;
+  const deadlineAt = Date.now() + 270000;
   let accumulatedText = '';
   let continuationCount = 0;
   let lastError: any = null;
@@ -150,7 +146,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           segmentPrefixResolved = true;
         }, undefined, undefined, false, {
           deadlineAt,
-          geminiShare,
           avoidPairs: Array.from(usedPairs),
         });
       } catch (error: any) {
