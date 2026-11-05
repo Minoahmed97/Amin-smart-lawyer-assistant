@@ -44,19 +44,18 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
-  // نعيد إرسال تعليمات المهمة الأصلية في كل استكمال للحفاظ على الوقائع والطلبات
-  // وسياق الخزانة والبصمة الأسلوبية، مع استخدام آخر جزء فقط كمرساة لمنع التكرار.
+  // في الاستكمال لا نعيد إرسال المستند كاملاً ولا سياق الخزانة مرة أخرى.
+  // نرسل فقط آخر جزء كافٍ لتثبيت موضع التوقف؛ أما تحليل الوقائع والقالب فقد تم
+  // في طلب التوليد الأول، وبذلك لا يتضخم كل طلب استكمال مع طول المستند.
   const continuationTailLength = 6000;
   const getContinuationTail = () => accumulatedText.slice(-continuationTailLength);
   const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt}
-
-[استكمال إلزامي لمستند قانوني غير مكتمل]
+    ? `[استكمال إلزامي لمستند قانوني غير مكتمل]
 هذا هو آخر جزء من المستند الذي توقف عنده الإخراج، وهو مرساة الاستكمال فقط وليس المستند كاملاً:
 ---
 ${getContinuationTail()}
 ---
-تابع مباشرة من آخر موضع وصل إليه النص أعلاه، دون إعادة كتابة الجزء الظاهر أو تلخيصه أو بدء المستند من جديد. حافظ على نفس الوقائع والبناء القانوني والبصمة والأسلوب والترتيب المحددة في تعليمات المهمة الأصلية أعلاه. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. وفي آخر النص فقط أضف هذه العلامة حرفياً: ${completionMarker}. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`
+تابع مباشرة من آخر موضع وصل إليه النص أعلاه، دون إعادة كتابة الجزء الظاهر أو تلخيصه أو بدء المستند من جديد. حافظ على نفس الوقائع والبناء القانوني والبصمة والأسلوب والترتيب الذين بُني عليها المستند في الجزء السابق. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. وفي آخر النص فقط أضف هذه العلامة حرفياً: ${completionMarker}. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`
     : optimizedPrompt;
 
   if (onChunk) {
@@ -85,19 +84,19 @@ ${getContinuationTail()}
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            const stream = await ai.models.generateContentStream({
-              model,
-              contents: segmentPrompt,
-              config: {
-                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                temperature: 0.15,
-                maxOutputTokens: 32768,
-                ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-                thinkingConfig: { thinkingLevel: 'low' },
-              },
-            });
-
             try {
+              const stream = await ai.models.generateContentStream({
+                model,
+                contents: segmentPrompt,
+                config: {
+                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                  temperature: 0.15,
+                  maxOutputTokens: 32768,
+                  ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+                  thinkingConfig: { thinkingLevel: 'low' },
+                },
+              });
+
               for await (const chunk of stream) {
                 const candidateReason = chunk?.candidates?.[0]?.finishReason;
                 if (candidateReason) finishReason = String(candidateReason).toUpperCase();
@@ -119,7 +118,16 @@ ${getContinuationTail()}
                 pendingMarkerTail = candidateText.slice(splitAt);
                 if (visibleText) yield { text: visibleText };
               }
-            } catch (error) {
+            } catch (error: any) {
+              console.error('[counter-brief] provider stream error', JSON.stringify({
+                provider: key === 'openrouter' ? 'OpenRouter' : 'Gemini',
+                model,
+                status: Number(error?.status || error?.statusCode || error?.response?.status) || null,
+                code: String(error?.code || error?.error?.status || '').slice(0, 120),
+                message: String(error?.message || error || 'Unknown provider error').slice(0, 700),
+                finishReason: finishReason || null,
+                receivedText,
+              }));
               if (pendingMarkerTail) yield { text: pendingMarkerTail };
               pendingMarkerTail = '';
               throw error;
