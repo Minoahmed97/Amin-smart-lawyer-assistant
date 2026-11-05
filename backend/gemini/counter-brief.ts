@@ -26,7 +26,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; draftingOnly?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -49,7 +49,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let previousPair = '';
 
   const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
+    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. احتفظ بجميع الوقائع والطلبات والدفوع والأسماء والتواريخ وسياق القضية المحدد في الطلب الأصلي، ولا تستبدلها أو تغيّرها. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
     : optimizedPrompt;
 
   if (onChunk) {
@@ -170,8 +170,13 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       }
 
       if (segmentCompleted) {
-        completed = true;
-        break;
+        // Drafting must not treat a marker as sufficient when the model explicitly
+        // reports that the response was truncated by its output-token limit.
+        const tokenLimitFinish = ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finishReason);
+        if (!tokenLimitFinish) {
+          completed = true;
+          break;
+        }
       }
       if (!segmentBuffer.trim() || accumulatedText.length === segmentBaseText.length) {
         throw segmentError || new Error('لم يصل نص جديد أثناء محاولة استكمال المستند.');
@@ -262,7 +267,10 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     if (activePair) usedPairs.add(activePair);
     const addition = mergeContinuation(accumulatedText, segmentResult.text || '');
     accumulatedText += addition;
-    if (segmentResult.completed) return accumulatedText.trim();
+    const tokenLimitFinish = ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(
+      String(segmentResult.finishReason || '').toUpperCase(),
+    );
+    if (segmentResult.completed && !(options.draftingOnly && tokenLimitFinish)) return accumulatedText.trim();
     if (!addition.trim()) throw new Error(`لم يصل نص جديد أثناء الاستكمال (finishReason: ${segmentResult.finishReason || 'UNKNOWN'}).`);
     if (continuationCount >= maxContinuations) {
       const incompleteError: any = new Error(`لم تكتمل الإجابة بعد ${maxContinuations} محاولات استكمال؛ لم تصل علامة اكتمال المستند.`);
@@ -375,7 +383,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, draftingOnly: true });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -391,7 +399,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, draftingOnly: true });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
