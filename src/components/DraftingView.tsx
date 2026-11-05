@@ -119,6 +119,20 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const resultOperationRef = useRef(0);
   const clearPersistenceRef = useRef(false);
+  const draftResultRef = useRef(generatedBrief);
+
+  const persistDraftChunk = (chunk: string) => {
+    if (!chunk) return;
+    const current = draftResultRef.current || '';
+    const next = chunk.startsWith(current)
+      ? chunk
+      : current.startsWith(chunk)
+        ? current
+        : current + chunk;
+    draftResultRef.current = next;
+    persistentStorage.setItem('amin_judicial_draft_result', next);
+    setGeneratedBrief(next);
+  };
 
   // General task types only. The AI decides which vault references are useful;
   // the user is not asked to choose an internal template/subtype.
@@ -273,6 +287,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setUploadedDocName('');
     extractedDocumentBatchRef.current = false;
     setDocumentTextInserted(false);
+    draftResultRef.current = '';
     setGeneratedBrief('');
     setRefineNote('');
     persistentStorage.removeItem('amin_judicial_draft_form');
@@ -316,14 +331,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setIsLoading(true);
     setDraftError('');
     void resumeDraftCounterBrief(jobId, (chunk) => {
-      if (active && operationId === resultOperationRef.current) setGeneratedBrief((current) => {
-        if (!current) return chunk;
-        if (chunk.startsWith(current)) return chunk;
-        if (current.startsWith(chunk)) return current;
-        return current + chunk;
-      });
+      if (active && operationId === resultOperationRef.current) persistDraftChunk(chunk);
     }, userId).then(async (result) => {
       if (!active || operationId !== resultOperationRef.current) return;
+      draftResultRef.current = result;
       setGeneratedBrief(result);
       persistentStorage.setItem('amin_judicial_draft_result', result);
       try {
@@ -359,7 +370,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setIsLoading(true);
     setRefineNote('');
     setDraftError('');
+    draftResultRef.current = '';
     setGeneratedBrief('');
+    persistentStorage.setItem('amin_judicial_draft_result', '');
     try {
       const aiText = await draftCounterBrief({
         ...formData,
@@ -370,9 +383,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           : formData.briefType,
         userId,
       }, (chunk) => {
-        if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
+        if (operationId === resultOperationRef.current) persistDraftChunk(chunk);
       });
       if (aiText && operationId === resultOperationRef.current) {
+        draftResultRef.current = aiText;
         setGeneratedBrief(aiText);
         persistentStorage.setItem('amin_judicial_draft_result', aiText);
         try {
@@ -394,7 +408,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           ? 'انقطع الاتصال أثناء التوليد. تم الاحتفاظ بالجزء الذي وصل بالفعل؛ راجعه قبل إعادة المحاولة حتى لا تكرر طلباً أو تستهلك رصيداً إضافياً.'
           : 'انقطع الاتصال أثناء التوليد قبل وصول النتيجة. تحقق من الاتصال قبل إعادة المحاولة لتجنب تكرار الطلب.');
       } else {
-        setDraftError(err?.message || 'تعذر استكمال الصياغة حالياً.');
+        const partialText = persistentStorage.getItem('amin_judicial_draft_result', '');
+        setDraftError(partialText.trim()
+          ? 'توقف التوليد قبل اكتمال المستند. تم حفظ الجزء الذي وصل ويمكنك مراجعته دون فقده. سبب التوقف: ' + String(err?.message || 'تعذر استكمال الصياغة حالياً.')
+          : (err?.message || 'تعذر استكمال الصياغة حالياً.'));
       }
     } finally {
       if (operationId === resultOperationRef.current) setIsLoading(false);
@@ -413,6 +430,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
       }, userId);
       if (refined && operationId === resultOperationRef.current) {
+        draftResultRef.current = refined;
         setGeneratedBrief(refined);
         persistentStorage.setItem('amin_judicial_draft_result', refined);
         const notes: Record<string, string> = {
