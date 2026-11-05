@@ -155,6 +155,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           deadlineAt,
           geminiShare,
           avoidPairs: Array.from(usedPairs),
+          diagnosticScope: 'legal-drafting',
         });
       } catch (error: any) {
         segmentError = error;
