@@ -23,6 +23,9 @@ const JOB_TABLE = 'app_ai_generation_jobs';
 const PUSH_TABLE = 'app_push_subscriptions';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
+// Legal drafting accepts larger source documents without changing other AI task limits.
+const MAX_DRAFT_FACTS = 400_000;
+const MAX_DRAFT_CONTEXT = 60_000;
 const JOB_STALE_TIMEOUT_MS = 4 * 60 * 1000 + 10 * 1000;
 const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة الملف.';
 
@@ -200,7 +203,10 @@ function safePayload(input: any, taskType: string) {
   }
 
   const combinedLength = Object.values(payload).reduce((sum, value) => sum + value.length, 0);
-  if (combinedLength > MAX_FACTS + MAX_CONTEXT) {
+  const maxCombinedLength = taskType === 'counter-brief'
+    ? MAX_DRAFT_FACTS + MAX_DRAFT_CONTEXT
+    : MAX_FACTS + MAX_CONTEXT;
+  if (combinedLength > maxCombinedLength) {
     const error: any = new Error('حجم بيانات المهمة أكبر من الحد المسموح.');
     error.statusCode = 413;
     throw error;
