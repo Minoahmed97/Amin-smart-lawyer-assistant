@@ -155,6 +155,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           deadlineAt,
           geminiShare,
           avoidPairs: Array.from(usedPairs),
+          onPairAttempt: (pair) => usedPairs.add(pair),
           diagnosticScope: 'legal-drafting',
         });
       } catch (error: any) {
@@ -260,6 +261,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       }, undefined, undefined, false, {
         deadlineAt,
         avoidPairs: Array.from(usedPairs),
+        onPairAttempt: (pair) => usedPairs.add(pair),
       });
     } catch (error: any) {
       lastError = error;

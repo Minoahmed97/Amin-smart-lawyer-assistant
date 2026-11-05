@@ -498,6 +498,8 @@ type KeyRotationExecutionOptions = {
   avoidPairs?: string[];
   /** Emit provider diagnostics only for the legal-drafting request that opts in. */
   diagnosticScope?: 'legal-drafting';
+  /** Record every key/model pair actually attempted during this generation segment. */
+  onPairAttempt?: (pair: string) => void;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -564,6 +566,7 @@ export async function executeWithKeyRotation<T>(
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
     }
     for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
+      executionOptions?.onPairAttempt?.(`openrouter::${model}`);
       try {
         const result = await action(
           withAdaptiveAnswerLength(createOpenRouterCompatibleClient(12000, deadlineAt)) as unknown as GoogleGenAI,
@@ -617,6 +620,7 @@ export async function executeWithKeyRotation<T>(
         }
         const model = keyModels[m];
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(30000, remainingMs)));
+        executionOptions?.onPairAttempt?.(`${currentKey}::${model}`);
         try {
           const result = await action(ai, currentKey, model);
           if (Date.now() >= deadlineAt) throw timeoutError();
@@ -723,6 +727,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
     for (const model of models) {
       if (deadlineAt - Date.now() < 10000) break;
+      executionOptions?.onPairAttempt?.(`openrouter::${model}`);
       let emittedOpenRouterText = false;
       try {
         const ai = withAdaptiveAnswerLength(
@@ -769,6 +774,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
       for (let m = 0; m < keyModels.length; m++) {
         attemptedModelCount += 1;
+        executionOptions?.onPairAttempt?.(`${currentKey}::${keyModels[m]}`);
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
         let emittedAnyChunk = false;
         try {
