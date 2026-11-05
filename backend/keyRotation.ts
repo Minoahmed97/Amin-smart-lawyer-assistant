@@ -152,7 +152,7 @@ export function saveFileStoredKeys(keys: string[]): void {
   try {
     fs.writeFileSync(KEYS_FILE, JSON.stringify(inMemoryDynamicKeys, null, 2), 'utf-8');
   } catch (e) {
-    console.warn('تحذير أثناء حفظ تكوين المفاتيح على القرص:', e);
+    console.warn('鬲丨匕賷乇 兀孬賳丕亍 丨賮馗 鬲賰賵賷賳 丕賱賲賮丕鬲賷丨 毓賱賶 丕賱賯乇氐:', e);
   }
 }
 
@@ -188,7 +188,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
   if (!isValidGeminiApiKey(cleanKey)) {
     return {
       success: false,
-      message: 'مفتاح Gemini غير صالح. انسخ المفتاح كاملاً من منصة Google AI Studio وأدخله كما هو.',
+      message: '賲賮鬲丕丨 Gemini 睾賷乇 氐丕賱丨. 丕賳爻禺 丕賱賲賮鬲丕丨 賰丕賲賱丕賸 賲賳 賲賳氐丞 Google AI Studio 賵兀丿禺賱賴 賰賲丕 賴賵.',
     };
   }
 
@@ -198,7 +198,7 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
   for (const model of GEMINI_MODELS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      lastFailure = 'انتهت المهلة المحددة لفحص مفتاح Gemini.';
+      lastFailure = '丕賳鬲賴鬲 丕賱賲賴賱丞 丕賱賲丨丿丿丞 賱賮丨氐 賲賮鬲丕丨 Gemini.';
       break;
     }
 
@@ -221,32 +221,32 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
       if (response.ok && data?.name) {
         return {
           success: true,
-          message: `المفتاح صالح ويمكنه الوصول إلى النموذج ${model}.`,
+          message: `丕賱賲賮鬲丕丨 氐丕賱丨 賵賷賲賰賳賴 丕賱賵氐賵賱 廿賱賶 丕賱賳賲賵匕噩 ${model}.`,
         };
       }
 
       const status = Number(data?.error?.code || response.status);
       const apiMessage = String(data?.error?.message || '').trim();
-      lastFailure = `فشل فحص ${model} (${status})${apiMessage ? `: ${apiMessage.slice(0, 240)}` : '.'}`;
+      lastFailure = `賮卮賱 賮丨氐 ${model} (${status})${apiMessage ? `: ${apiMessage.slice(0, 240)}` : '.'}`;
 
       const errorText = `${data?.error?.status || ''} ${apiMessage}`;
       if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/i.test(errorText)) {
-        return { success: false, message: `أكدت Google أن مفتاح Gemini غير صالح أو ملغى (${status}).` };
+        return { success: false, message: `兀賰丿鬲 Google 兀賳 賲賮鬲丕丨 Gemini 睾賷乇 氐丕賱丨 兀賵 賲賱睾賶 (${status}).` };
       }
 
       if (status === 403 || status === 404 || status === 400) continue;
       if (status === 429) {
-        return { success: false, message: `رفض طلب فحص بيانات النموذج بسبب حد طلبات واجهة البرمجة (${status}).` };
+        return { success: false, message: `乇賮囟 胤賱亘 賮丨氐 亘賷丕賳丕鬲 丕賱賳賲賵匕噩 亘爻亘亘 丨丿 胤賱亘丕鬲 賵丕噩賴丞 丕賱亘乇賲噩丞 (${status}).` };
       }
     } catch (err: any) {
-      lastFailure = controller.signal.aborted ? `انتهت مهلة فحص ${model}.` : `تعذر الاتصال بـ Gemini عبر ${model}.`;
+      lastFailure = controller.signal.aborted ? `丕賳鬲賴鬲 賲賴賱丞 賮丨氐 ${model}.` : `鬲毓匕乇 丕賱丕鬲氐丕賱 亘賭 Gemini 毓亘乇 ${model}.`;
       if (controller.signal.aborted) break;
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  return { success: false, message: lastFailure || 'تعذر التحقق من مفتاح Gemini أو الوصول إلى أي نموذج متاح.' };
+  return { success: false, message: lastFailure || '鬲毓匕乇 丕賱鬲丨賯賯 賲賳 賲賮鬲丕丨 Gemini 兀賵 丕賱賵氐賵賱 廿賱賶 兀賷 賳賲賵匕噩 賲鬲丕丨.' };
 }
 
 let dedicatedOCRActiveKey = '';
@@ -256,10 +256,10 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   try {
     keys = await fetchServerCloudOCRGeminiKeys(Math.min(5000, totalTimeoutMs));
   } catch (error: any) {
-    return { ready: false, keyCount: 0, checkedKeys: 0, message: error?.message || 'تعذر قراءة مجموعة مفاتيح الصور والمستندات.' };
+    return { ready: false, keyCount: 0, checkedKeys: 0, message: error?.message || '鬲毓匕乇 賯乇丕亍丞 賲噩賲賵毓丞 賲賮丕鬲賷丨 丕賱氐賵乇 賵丕賱賲爻鬲賳丿丕鬲.' };
   }
   if (!keys.length) {
-    return { ready: false, keyCount: 0, checkedKeys: 0, message: 'لا توجد مفاتيح مخصصة للصور والمستندات والخاصة (OCR).' };
+    return { ready: false, keyCount: 0, checkedKeys: 0, message: '賱丕 鬲賵噩丿 賲賮丕鬲賷丨 賲禺氐氐丞 賱賱氐賵乇 賵丕賱賲爻鬲賳丿丕鬲 賵丕賱禺丕氐丞 (OCR).' };
   }
 
   const deadlineAt = Date.now() + Math.max(1000, totalTimeoutMs);
@@ -271,26 +271,26 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
     checkedKeys++;
     const result = await testGeminiKey(key, Math.min(2200, remaining));
     if (result.success) {
-      return { ready: true, keyCount: keys.length, checkedKeys, message: `مجموعة OCR جاهزة (${keys.length} مفتاح مسجل).` };
+      return { ready: true, keyCount: keys.length, checkedKeys, message: `賲噩賲賵毓丞 OCR 噩丕賴夭丞 (${keys.length} 賲賮鬲丕丨 賲爻噩賱).` };
     }
     lastFailure = result.message || '';
     if (Date.now() >= deadlineAt) break;
   }
-  return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
+  return { ready: false, keyCount: keys.length, checkedKeys, message: `鬲賵噩丿 ${keys.length} 賲賮丕鬲賷丨 賮賷 賲噩賲賵毓丞 OCR貙 賱賰賳 鬲毓匕乇 丕賱鬲丨賯賯 賲賳 賵氐賵賱 兀賷 賳賲賵匕噩. 丌禺乇 賳鬲賷噩丞: ${lastFailure}` };
 }
 
-/** * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini */
+/** * 丿丕賱丞 丕爻鬲禺乇丕噩 丕賱賳氐 丕賱禺丕氐丞 亘賭 Groq 丕賱丕丨鬲賷丕胤賷 丕賱賲亘丕卮乇 (丕賱賲噩丕賳賷) 毓賳丿賲丕 鬲賮卮賱 賲丨丕賵賱丕鬲 Gemini */
 async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>, deadlineAt = Date.now() + 90000): Promise<any> {
   const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
   if (!fallbackConfig.enabled || !fallbackConfig.apiKey) {
-    throw new Error('احتياطي Groq لـ OCR غير مفعل أو لم يتم حفظ مفتاحه.');
+    throw new Error('丕丨鬲賷丕胤賷 Groq 賱賭 OCR 睾賷乇 賲賮毓賱 兀賵 賱賲 賷鬲賲 丨賮馗 賲賮鬲丕丨賴.');
   }
 
-  console.log('🔄 جاري تشغيل بديل Groq المباشر لـ OCR...');
+  console.log('馃攧 噩丕乇賷 鬲卮睾賷賱 亘丿賷賱 Groq 丕賱賲亘丕卮乇 賱賭 OCR...');
   
   const remainingMs = Math.max(1000, deadlineAt - Date.now());
   
-  // الاتصال المباشر بخوادم Groq لمنع أخطاء الـ 402 الخاصة بـ OpenRouter
+  // 丕賱丕鬲氐丕賱 丕賱賲亘丕卮乇 亘禺賵丕丿賲 Groq 賱賲賳毓 兀禺胤丕亍 丕賱賭 402 丕賱禺丕氐丞 亘賭 OpenRouter
   const client = createOpenRouterCompatibleClient(
     Math.min(60000, remainingMs), 
     deadlineAt, 
@@ -303,7 +303,7 @@ async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, mod
   return await action(client as unknown as GoogleGenAI, fallbackConfig.apiKey, modelToUse);
 }
 
-/** تدوير OCR المكثف عبر مفاتيح Gemini أولاً، وعند فشلها يتم الانتقال التلقائي لـ Groq المباشر */
+/** 鬲丿賵賷乇 OCR 丕賱賲賰孬賮 毓亘乇 賲賮丕鬲賷丨 Gemini 兀賵賱丕賸貙 賵毓賳丿 賮卮賱賴丕 賷鬲賲 丕賱丕賳鬲賯丕賱 丕賱鬲賱賯丕卅賷 賱賭 Groq 丕賱賲亘丕卮乇 */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -314,7 +314,7 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
   try {
     keys = await fetchServerCloudOCRGeminiKeys(Math.min(8000, Math.max(1000, deadlineAt - Date.now() - 2000)));
   } catch (error: any) {
-    console.warn('تعذر جلب مفاتيح OCR من Supabase:', error?.message);
+    console.warn('鬲毓匕乇 噩賱亘 賲賮丕鬲賷丨 OCR 賲賳 Supabase:', error?.message);
   }
 
   let lastError: any = null;
@@ -349,7 +349,7 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
           try {
             const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
             const result = await action(ai, key, model);
-            if (Date.now() >= geminiDeadlineAt) throw Object.assign(new Error('انتهت مهلة محاولة OCR عبر Gemini.'), { status: 504, statusCode: 504 });
+            if (Date.now() >= geminiDeadlineAt) throw Object.assign(new Error('丕賳鬲賴鬲 賲賴賱丞 賲丨丕賵賱丞 OCR 毓亘乇 Gemini.'), { status: 504, statusCode: 504 });
             dedicatedOCRActiveKey = key;
             return result;
           } catch (error: any) {
@@ -360,27 +360,27 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
       }
     }
 
-    console.warn(`⚠️ فشلت محاولات Gemini لـ OCR في الجولة ${round + 1}. جاري تجربة Groq المباشر الاحتياطي...`);
+    console.warn(`鈿狅笍 賮卮賱鬲 賲丨丕賵賱丕鬲 Gemini 賱賭 OCR 賮賷 丕賱噩賵賱丞 ${round + 1}. 噩丕乇賷 鬲噩乇亘丞 Groq 丕賱賲亘丕卮乇 丕賱丕丨鬲賷丕胤賷...`);
     try {
       if (roundEnd - Date.now() < 10000) {
-        lastError = lastError || new Error('لم يتبق وقت كاف لتجربة Groq في هذه الجولة.');
+        lastError = lastError || new Error('賱賲 賷鬲亘賯 賵賯鬲 賰丕賮 賱鬲噩乇亘丞 Groq 賮賷 賴匕賴 丕賱噩賵賱丞.');
         continue;
       }
       const groqResult = await executeGroqOCRFallback(action, roundEnd);
       if (groqResult) {
-        console.log(`✅ تم إتمام استخراج النص بنجاح عبر Groq المباشر في الجولة ${round + 1}!`);
+        console.log(`鉁� 鬲賲 廿鬲賲丕賲 丕爻鬲禺乇丕噩 丕賱賳氐 亘賳噩丕丨 毓亘乇 Groq 丕賱賲亘丕卮乇 賮賷 丕賱噩賵賱丞 ${round + 1}!`);
         return groqResult;
       }
-      lastError = new Error('أعاد Groq نتيجة فارغة لاستخراج النص.');
+      lastError = new Error('兀毓丕丿 Groq 賳鬲賷噩丞 賮丕乇睾丞 賱丕爻鬲禺乇丕噩 丕賱賳氐.');
     } catch (groqError: any) {
       lastError = groqError;
-      console.error(`❌ فشل Groq المباشر في الجولة ${round + 1}:`, groqError?.message);
+      console.error(`鉂� 賮卮賱 Groq 丕賱賲亘丕卮乇 賮賷 丕賱噩賵賱丞 ${round + 1}:`, groqError?.message);
     }
 
     if (Date.now() >= deadlineAt || deadlineAt - Date.now() < 10000) break;
   }
 
-  const finalError: any = new Error(`فشلت محاولتان كاملتان لاستخراج النص: Gemini بمفاتيح ونماذج ثم Groq. ${String(lastError?.message || '')}`);
+  const finalError: any = new Error(`賮卮賱鬲 賲丨丕賵賱鬲丕賳 賰丕賲賱鬲丕賳 賱丕爻鬲禺乇丕噩 丕賱賳氐: Gemini 亘賲賮丕鬲賷丨 賵賳賲丕匕噩 孬賲 Groq. ${String(lastError?.message || '')}`);
   finalError.status = lastError?.status || lastError?.statusCode || 503;
   finalError.statusCode = finalError.status;
   finalError.cause = lastError;
@@ -424,10 +424,10 @@ async function getAvailableGeminiKeys(timeoutMs?: number): Promise<string[]> {
 }
 
 export async function getManagedGeminiKeyByIndex(index: number): Promise<string> {
-  if (!Number.isInteger(index) || index < 0) throw new Error('رقم المفتاح غير صحيح.');
+  if (!Number.isInteger(index) || index < 0) throw new Error('乇賯賲 丕賱賲賮鬲丕丨 睾賷乇 氐丨賷丨.');
   const keys = await getAvailableGeminiKeys();
   const key = keys[index];
-  if (!key) throw new Error('المفتاح غير موجود في إعدادات Gemini الحالية.');
+  if (!key) throw new Error('丕賱賲賮鬲丕丨 睾賷乇 賲賵噩賵丿 賮賷 廿毓丿丕丿丕鬲 Gemini 丕賱丨丕賱賷丞.');
   return key;
 }
 
@@ -436,7 +436,7 @@ export function getKeysStatus() {
   const maskedList = keys.map((k, idx) => ({
     index: idx,
     id: `key_${idx + 1}`,
-    name: idx === 0 ? 'المفتاح الرئيسي' : `مفتاح التدوير (${idx + 1})`,
+    name: idx === 0 ? '丕賱賲賮鬲丕丨 丕賱乇卅賷爻賷' : `賲賮鬲丕丨 丕賱鬲丿賵賷乇 (${idx + 1})`,
     masked: k.length > 8 ? `${k.slice(0, 4)}...${k.slice(-4)}` : '****',
     prefix: k.slice(0, 2),
     isActive: idx === activeKeyIndex,
@@ -451,7 +451,7 @@ export function getKeysStatus() {
 }
 
 function withAdaptiveAnswerLength(ai: any): any {
-  const instruction = 'اختر طول الإجابة وفقاً لطبيعة الطلب وتعقيده؛ لا تلتزم بعدد كلمات ثابت ولا تختصر لمجرد الاختصار.';
+  const instruction = '丕禺鬲乇 胤賵賱 丕賱廿噩丕亘丞 賵賮賯丕賸 賱胤亘賷毓丞 丕賱胤賱亘 賵鬲毓賯賷丿賴貨 賱丕 鬲賱鬲夭賲 亘毓丿丿 賰賱賲丕鬲 孬丕亘鬲 賵賱丕 鬲禺鬲氐乇 賱賲噩乇丿 丕賱丕禺鬲氐丕乇.';
   const adaptOptions = (options: any) => {
     const { skipAdaptiveAnswerLength, ...apiOptions } = options || {};
     if (skipAdaptiveAnswerLength === true) return apiOptions;
@@ -477,8 +477,6 @@ type KeyRotationExecutionOptions = {
   deadlineAt?: number;
   previousProviderError?: string;
   providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
-  /** Allocate more of the existing generation window to Gemini for large legal prompts. */
-  geminiShare?: number;
   /** Previously used key/model pairs are avoided first during continuation. */
   avoidPairs?: string[];
 };
@@ -495,7 +493,7 @@ export async function executeWithKeyRotation<T>(
   }
   const deadlineAt = Number(executionOptions.deadlineAt);
   const timeoutError = () => Object.assign(
-    new Error('انتهت المهلة المتاحة لتوليد النتيجة قبل اكتمالها.'),
+    new Error('丕賳鬲賴鬲 丕賱賲賴賱丞 丕賱賲鬲丕丨丞 賱鬲賵賱賷丿 丕賱賳鬲賷噩丞 賯亘賱 丕賰鬲賲丕賱賴丕.'),
     { status: 504, statusCode: 504 },
   );
 
@@ -524,13 +522,13 @@ export async function executeWithKeyRotation<T>(
           ...executionOptions,
           deadlineAt: roundEnd,
           providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
+          previousProviderError: String(lastProviderError?.message || '鬲毓匕乇 丕爻鬲禺丿丕賲 Gemini.'),
         });
       } catch (openRouterError: any) {
         lastProviderError = openRouterError;
       }
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
+    const combined: any = new Error('鬲毓匕乇 鬲賳賮賷匕 丕賱胤賱亘 亘毓丿 賲丨丕賵賱鬲賷賳 賰丕賲賱鬲賷賳: Gemini 兀賵賱丕賸 孬賲 OpenRouter 賮賷 賰賱 賲丨丕賵賱丞.');
     combined.status = 503;
     combined.statusCode = 503;
     combined.cause = lastProviderError;
@@ -544,7 +542,7 @@ export async function executeWithKeyRotation<T>(
     const models = preferredModelsForAttempt.length ? preferredModelsForAttempt : availableModels;
     let lastError: any = null;
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
-      lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
+      lastError = Object.assign(new Error('賲賮鬲丕丨 OpenRouter 睾賷乇 賲囟亘賵胤.'), { status: 503, statusCode: 503 });
     }
     for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
       try {
@@ -563,12 +561,12 @@ export async function executeWithKeyRotation<T>(
       if (deadlineAt - Date.now() < 10000) throw timeoutError();
       return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
     }
-    throw lastError || new Error('تعذر الاتصال بننماذج OpenRouter.');
+    throw lastError || new Error('鬲毓匕乇 丕賱丕鬲氐丕賱 亘賳賳賲丕匕噩 OpenRouter.');
   }
 
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) {
-    throw new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
+    throw new Error('賱賲 賷鬲賲 丕賱毓孬賵乇 毓賱賶 賲賮鬲丕丨 Gemini 氐丕賱丨 賮賷 廿毓丿丕丿丕鬲 丕賱禺丕丿賲.');
   }
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
@@ -618,7 +616,7 @@ export async function executeWithKeyRotation<T>(
 
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
     if (executionOptions?.providerAttempt === 'gemini-primary') {
-      throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
+      throw Object.assign(new Error('賱丕 鬲賵噩丿 兀夭賵丕噩 賲賮鬲丕丨/賳賲賵匕噩 睾賷乇 賲爻鬲禺丿賲丞 賲鬲丕丨丞 賱賱丕爻鬲賰賲丕賱 毓亘乇 Gemini.'), { status: 503, statusCode: 503 });
     }
     return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
       ...executionOptions,
@@ -628,11 +626,11 @@ export async function executeWithKeyRotation<T>(
 
   const finalKind = getGeminiErrorKind(lastError);
   if (finalKind === 'quota') {
-    const quotaError: any = new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام.');
+    const quotaError: any = new Error('鬲毓匕乇 鬲賳賮賷匕 丕賱胤賱亘: 丕爻鬲賳賮丿鬲 丨氐氐 賲賮丕鬲賷丨 Gemini 丕賱賲鬲丕丨丞 兀賵 鬲賲 亘賱賵睾 丨丿 丕賱丕爻鬲禺丿丕賲.');
     quotaError.allGeminiQuotasExhausted = keys.length > 0 && keys.every((key) => keyFailureKinds.get(key) === 'quota');
     throw quotaError;
   }
-  throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
+  throw lastError || new Error('賮卮賱鬲 噩賲賷毓 賲丨丕賵賱丕鬲 鬲丿賵賷乇 丕賱賲賮丕鬲賷丨.');
 }
 
 export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false, executionOptions?: KeyRotationExecutionOptions ): Promise<void> {
@@ -640,7 +638,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     executionOptions = { ...executionOptions, deadlineAt: Date.now() + 270000 };
   }
   const deadlineAt = Number(executionOptions.deadlineAt);
-  const timeoutError = () => Object.assign(new Error('انتهت المهلة المتاحة للتوليد.'), { status: 504, statusCode: 504 });
+  const timeoutError = () => Object.assign(new Error('丕賳鬲賴鬲 丕賱賲賴賱丞 丕賱賲鬲丕丨丞 賱賱鬲賵賱賷丿.'), { status: 504, statusCode: 504 });
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const overallStart = Date.now();
@@ -649,7 +647,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     for (let round = 0; round < 2; round++) {
       const roundStart = overallStart + Math.floor(totalBudget * round / 2);
       const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * (executionOptions?.geminiShare ?? 0.55));
+      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
       if (deadlineAt - Date.now() < 10000) break;
       let anyProviderEmittedText = false;
       try {
@@ -675,7 +673,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           ...executionOptions,
           deadlineAt: roundEnd,
           providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
+          previousProviderError: String(lastProviderError?.message || '鬲毓匕乇 丕爻鬲禺丿丕賲 Gemini.'),
         });
         return;
       } catch (openRouterError: any) {
@@ -683,7 +681,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         if (anyProviderEmittedText) throw openRouterError;
       }
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
+    const combined: any = new Error('鬲毓匕乇 鬲賳賮賷匕 丕賱胤賱亘 亘毓丿 賲丨丕賵賱鬲賷賳 賰丕賲賱鬲賷賳: Gemini 兀賵賱丕賸 孬賲 OpenRouter 賮賷 賰賱 賲丨丕賵賱丞.');
     combined.status = 503;
     combined.statusCode = 503;
     combined.cause = lastProviderError;
@@ -698,7 +696,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     let lastOpenRouterError: any = null;
 
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
-      const missingKeyError: any = new Error('مفتاح OpenRouter غير مضبوط.');
+      const missingKeyError: any = new Error('賲賮鬲丕丨 OpenRouter 睾賷乇 賲囟亘賵胤.');
       missingKeyError.status = 503;
       missingKeyError.statusCode = 503;
       throw missingKeyError;
@@ -720,7 +718,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           }
         }
         if (!emittedOpenRouterText) {
-          const emptyError: any = new Error(`أعاد موديل OpenRouter (${model}) استجابة فارغة.`);
+          const emptyError: any = new Error(`兀毓丕丿 賲賵丿賷賱 OpenRouter (${model}) 丕爻鬲噩丕亘丞 賮丕乇睾丞.`);
           emptyError.status = 503;
           emptyError.statusCode = 503;
           throw emptyError;
@@ -732,11 +730,11 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       }
     }
 
-    throw lastOpenRouterError || new Error('تعذر الحصول على نتيجة من نماذج OpenRouter الاحتياطية.');
+    throw lastOpenRouterError || new Error('鬲毓匕乇 丕賱丨氐賵賱 毓賱賶 賳鬲賷噩丞 賲賳 賳賲丕匕噩 OpenRouter 丕賱丕丨鬲賷丕胤賷丞.');
   }
 
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
-  if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
+  if (keys.length === 0) throw new Error('賱賲 賷鬲賲 丕賱毓孬賵乇 毓賱賶 賲賮鬲丕丨 Gemini 氐丕賱丨.');
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
@@ -775,14 +773,14 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
     if (executionOptions?.providerAttempt === 'gemini-primary') {
-      throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
+      throw Object.assign(new Error('賱丕 鬲賵噩丿 兀夭賵丕噩 賲賮鬲丕丨/賳賲賵匕噩 睾賷乇 賲爻鬲禺丿賲丞 賲鬲丕丨丞 賱賱丕爻鬲賰賲丕賱 毓亘乇 Gemini.'), { status: 503, statusCode: 503 });
     }
     return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, {
       ...executionOptions,
       avoidPairs: undefined,
     });
   }
-  throw new Error('فشلت جميع محاولات تدوير البث.');
+  throw new Error('賮卮賱鬲 噩賲賷毓 賲丨丕賵賱丕鬲 鬲丿賵賷乇 丕賱亘孬.');
 }
 
 export default function handler(req: any, res: any) {
