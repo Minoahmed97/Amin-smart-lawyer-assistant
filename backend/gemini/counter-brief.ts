@@ -44,15 +44,27 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
+  // في الاستكمال لا نعيد إرسال المستند كاملاً ولا سياق الخزانة مرة أخرى.
+  // نرسل فقط آخر جزء كافٍ لتثبيت موضع التوقف؛ أما تحليل الوقائع والقالب فقد تم
+  // في طلب التوليد الأول، وبذلك لا يتضخم كل طلب استكمال مع طول المستند.
+  const continuationTailLength = 6000;
+  const getContinuationTail = () => accumulatedText.slice(-continuationTailLength);
   const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
+    ? `[استكمال إلزامي لمستند قانوني غير مكتمل]
+هذا هو آخر جزء من المستند الذي توقف عنده الإخراج، وهو مرساة الاستكمال فقط وليس المستند كاملاً:
+---
+${getContinuationTail()}
+---
+تابع مباشرة من آخر موضع وصل إليه النص أعلاه، دون إعادة كتابة الجزء الظاهر أو تلخيصه أو بدء المستند من جديد. حافظ على نفس الوقائع والبناء القانوني والبصمة والأسلوب والترتيب الذين بُني عليها المستند في الجزء السابق. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. وفي آخر النص فقط أضف هذه العلامة حرفياً: ${completionMarker}. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`
     : optimizedPrompt;
 
   if (onChunk) {
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
       const segmentPrompt = makeContinuationPrompt();
-      const segmentBaseText = accumulatedText;
+      // استخدم مرساة الاستكمال فقط لكشف التكرار بين نهاية الجزء السابق وبداية الجديد.
+      const segmentBaseText = accumulatedText ? getContinuationTail() : '';
+      const accumulatedLengthBeforeSegment = accumulatedText.length;
       let segmentBuffer = '';
       let segmentPrefixResolved = !segmentBaseText.length;
       let segmentCompleted = false;
@@ -168,7 +180,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         completed = true;
         break;
       }
-      if (!segmentBuffer.trim() || accumulatedText.length === segmentBaseText.length) {
+      if (!segmentBuffer.trim() || accumulatedText.length === accumulatedLengthBeforeSegment) {
         throw segmentError || new Error('لم يصل نص جديد أثناء محاولة استكمال المستند.');
       }
       if (continuationCount >= maxContinuations) {
