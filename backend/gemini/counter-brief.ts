@@ -158,6 +158,7 @@ ${accumulatedText.slice(-14000)}
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
           longFormGeneration: true,
+          hasPriorOutput: Boolean(accumulatedText.trim()),
         });
       } catch (error: any) {
         segmentError = error;
@@ -168,7 +169,7 @@ ${accumulatedText.slice(-14000)}
       // completion marker) is still valid for the next continuation request.
       // Blacklisting it here prevented a single-key/single-model setup from
       // continuing a partially generated legal document.
-      if (activePair && !segmentBuffer.trim()) usedPairs.add(activePair);
+      if (activePair && segmentBuffer.trim()) usedPairs.add(activePair);
 
       if (segmentError) {
         const segmentErrorMessage = String(segmentError?.message || segmentError || 'Unknown stream error')
@@ -200,6 +201,15 @@ ${accumulatedText.slice(-14000)}
         break;
       }
       if (!segmentBuffer.trim() || accumulatedText.length === segmentBaseText.length) {
+        const exhaustedGeminiPairs = String(segmentError?.message || '').includes('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini');
+        if (exhaustedGeminiPairs && accumulatedText.trim() && usedPairs.size > 0 && continuationCount < maxContinuations) {
+          // All currently available Gemini key/model pairs have had a turn.
+          // Start a fresh Gemini rotation cycle; hasPriorOutput prevents OpenRouter
+          // from ever being used to continue a document that Gemini already began.
+          usedPairs.clear();
+          continuationCount += 1;
+          continue;
+        }
         throw segmentError || new Error('لم يصل نص جديد أثناء محاولة استكمال المستند.');
       }
       if (continuationCount >= maxContinuations) {
