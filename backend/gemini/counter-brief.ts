@@ -44,27 +44,15 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
-  // في الاستكمال لا نعيد إرسال المستند كاملاً ولا سياق الخزانة مرة أخرى.
-  // نرسل فقط آخر جزء كافٍ لتثبيت موضع التوقف؛ أما تحليل الوقائع والقالب فقد تم
-  // في طلب التوليد الأول، وبذلك لا يتضخم كل طلب استكمال مع طول المستند.
-  const continuationTailLength = 6000;
-  const getContinuationTail = () => accumulatedText.slice(-continuationTailLength);
   const makeContinuationPrompt = () => accumulatedText
-    ? `[استكمال إلزامي لمستند قانوني غير مكتمل]
-هذا هو آخر جزء من المستند الذي توقف عنده الإخراج، وهو مرساة الاستكمال فقط وليس المستند كاملاً:
----
-${getContinuationTail()}
----
-تابع مباشرة من آخر موضع وصل إليه النص أعلاه، دون إعادة كتابة الجزء الظاهر أو تلخيصه أو بدء المستند من جديد. حافظ على نفس الوقائع والبناء القانوني والبصمة والأسلوب والترتيب الذين بُني عليها المستند في الجزء السابق. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. وفي آخر النص فقط أضف هذه العلامة حرفياً: ${completionMarker}. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`
+    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
     : optimizedPrompt;
 
   if (onChunk) {
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
       const segmentPrompt = makeContinuationPrompt();
-      // استخدم مرساة الاستكمال فقط لكشف التكرار بين نهاية الجزء السابق وبداية الجديد.
-      const segmentBaseText = accumulatedText ? getContinuationTail() : '';
-      const accumulatedLengthBeforeSegment = accumulatedText.length;
+      const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
       let segmentPrefixResolved = !segmentBaseText.length;
       let segmentCompleted = false;
@@ -84,19 +72,19 @@ ${getContinuationTail()}
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            try {
-              const stream = await ai.models.generateContentStream({
-                model,
-                contents: segmentPrompt,
-                config: {
-                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                  temperature: 0.15,
-                  maxOutputTokens: 32768,
-                  ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-                  thinkingConfig: { thinkingLevel: 'low' },
-                },
-              });
+            const stream = await ai.models.generateContentStream({
+              model,
+              contents: segmentPrompt,
+              config: {
+                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                temperature: 0.15,
+                maxOutputTokens: 32768,
+                ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+                thinkingConfig: { thinkingLevel: 'low' },
+              },
+            });
 
+            try {
               for await (const chunk of stream) {
                 const candidateReason = chunk?.candidates?.[0]?.finishReason;
                 if (candidateReason) finishReason = String(candidateReason).toUpperCase();
@@ -118,16 +106,7 @@ ${getContinuationTail()}
                 pendingMarkerTail = candidateText.slice(splitAt);
                 if (visibleText) yield { text: visibleText };
               }
-            } catch (error: any) {
-              console.error('[counter-brief] provider stream error', JSON.stringify({
-                provider: key === 'openrouter' ? 'OpenRouter' : 'Gemini',
-                model,
-                status: Number(error?.status || error?.statusCode || error?.response?.status) || null,
-                code: String(error?.code || error?.error?.status || '').slice(0, 120),
-                message: String(error?.message || error || 'Unknown provider error').slice(0, 700),
-                finishReason: finishReason || null,
-                receivedText,
-              }));
+            } catch (error) {
               if (pendingMarkerTail) yield { text: pendingMarkerTail };
               pendingMarkerTail = '';
               throw error;
@@ -189,7 +168,7 @@ ${getContinuationTail()}
         completed = true;
         break;
       }
-      if (!segmentBuffer.trim() || accumulatedText.length === accumulatedLengthBeforeSegment) {
+      if (!segmentBuffer.trim() || accumulatedText.length === segmentBaseText.length) {
         throw segmentError || new Error('لم يصل نص جديد أثناء محاولة استكمال المستند.');
       }
       if (continuationCount >= maxContinuations) {
