@@ -828,7 +828,7 @@ export async function executeWithKeyRotationStream(
         } catch (err: any) {
           // A transport abort after useful text is a continuation event, not
           // evidence that this key/model is unhealthy. Do not quarantine it.
-          if (!emittedAnyChunk) {
+          if (!emittedAnyChunk || !executionOptions?.longFormGeneration) {
             markRotationFailure(currentKey, keyModels[m], err, 'general');
           }
           if (emittedAnyChunk) {
