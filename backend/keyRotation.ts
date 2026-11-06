@@ -499,6 +499,7 @@ type KeyRotationExecutionOptions = {
   providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
   avoidPairs?: string[];
   longFormGeneration?: boolean;
+  hasPriorOutput?: boolean;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -609,9 +610,22 @@ export async function executeWithKeyRotation<T>(
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+      const keyModels = selectModelsForKey(
+        preferredModels,
+        currentKey,
+        'general',
+        Date.now(),
+        avoidedPairs,
+      );
+      const modelsToTry = executionOptions?.longFormGeneration
+        ? preferredModels.filter((model) => keyModels.includes(model) || (
+            !isCooling(modelCooldownUntil, model) &&
+            !isCooling(keyModelCooldownUntil, rotationPairKey(currentKey, model)) &&
+            !avoidedPairs.has(`${currentKey}::${model}`)
+          ))
+        : keyModels;
 
-      for (let m = 0; m < keyModels.length; m++) {
+      for (let m = 0; m < modelsToTry.length; m++) {
         attemptedModelCount += 1;
         const remainingMs = deadlineAt - Date.now();
         if (remainingMs < 10000) {
@@ -685,7 +699,7 @@ export async function executeWithKeyRotationStream(
       console.error('[ai-provider] Gemini long-form streaming attempt failed:', safeProviderErrorSummary(geminiError));
       // Never switch providers after text has reached the draft: continuation
       // must resume the same Gemini path instead of mixing provider outputs.
-      if (geminiEmittedText || deadlineAt - Date.now() < 10000) throw geminiError;
+      if (geminiEmittedText || executionOptions?.hasPriorOutput || deadlineAt - Date.now() < 10000) throw geminiError;
       await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
         ...executionOptions,
         providerAttempt: 'openrouter-fallback',
@@ -815,7 +829,7 @@ export async function executeWithKeyRotationStream(
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, remainingMs)));
         let emittedAnyChunk = false;
         try {
-          const stream = await action(ai, currentKey, keyModels[m]);
+          const stream = await action(ai, currentKey, modelsToTry[m]);
           for await (const chunk of stream) {
             const text = typeof chunk?.text === 'string' ? chunk.text : '';
             if (text) {
@@ -829,7 +843,7 @@ export async function executeWithKeyRotationStream(
           // A transport abort after useful text is a continuation event, not
           // evidence that this key/model is unhealthy. Do not quarantine it.
           if (!emittedAnyChunk || !executionOptions?.longFormGeneration) {
-            markRotationFailure(currentKey, keyModels[m], err, 'general');
+            markRotationFailure(currentKey, modelsToTry[m], err, 'general');
           }
           if (emittedAnyChunk) {
             activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
