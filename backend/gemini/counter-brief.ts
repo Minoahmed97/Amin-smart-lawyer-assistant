@@ -538,6 +538,8 @@ async function generateLongDraftInSections(
     error.statusCode = 422;
     throw error;
   }
+  // The final planned task always owns the conclusion and the lawyer's final requests.
+  tasks.forEach((task, index) => { task.final = index === tasks.length - 1; });
 
   let assembled = '';
   for (let index = 0; index < tasks.length; index += 1) {
@@ -551,8 +553,12 @@ async function generateLongDraftInSections(
       '===== النص الأصلي الكامل للجزء ' + id + ' =====' + NL + context.sourceParts[id - 1],
     ).join(NL + NL);
     const previousTail = assembled.slice(-7000);
+    const sectionBasePrompt = basePrompt.replace(
+      'اكتب المستند القانوني كله باللغة العربية فقط',
+      'اكتب القسم المحدد فقط من المستند القانوني باللغة العربية فقط',
+    );
     const sectionPrompt =
-      basePrompt + NL + NL +
+      sectionBasePrompt + NL + NL +
       '[مخطط المستند الكامل — حافظ على الترتيب والترابط]' + NL +
       tasks.map((item, i) => (i + 1) + '. ' + item.title).join(NL) + NL + NL +
       '[القسم المطلوب الآن ' + (index + 1) + ' من ' + tasks.length + ']' + NL +
@@ -570,7 +576,7 @@ async function generateLongDraftInSections(
       (task.final
         ? 'هذا هو القسم الختامي: أتمم النتيجة والطلبات التي حددها المحامي فقط، ولا تضف طلباً جديداً.'
         : 'لا تضع خاتمة نهائية أو طلبات ختامية؛ اتركها للقسم الختامي.') +
-      ' أخرج نص القسم القانوني فقط دون مقدمات محادثية أو شرح لآلية العمل.';
+      ' لا تكتب عنوان القسم لأنه يضاف آلياً. أخرج متن القسم القانوني فقط دون مقدمات محادثية أو شرح لآلية العمل.';
     if (onChunk) onChunk(NL + NL + task.title + NL + NL);
     const sectionText = await generateDeepLegalResponse(
       sectionPrompt,
