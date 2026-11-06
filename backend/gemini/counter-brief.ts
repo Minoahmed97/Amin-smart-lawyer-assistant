@@ -48,7 +48,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   // continuation. Repeating it together with the growing draft caused prompt
   // size to grow on each retry and could exceed provider context limits.
   const makeContinuationPrompt = () => accumulatedText
-    ? `[استكمال إلزامي لمستند قانوني بدأ توليده بالفعل]
+    ? `${optimizedPrompt}
+
+[استكمال إلزامي لمستند قانوني بدأ توليده بالفعل]
 هذا آخر جزء من النص الذي تم توليده حتى الآن؛ اعتبره جزءاً من المستند نفسه:
 ${accumulatedText.slice(-14000)}
 
