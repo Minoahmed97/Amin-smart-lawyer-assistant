@@ -44,8 +44,15 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
+  // Do not resend the original (potentially very long) case file on every
+  // continuation. Repeating it together with the growing draft caused prompt
+  // size to grow on each retry and could exceed provider context limits.
   const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
+    ? `[استكمال إلزامي لمستند قانوني بدأ توليده بالفعل]
+هذا آخر جزء من النص الذي تم توليده حتى الآن؛ اعتبره جزءاً من المستند نفسه:
+${accumulatedText.slice(-14000)}
+
+تابع مباشرة من آخر كلمة في النص السابق. لا تعِد كتابة النص السابق ولا تلخصه ولا تكرر أي قسم مكتمل. أكمل الأجزاء المتبقية فقط، مع الحفاظ على اتساق الصياغة والطلبات والوقائع التي سبق أن عالجها المستند. لا تضف واقعة أو طلباً أو سنداً غير ثابت. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه المطلوبة. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل.`
     : optimizedPrompt;
 
   if (onChunk) {
@@ -320,7 +327,6 @@ export default async function handler(req: any, res: any) {
     }
 
     rateLimit(req, 'gemini-counter-brief', 8, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
 
     limitBodyString(facts, 200000, 'الوقائع');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
@@ -330,14 +336,53 @@ export default async function handler(req: any, res: any) {
       throw err;
     }
 
-    const finalWorkType =
+    let finalWorkType =
       (customJudicialWorkType && customJudicialWorkType.trim()) ||
       (effectiveWorkType && effectiveWorkType.trim()) ||
       (briefType && briefType.trim()) ||
       '';
-    const workTypeInstruction = finalWorkType
-      ? `نوع المستند المطلوب من المحامي: ${finalWorkType}. التزم بهذا النوع.`
-      : 'نوع المستند غير محدد مسبقاً: حدّد داخلياً أنسب نوع مستند قانوني للرد على المادة المنقولة (مذكرة رد/دفاع، عريضة/صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار أو غير ذلك) بناءً على الغرض والطلبات والوقائع، ولا تفترض تلقائياً أنها مذكرة دفاع.';
+
+    if (!finalWorkType) {
+      const classificationEvidence = [
+        `المحكمة/الجهة: ${String(courtType || '').slice(0, 500)}`,
+        `الوقائع/المستند المنقول (مقتطف البداية): ${String(facts || '').slice(0, 10000)}`,
+        `الوقائع/المستند المنقول (مقتطف النهاية): ${String(facts || '').slice(-5000)}`,
+        `الدفوع أو نتيجة الفحص: ${String(defenses || '').slice(0, 7000)}`,
+        `الطلبات: ${String(requests || '').slice(0, 4000)}`,
+        `تعليمات المحامي: ${String(customInstructions || '').slice(0, 5000)}`,
+      ].join('\n\n');
+
+      const classificationRaw = await executeWithKeyRotation(async (ai, _key, model) => {
+        const response = await ai.models.generateContent({
+          model,
+          contents: `حدّد نوع العمل القانوني الذي يريد المحامي إنشاءه الآن، لا نوع المستند الذي أرسله كمصدر فقط. استنتج النوع حصراً من غرض المهمة والطلبات والتعليمات والسياق. لا تفترض أن المطلوب مذكرة دفاع. الأنواع الممكنة تشمل: صحيفة/عريضة دعوى، دعوى إلغاء قرار إداري أمام مجلس الدولة، عقد، إنذار، تظلم، مذكرة دفاع أو رد، صحيفة طعن، طلب أو غير ذلك. إذا كان الغرض واضحاً أعد JSON فقط بهذا الشكل: {"status":"clear","workType":"اسم نوع المستند المحدد"}. إذا لم يكن واضحاً بما يكفي لتحديد نوع المستند دون تخمين، أعد JSON فقط بهذا الشكل: {"status":"unclear"}.\n\nالمعطيات:\n${classificationEvidence}`,
+          config: { temperature: 0, maxOutputTokens: 300 },
+        });
+        return String(response?.text || '');
+      }, undefined, undefined, false, { deadlineAt: Date.now() + 45000 });
+
+      let classification: any = null;
+      try {
+        const jsonMatch = String(classificationRaw || '').match(/\{[\s\S]*\}/);
+        if (jsonMatch) classification = JSON.parse(jsonMatch[0]);
+      } catch {}
+
+      if (classification?.status !== 'clear' || typeof classification?.workType !== 'string' || !classification.workType.trim()) {
+        const clarificationError: any = new Error('قبل أن أبدأ الصياغة، أحتاج تحديد نوع المستند المطلوب: هل تريد صحيفة أو عريضة دعوى، أم عقداً، أم إنذاراً أو تظلماً، أم مذكرة أو رداً، أم نوعاً آخر؟ اكتب نوع العمل المطلوب حتى لا أُنشئ مستنداً من نوع غير الذي تقصده.');
+        clarificationError.status = 409;
+        clarificationError.statusCode = 409;
+        clarificationError.needsClarification = true;
+        throw clarificationError;
+      }
+
+      finalWorkType = classification.workType.trim().slice(0, 180);
+    }
+
+    // Clarification is a pre-generation step: do not claim the operation
+    // cooldown until the intended legal document type is known.
+    await enforceAiCooldown(req);
+
+    const workTypeInstruction = `نوع المستند المطلوب من المحامي: ${finalWorkType}. التزم بهذا النوع ولا تحوّله إلى مذكرة دفاع أو أي نوع آخر.`;
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
@@ -398,7 +443,10 @@ export default async function handler(req: any, res: any) {
       : 500;
     if (!res.headersSent) {
       if (err?.retryAfter) res.setHeader('Retry-After', String(err.retryAfter));
-      return res.status(status).json({ error: err.message || 'فشلت الصياغة.' });
+      return res.status(status).json({
+        error: err.message || 'فشلت الصياغة.',
+        ...(err?.needsClarification ? { needsClarification: true } : {}),
+      });
     }
     if (!res.writableEnded) {
       res.write(JSON.stringify({ type: 'error', error: err.message || 'فشلت الصياغة.' }) + '\n');
