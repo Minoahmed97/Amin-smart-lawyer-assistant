@@ -318,128 +318,104 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
 
 /**
- * Long-draft context compiler:
- * - Reads the complete source material and the current lawyer-vault context once.
- * - Produces a source-faithful case dossier and a separate style-only guide.
- * - The final drafting call receives the compact compiled context, while the
- *   original explicit requests and custom instructions remain untouched.
+ * Compile long source documents in bounded pieces and keep the lawyer's style
+ * guide separate from case facts. A failed/truncated piece aborts before drafting.
  */
 async function prepareLongDraftContext(input: {
-  facts: string;
-  defenses?: string;
-  requests?: string;
-  customInstructions?: string;
-  vaultContext: string;
-  courtType?: string;
-  circuit?: string;
-  clientRole?: string;
-  clientName?: string;
-  opponentName?: string;
-  caseNumber?: string;
-  sessionDate?: string;
-  workType?: string;
+  facts: string; defenses?: string; requests?: string; customInstructions?: string;
+  vaultContext: string; courtType?: string; circuit?: string; clientRole?: string;
+  clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; workType?: string;
 }): Promise<{ caseDossier: string; styleGuide: string }> {
-  const preparationPrompt = `أعدّ ملفاً تحضيرياً داخلياً للصياغة القانونية التالية. هذه ليست مذكرة ولا رأياً قانونياً نهائياً؛ إنها عملية تنظيم أمين للمادة الخام لتقليل حجم السياق قبل الصياغة.
-
-[بيانات القضية]
-نوع العمل: ${input.workType || 'غير محدد'}
-المحكمة: ${input.courtType || ''}
-الدائرة: ${input.circuit || ''}
-صفة الموكل: ${input.clientRole || ''}
-الموكل: ${input.clientName || ''}
-الخصم: ${input.opponentName || ''}
-رقم الدعوى: ${input.caseNumber || ''}
-الجلسة: ${input.sessionDate || ''}
-
-[النص الكامل للوقائع والمستندات]
-${input.facts}
-
-[الدفوع التي حددها المحامي — لا تحذفها]
-${input.defenses || ''}
-
-[الطلبات التي حددها المحامي — لا تحذفها ولا توسعها]
-${input.requests || ''}
-
-[تعليمات المحامي الإضافية — تحفظ حرفياً في معناها]
-${input.customInstructions || ''}
-
-[خزانة المحامي الحالية — للاستخلاص الأسلوبي والبنيوي فقط]
-${input.vaultContext}
-
-أخرج قسمين فقط وبالعلامتين المحددتين حرفياً:
-
-[[AMIN_CASE_DOSSIER]]
-أنشئ ملف قضية منظمًا ومكثفًا، لا ملخصاً إنشائياً. احتفظ بكل معلومة يمكن أن تؤثر في الحق أو الإثبات أو الإجراء أو الطلبات، وبالأخص:
-1) جميع أسماء الأشخاص والجهات وصفاتهم وأدوارهم، مع التمييز بين الموكل والخصم.
-2) كل تاريخ ورقم ومبلغ ومساحة ونسبة ومدة وحساب، دون تقريب أو تغيير.
-3) الوقائع والأحداث بترتيبها الزمني، مع بيان مصدر كل واقعة إن كان ظاهراً.
-4) كل مستند على حدة: اسمه/نوعه، تاريخه، أطرافه، مضمونه، وما يثبته وما لا يثبته.
-5) كل ادعاء أو إقرار أو دفاع أو طلب، ومن صدر عنه، مع التمييز بين الادعاء والحقيقة الثابتة.
-6) التناقضات والفجوات والنواقص والعبارات أو البيانات التي تحتاج تحققاً.
-7) الاقتباسات أو العبارات الحاسمة التي لا يجوز تغيير معناها.
-8) الروابط بين الوقائع والمستندات، ولا تستنتج واقعة غير موجودة.
-لا تسقط تفصيلاً لمجرد أنه يبدو صغيراً. لا تخترع ولا تضف قانوناً أو حكماً أو دفعاً. إذا تعذر ضغط معلومة دون خطر فقدها، احتفظ بها بنصها أو اقتباسها.
-
-[[AMIN_LAWYER_STYLE_GUIDE]]
-استخلص من الخزانة أسلوب المحامي وبنية نموذجه فقط: الديباجة والترويسة، ترتيب الأقسام، أسلوب عرض الوقائع، طريقة بناء الدفوع والانتقال بينها، المصطلحات، الترقيم، طول الفقرات والجمل، صياغة الطلبات والخاتمة. لا تنقل أي اسم أو واقعة أو رقم أو تاريخ أو طلب أو دفع أو سند قانوني من قضايا النماذج. احتفظ بأي قاعدة أسلوبية صريحة في الخزانة ولا تستبدلها بتفضيل عام. اجعل الدليل مركزاً وقابلاً للتطبيق ولا تكتب مذكرة جديدة.
-
-ممنوع دمج معلومات الخزانة الموضوعية في ملف القضية. وممنوع حذف أو تعديل طلبات المحامي أو تعليماته. لا تعرض سلسلة التفكير. `;
-
-  const deadlineAt = Date.now() + 180_000;
-  const response = await executeWithKeyRotation(async (ai, _key, model) => {
-    return ai.models.generateContent({
-      model,
-      contents: preparationPrompt,
-      config: {
-        systemInstruction: 'أنت أمين. مهمتك هنا تنظيم بيانات قانونية مقدمة كما هي بأمانة شديدة، دون اختلاق أو إسقاط أو رأي قانوني نهائي. افصل وقائع القضية عن أسلوب المحامي، ولا تنقل أي معلومة من الخزانة إلى القضية.',
-        temperature: 0.1,
-        maxOutputTokens: 16000,
-      },
-    });
-  }, undefined, undefined, false, { deadlineAt });
-
-  const preparedText = typeof response?.text === 'string' ? response.text.trim() : '';
-  const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
-  if (!preparedText) {
-    const error: any = new Error(`تعذر إعداد ملف القضية قبل الصياغة (finishReason: ${finishReason || 'UNKNOWN'}).`);
-    error.statusCode = 503;
-    throw error;
+  const NL = String.fromCharCode(10);
+  const parts: string[] = [];
+  let offset = 0;
+  const maxChars = 100000;
+  while (offset < input.facts.length) {
+    let finish = Math.min(input.facts.length, offset + maxChars);
+    if (finish < input.facts.length) {
+      const boundary = input.facts.lastIndexOf(NL, finish);
+      if (boundary > offset + 65000) finish = boundary + 1;
+    }
+    if (finish <= offset) finish = Math.min(input.facts.length, offset + maxChars);
+    parts.push(input.facts.slice(offset, finish));
+    offset = finish;
   }
-  if (isBlockedFinishReason(finishReason)) {
-    const error: any = new Error('توقف إعداد ملف القضية بسبب قيد من مزود الذكاء الاصطناعي؛ لم تبدأ الصياغة ولم يُخصم رصيد.');
-    error.statusCode = 502;
-    throw error;
-  }
-  if (['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finishReason)) {
-    const error: any = new Error('لم يكتمل إعداد ملف القضية بسبب حد الإخراج. لم تبدأ الصياغة حتى لا تعتمد على ملف تحضيري ناقص.');
-    error.statusCode = 502;
-    throw error;
-  }
+  const deadlineAt = Date.now() + 210000;
+  const header = [
+    'نوع العمل: ' + (input.workType || 'غير محدد'),
+    'المحكمة: ' + (input.courtType || ''),
+    'الدائرة: ' + (input.circuit || ''),
+    'صفة الموكل: ' + (input.clientRole || ''),
+    'الموكل: ' + (input.clientName || ''),
+    'الخصم: ' + (input.opponentName || ''),
+    'رقم الدعوى: ' + (input.caseNumber || ''),
+    'الجلسة: ' + (input.sessionDate || ''),
+  ].join(NL);
 
-  const dossierMarker = '[[AMIN_CASE_DOSSIER]]';
-  const styleMarker = '[[AMIN_LAWYER_STYLE_GUIDE]]';
-  const dossierStart = preparedText.indexOf(dossierMarker);
-  const styleStart = preparedText.indexOf(styleMarker);
-  if (dossierStart < 0 || styleStart <= dossierStart) {
-    const error: any = new Error('لم يُنتج التحضير ملف القضية ودليل الأسلوب بالصيغة المطلوبة؛ أوقفت الصياغة لمنع فقد المعلومات.');
-    error.statusCode = 502;
-    throw error;
-  }
+  const extractPart = async (part: string, index: number): Promise<string> => {
+    const prompt = 'استخرج ونظم هذا الجزء رقم ' + (index + 1) + ' من ' + parts.length +
+      ' من مستندات قضية مصرية. لا تكتب مذكرة أو رأياً نهائياً.' + NL + header + NL +
+      '[النص الأصلي]' + NL + part + NL +
+      'احتفظ بكل الأسماء والصفات والتواريخ والأرقام والمبالغ والنسب والمدد وأرقام المستندات والمواد والاقتباسات. ' +
+      'سجل الوقائع والادعاءات والإقرارات ومصدر كل منها، وميز الثابت من الادعاء والاستنتاج. ' +
+      'صف كل مستند وما يثبته وما لا يثبته. استخرج التسلسل الزمني والتناقضات والفجوات والنواقص. ' +
+      'لا تدمج أطرافاً أو وقائع، ولا تخترع قانوناً أو دفعاً أو معلومة. لا تسقط تفصيلاً مؤثراً. ' +
+      'إذا تعذر إخراج كل التفاصيل كاملة، أخرج خطأً صريحاً ولا تقدم ملخصاً ناقصاً.';
+    const response = await executeWithKeyRotation(async (ai, _key, model) =>
+      ai.models.generateContent({
+        model, contents: prompt,
+        config: {
+          systemInstruction: 'أنت أمين. استخرج ونظم المادة كما وردت دون اختلاق أو حذف. لا تصغ مذكرة قانونية.',
+          temperature: 0.05, maxOutputTokens: 10000,
+        },
+      }), undefined, undefined, false, { deadlineAt });
+    const value = typeof response?.text === 'string' ? response.text.trim() : '';
+    const finish = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
+    if (!value || isBlockedFinishReason(finish) || ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finish)) {
+      const error: any = new Error('لم يكتمل استخراج الجزء ' + (index + 1) + ' من المستند (finishReason: ' + (finish || 'UNKNOWN') + '). أوقفت الصياغة لمنع إسقاط البيانات.');
+      error.statusCode = 502;
+      throw error;
+    }
+    return NL + NL + '===== الجزء الأصلي ' + (index + 1) + ' من ' + parts.length + ' =====' + NL + value;
+  };
 
-  const caseDossier = preparedText.slice(dossierStart + dossierMarker.length, styleStart).trim();
-  const styleGuide = preparedText.slice(styleStart + styleMarker.length).trim();
-  if (!caseDossier || !styleGuide) {
-    const error: any = new Error('ملف القضية أو دليل أسلوب المحامي الناتج عن التحضير فارغ؛ لم تبدأ الصياغة.');
-    error.statusCode = 502;
-    throw error;
-  }
+  const extractStyle = async (): Promise<string> => {
+    const prompt = 'استخرج دليلاً عملياً مركزاً لأسلوب وبنية المحامي من الخزانة فقط: الترويسة والديباجة وترتيب الأقسام والتسلسل والترقيم والمصطلحات وبناء الفقرات والانتقال وصياغة الطلبات والخاتمة. لا تنقل أي واقعة أو اسم أو رقم قضية أو تاريخ أو طلب أو دفع أو مادة أو حكم أو سند قانوني من القضايا النموذجية. لا تضف قاعدة غير موجودة.' +
+      NL + '[خزانة المحامي]' + NL + input.vaultContext;
+    const response = await executeWithKeyRotation(async (ai, _key, model) =>
+      ai.models.generateContent({
+        model, contents: prompt,
+        config: {
+          systemInstruction: 'استخلص أسلوب الكتابة والبنية فقط. افصل الأسلوب عن وقائع القضايا المرجعية.',
+          temperature: 0.05, maxOutputTokens: 6000,
+        },
+      }), undefined, undefined, false, { deadlineAt });
+    const value = typeof response?.text === 'string' ? response.text.trim() : '';
+    const finish = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
+    if (!value || isBlockedFinishReason(finish) || ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finish)) {
+      const error: any = new Error('لم يكتمل استخلاص دليل أسلوب المحامي. لم تبدأ الصياغة.');
+      error.statusCode = 502;
+      throw error;
+    }
+    return value;
+  };
 
+  const compiled = await Promise.all([
+    Promise.all(parts.map((part, index) => extractPart(part, index))),
+    extractStyle(),
+  ]);
+  const explicit = [
+    input.defenses ? NL + NL + '[دفوع المحامي — النص الكامل]' + NL + input.defenses : '',
+    input.requests ? NL + NL + '[طلبات المحامي — النص الكامل]' + NL + input.requests : '',
+    input.customInstructions ? NL + NL + '[تعليمات المحامي الإضافية — النص الكامل]' + NL + input.customInstructions : '',
+  ].join('');
+  const caseDossier = '[بيانات القضية]' + NL + header +
+    NL + NL + '[المادة المستخرجة من المستندات بالترتيب الأصلي]' + compiled[0].join('') + explicit;
+  const styleGuide = compiled[1] as string;
   console.info('[counter-brief] long context prepared', {
-    originalFactsChars: input.facts.length,
-    preparedFactsChars: caseDossier.length,
-    originalVaultChars: input.vaultContext.length,
+    sourceParts: parts.length, originalFactsChars: input.facts.length,
+    preparedFactsChars: caseDossier.length, originalVaultChars: input.vaultContext.length,
     preparedVaultChars: styleGuide.length,
-    finishReason: finishReason || 'UNKNOWN',
   });
   return { caseDossier, styleGuide };
 }
