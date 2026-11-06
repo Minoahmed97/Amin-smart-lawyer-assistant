@@ -60,6 +60,7 @@ ${accumulatedText.slice(-14000)}
   if (onChunk) {
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
+      const segmentStartedAt = Date.now();
       const segmentPrompt = makeContinuationPrompt();
       const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
@@ -162,7 +163,27 @@ ${accumulatedText.slice(-14000)}
         lastError = error;
       }
 
-      if (activePair) usedPairs.add(activePair);
+      // A pair that produced text (or completed a segment without the
+      // completion marker) is still valid for the next continuation request.
+      // Blacklisting it here prevented a single-key/single-model setup from
+      // continuing a partially generated legal document.
+      if (activePair && !segmentBuffer.trim()) usedPairs.add(activePair);
+
+      if (segmentError) {
+        const segmentErrorMessage = String(segmentError?.message || segmentError || 'Unknown stream error')
+          .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[مفتاح محجوب]')
+          .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [محجوب]')
+          .slice(0, 500);
+        console.error('[counter-brief] generation segment ended before completion', {
+          providerModel: activePairLabel || 'unknown',
+          generatedCharacters: segmentBuffer.length,
+          accumulatedCharacters: accumulatedText.length,
+          finishReason: finishReason || 'UNKNOWN',
+          elapsedMs: Date.now() - segmentStartedAt,
+          error: segmentErrorMessage,
+        });
+      }
+
       if (segmentError?.blockedResponse) throw segmentError;
       if (!segmentPrefixResolved && segmentBuffer) {
         const addition = mergeContinuation(segmentBaseText, segmentBuffer);
