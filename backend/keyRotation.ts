@@ -498,6 +498,7 @@ type KeyRotationExecutionOptions = {
   previousProviderError?: string;
   providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
   avoidPairs?: string[];
+  longFormGeneration?: boolean;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -515,6 +516,33 @@ export async function executeWithKeyRotation<T>(
     new Error('انتهت المهلة المتاحة لتوليد النتيجة قبل اكتمالها.'),
     { status: 504, statusCode: 504 },
   );
+
+  if (!_forceGeminiFallback && executionOptions?.longFormGeneration && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
+    let geminiEmittedText = false;
+    try {
+      await executeWithKeyRotationStream(action, (chunk) => {
+        if (chunk) geminiEmittedText = true;
+        onChunk(chunk);
+      }, preferredModels, _ignoredClientFallbackKey, true, {
+        ...executionOptions,
+        providerAttempt: 'gemini-primary',
+        deadlineAt,
+      });
+      return;
+    } catch (geminiError: any) {
+      console.error('[ai-provider] Gemini long-form streaming attempt failed:', safeProviderErrorSummary(geminiError));
+      // Never switch providers after text has reached the draft: continuation
+      // must resume the same Gemini path instead of mixing provider outputs.
+      if (geminiEmittedText || deadlineAt - Date.now() < 10000) throw geminiError;
+      await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
+        ...executionOptions,
+        providerAttempt: 'openrouter-fallback',
+        deadlineAt,
+        previousProviderError: safeProviderErrorSummary(geminiError),
+      });
+      return;
+    }
+  }
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const overallStart = Date.now();
@@ -798,7 +826,11 @@ export async function executeWithKeyRotationStream(
           activeKeyIndex = currentKeyIndex;
           return;
         } catch (err: any) {
-          markRotationFailure(currentKey, keyModels[m], err, 'general');
+          // A transport abort after useful text is a continuation event, not
+          // evidence that this key/model is unhealthy. Do not quarantine it.
+          if (!emittedAnyChunk) {
+            markRotationFailure(currentKey, keyModels[m], err, 'general');
+          }
           if (emittedAnyChunk) {
             activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
             throw err;
