@@ -26,7 +26,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; draftingOnly?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; draftingOnly?: boolean; deadlineAt?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -42,7 +42,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   // Keep the worker inside Vercel's 300-second ceiling, reserving 15 seconds for overhead.
   const generationBudgetMs = Math.min(285000, 270000 + Math.max(0, Math.ceil((promptSize - 15000) / 1000) * 1000));
   const geminiShare = promptSize >= 40000 ? 0.85 : promptSize >= 20000 ? 0.75 : 0.55;
-  const deadlineAt = Date.now() + generationBudgetMs;
+  const deadlineAt = Math.min(Date.now() + generationBudgetMs, options.deadlineAt || Number.POSITIVE_INFINITY);
   let accumulatedText = '';
   let continuationCount = 0;
   let lastError: any = null;
@@ -318,16 +318,17 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
 
 /**
- * Compile long source documents in bounded pieces and keep the lawyer's style
- * guide separate from case facts. A failed/truncated piece aborts before drafting.
+ * Build a compact locator index for each original source segment. The original
+ * segments remain separate and are retrieved only for the sections that need them.
  */
 async function prepareLongDraftContext(input: {
   facts: string; defenses?: string; requests?: string; customInstructions?: string;
   vaultContext: string; courtType?: string; circuit?: string; clientRole?: string;
-  clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; workType?: string;
-}): Promise<{ caseDossier: string; styleGuide: string }> {
+  clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string;
+  workType?: string; deadlineAt?: number;
+}): Promise<{ sourceParts: string[]; caseIndex: string; styleGuide: string }> {
   const NL = String.fromCharCode(10);
-  const parts: string[] = [];
+  const sourceParts: string[] = [];
   let offset = 0;
   const maxChars = 100000;
   while (offset < input.facts.length) {
@@ -337,10 +338,11 @@ async function prepareLongDraftContext(input: {
       if (boundary > offset + 65000) finish = boundary + 1;
     }
     if (finish <= offset) finish = Math.min(input.facts.length, offset + maxChars);
-    parts.push(input.facts.slice(offset, finish));
+    sourceParts.push(input.facts.slice(offset, finish));
     offset = finish;
   }
-  const deadlineAt = Date.now() + 210000;
+
+  const deadlineAt = input.deadlineAt || Date.now() + 240000;
   const header = [
     'نوع العمل: ' + (input.workType || 'غير محدد'),
     'المحكمة: ' + (input.courtType || ''),
@@ -353,35 +355,42 @@ async function prepareLongDraftContext(input: {
   ].join(NL);
 
   const extractPart = async (part: string, index: number): Promise<string> => {
-    const prompt = 'استخرج ونظم هذا الجزء رقم ' + (index + 1) + ' من ' + parts.length +
-      ' من مستندات قضية مصرية. لا تكتب مذكرة أو رأياً نهائياً.' + NL + header + NL +
-      '[النص الأصلي]' + NL + part + NL +
-      'احتفظ بكل الأسماء والصفات والتواريخ والأرقام والمبالغ والنسب والمدد وأرقام المستندات والمواد والاقتباسات. ' +
-      'سجل الوقائع والادعاءات والإقرارات ومصدر كل منها، وميز الثابت من الادعاء والاستنتاج. ' +
-      'صف كل مستند وما يثبته وما لا يثبته. استخرج التسلسل الزمني والتناقضات والفجوات والنواقص. ' +
-      'لا تدمج أطرافاً أو وقائع، ولا تخترع قانوناً أو دفعاً أو معلومة. لا تسقط تفصيلاً مؤثراً. ' +
-      'إذا تعذر إخراج كل التفاصيل كاملة، أخرج خطأً صريحاً ولا تقدم ملخصاً ناقصاً.';
+    const prompt =
+      'أنشئ فهرساً مرجعياً دقيقاً للجزء رقم ' + (index + 1) + ' من ' + sourceParts.length +
+      ' من أوراق قضية مصرية. لا تكتب مذكرة ولا تستنتج وقائع غير واردة.' + NL + header + NL +
+      '[النص الأصلي — احتفظ بأرقام الصفحات/المستندات إن وجدت]' + NL + part + NL +
+      'أخرج فهرساً مركزاً بعناوين ثابتة: الأطراف والصفات؛ الوقائع والادعاءات مع قائل كل ادعاء؛ ' +
+      'الإقرارات؛ المستندات وأرقامها ومضمونها؛ التواريخ والتسلسل الزمني؛ المبالغ والأرقام والنسب؛ ' +
+      'الدفوع والطلبات؛ التناقضات؛ النواقص والأسئلة. احتفظ حرفياً بالأسماء والتواريخ والمبالغ ' +
+      'وأرقام المستندات والمواد والاقتباسات المهمة، وميّز الثابت عن الادعاء والاستنتاج. ' +
+      'لا تدمج وقائع أو أطرافاً ولا تختلق سنداً قانونياً. هذا الفهرس لتحديد مواضع الرجوع فقط؛ ' +
+      'النص الأصلي الكامل سيُرفق عند صياغة كل قسم. اجعل الفهرس موجزاً دون إسقاط أسماء أو تواريخ أو أرقام مؤثرة.';
     const response = await executeWithKeyRotation(async (ai, _key, model) =>
       ai.models.generateContent({
         model, contents: prompt,
         config: {
-          systemInstruction: 'أنت أمين. استخرج ونظم المادة كما وردت دون اختلاق أو حذف. لا تصغ مذكرة قانونية.',
-          temperature: 0.05, maxOutputTokens: 10000,
+          systemInstruction: 'أنت أمين. أنشئ فهرساً مرجعياً أميناً للنص دون صياغة رأي أو مذكرة ودون اختلاق.',
+          temperature: 0.05, maxOutputTokens: 7000,
         },
       }), undefined, undefined, false, { deadlineAt });
     const value = typeof response?.text === 'string' ? response.text.trim() : '';
     const finish = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
-    if (!value || isBlockedFinishReason(finish) || ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finish)) {
-      const error: any = new Error('لم يكتمل استخراج الجزء ' + (index + 1) + ' من المستند (finishReason: ' + (finish || 'UNKNOWN') + '). أوقفت الصياغة لمنع إسقاط البيانات.');
+    if (!value || isBlockedFinishReason(finish) ||
+        ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finish)) {
+      const error: any = new Error('لم يكتمل فهرسة الجزء ' + (index + 1) +
+        ' من المستند (finishReason: ' + (finish || 'UNKNOWN') + '). أوقفت الصياغة منعاً لإسقاط البيانات.');
       error.statusCode = 502;
       throw error;
     }
-    return NL + NL + '===== الجزء الأصلي ' + (index + 1) + ' من ' + parts.length + ' =====' + NL + value;
+    return '===== فهرس الجزء ' + (index + 1) + ' =====' + NL + value;
   };
 
   const extractStyle = async (): Promise<string> => {
-    const prompt = 'استخرج دليلاً عملياً مركزاً لأسلوب وبنية المحامي من الخزانة فقط: الترويسة والديباجة وترتيب الأقسام والتسلسل والترقيم والمصطلحات وبناء الفقرات والانتقال وصياغة الطلبات والخاتمة. لا تنقل أي واقعة أو اسم أو رقم قضية أو تاريخ أو طلب أو دفع أو مادة أو حكم أو سند قانوني من القضايا النموذجية. لا تضف قاعدة غير موجودة.' +
-      NL + '[خزانة المحامي]' + NL + input.vaultContext;
+    const prompt =
+      'استخرج دليلاً عملياً مركزاً لأسلوب وبنية المحامي من الخزانة فقط: الترويسة والديباجة وترتيب الأقسام ' +
+      'والتسلسل والترقيم والمصطلحات وبناء الفقرات والانتقال وصياغة الطلبات والخاتمة. ' +
+      'لا تنقل أي واقعة أو اسم أو رقم قضية أو تاريخ أو طلب أو دفع أو مادة أو حكم أو سند قانوني من القضايا النموذجية. ' +
+      'لا تضف قاعدة غير موجودة.' + NL + '[خزانة المحامي]' + NL + input.vaultContext;
     const response = await executeWithKeyRotation(async (ai, _key, model) =>
       ai.models.generateContent({
         model, contents: prompt,
@@ -392,7 +401,8 @@ async function prepareLongDraftContext(input: {
       }), undefined, undefined, false, { deadlineAt });
     const value = typeof response?.text === 'string' ? response.text.trim() : '';
     const finish = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
-    if (!value || isBlockedFinishReason(finish) || ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finish)) {
+    if (!value || isBlockedFinishReason(finish) ||
+        ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(finish)) {
       const error: any = new Error('لم يكتمل استخلاص دليل أسلوب المحامي. لم تبدأ الصياغة.');
       error.statusCode = 502;
       throw error;
@@ -401,23 +411,184 @@ async function prepareLongDraftContext(input: {
   };
 
   const compiled = await Promise.all([
-    Promise.all(parts.map((part, index) => extractPart(part, index))),
+    Promise.all(sourceParts.map((part, index) => extractPart(part, index))),
     extractStyle(),
   ]);
   const explicit = [
-    input.defenses ? NL + NL + '[دفوع المحامي — النص الكامل]' + NL + input.defenses : '',
-    input.requests ? NL + NL + '[طلبات المحامي — النص الكامل]' + NL + input.requests : '',
-    input.customInstructions ? NL + NL + '[تعليمات المحامي الإضافية — النص الكامل]' + NL + input.customInstructions : '',
+    input.defenses ? NL + '[دفوع المحامي — النص الكامل]' + NL + input.defenses : '',
+    input.requests ? NL + '[طلبات المحامي — النص الكامل]' + NL + input.requests : '',
+    input.customInstructions ? NL + '[تعليمات المحامي الإضافية — النص الكامل]' + NL + input.customInstructions : '',
   ].join('');
-  const caseDossier = '[بيانات القضية]' + NL + header +
-    NL + NL + '[المادة المستخرجة من المستندات بالترتيب الأصلي]' + compiled[0].join('') + explicit;
+  const caseIndex = '[بيانات القضية]' + NL + header + NL + NL +
+    '[فهرس مرجعي للأجزاء الأصلية — لا يحل محل الرجوع إلى النصوص الأصلية]' +
+    NL + (compiled[0] as string[]).join(NL + NL) + explicit;
   const styleGuide = compiled[1] as string;
-  console.info('[counter-brief] long context prepared', {
-    sourceParts: parts.length, originalFactsChars: input.facts.length,
-    preparedFactsChars: caseDossier.length, originalVaultChars: input.vaultContext.length,
+  console.info('[counter-brief] long source indexed', {
+    sourceParts: sourceParts.length,
+    originalFactsChars: input.facts.length,
+    caseIndexChars: caseIndex.length,
+    originalVaultChars: input.vaultContext.length,
     preparedVaultChars: styleGuide.length,
   });
-  return { caseDossier, styleGuide };
+  return { sourceParts, caseIndex, styleGuide };
+}
+
+/**
+ * Plan the document once, then draft each section against only its assigned
+ * original source segments. No final request receives the concatenated dossier.
+ */
+async function generateLongDraftInSections(
+  basePrompt: string,
+  context: { sourceParts: string[]; caseIndex: string; styleGuide: string },
+  onChunk?: (text: string) => void,
+  options: { legalResearch?: boolean; deadlineAt?: number } = {},
+): Promise<string> {
+  const NL = String.fromCharCode(10);
+  const deadlineAt = options.deadlineAt || Date.now() + 270000;
+  const plannerPrompt =
+    '[مهمة تخطيط بنية المستند — لا تكتب المستند الآن]' + NL +
+    'اعتماداً على بيانات القضية وفهرس الأجزاء الأصلية وتعليمات المحامي التالية، ضع مخططاً عملياً للمستند.' + NL +
+    basePrompt + NL + NL +
+    'أعد JSON صالحاً فقط بهذا الشكل: {"sections":[{"title":"عنوان عربي موجز","purpose":"ما الذي يعالجه القسم","sourceParts":[1,2],"final":false}]}. ' +
+    'أنشئ من 3 إلى 6 أقسام مرتبة من الديباجة والوقائع إلى التحليل والدفوع ثم الطلبات الختامية. ' +
+    'sourceParts أرقام الأجزاء الأصلية من 1 إلى ' + context.sourceParts.length + '، واختر لكل قسم الأجزاء اللازمة له فقط. ' +
+    'يجب أن يظهر كل رقم جزء مرة واحدة على الأقل في المخطط، ويجوز تكراره إذا كان ضرورياً للربط. ' +
+    'اجعل final=true للقسم الأخير الذي يتضمن النتيجة والطلبات الختامية، وfalse لبقية الأقسام. ' +
+    'لا تسقط طلباً أو دفعاً أدخله المحامي. لا تضع أي شرح خارج JSON.';
+  const planResponse = await executeWithKeyRotation(async (ai, _key, model) =>
+    ai.models.generateContent({
+      model, contents: plannerPrompt,
+      config: {
+        systemInstruction: 'أنت مخطط مستندات قانونية. أخرج JSON صحيحاً فقط ولا تختلق بيانات.',
+        temperature: 0.05, maxOutputTokens: 5000,
+      },
+    }), undefined, undefined, false, { deadlineAt });
+  const planText = typeof planResponse?.text === 'string' ? planResponse.text.trim() : '';
+  const planFinish = String(planResponse?.candidates?.[0]?.finishReason || '').toUpperCase();
+  if (!planText || isBlockedFinishReason(planFinish) ||
+      ['MAX_TOKENS', 'MAX_OUTPUT_TOKENS', 'TOKEN_LIMIT'].includes(planFinish)) {
+    const error: any = new Error('تعذر إعداد مخطط أقسام الصياغة الطويلة بصورة مكتملة.');
+    error.statusCode = 502;
+    throw error;
+  }
+
+  let parsed: any;
+  try {
+    const jsonStart = planText.indexOf('{');
+    const jsonEnd = planText.lastIndexOf('}');
+    if (jsonStart < 0 || jsonEnd <= jsonStart) throw new Error('missing JSON object');
+    parsed = JSON.parse(planText.slice(jsonStart, jsonEnd + 1));
+  } catch {
+    const error: any = new Error('أعاد النموذج مخططاً غير صالح؛ أوقفت الصياغة حتى لا تُسقط أقساماً أو وقائع.');
+    error.statusCode = 502;
+    throw error;
+  }
+
+  const rawSections = Array.isArray(parsed?.sections) ? parsed.sections : [];
+  if (!rawSections.length || rawSections.length > 8) {
+    const error: any = new Error('مخطط الصياغة لا يحتوي على عدد صالح من الأقسام.');
+    error.statusCode = 502;
+    throw error;
+  }
+  const sections = rawSections.map((item: any, index: number) => {
+    const ids = Array.isArray(item?.sourceParts)
+      ? Array.from(new Set(item.sourceParts.map((id: any) => Number(id))
+          .filter((id: number) => Number.isInteger(id) && id >= 1 && id <= context.sourceParts.length)))
+      : [];
+    return {
+      title: String(item?.title || ('القسم ' + (index + 1))).replace(/[\r\n]+/g, ' ').slice(0, 140),
+      purpose: String(item?.purpose || 'معالجة الجزء المحدد من القضية').slice(0, 1200),
+      sourceParts: ids,
+      final: Boolean(item?.final),
+    };
+  });
+  if (sections.some((section: any) => !section.sourceParts.length)) {
+    const error: any = new Error('المخطط لم يحدد المستندات الأصلية اللازمة لكل قسم.');
+    error.statusCode = 502;
+    throw error;
+  }
+
+  const assigned = new Set<number>();
+  for (const section of sections) for (const id of section.sourceParts) assigned.add(id);
+  const missing = context.sourceParts.map((_part, index) => index + 1).filter((id) => !assigned.has(id));
+  if (missing.length) {
+    sections.push({
+      title: 'استكمال فحص المستندات والوقائع المرتبطة',
+      purpose: 'معالجة أي وقائع أو مستندات في الأجزاء التي لم يربطها المخطط بالأقسام السابقة، وبيان أثرها دون تكرار.',
+      sourceParts: missing,
+      final: false,
+    });
+  }
+
+  const tasks: Array<{ title: string; purpose: string; sourceParts: number[]; final: boolean }> = [];
+  for (const section of sections) {
+    // Bound each generation request to at most two original source segments.
+    for (let i = 0; i < section.sourceParts.length; i += 2) {
+      const ids = section.sourceParts.slice(i, i + 2);
+      tasks.push({
+        title: i === 0 ? section.title : section.title + ' — استكمال',
+        purpose: section.purpose,
+        sourceParts: ids,
+        final: section.final && i + 2 >= section.sourceParts.length,
+      });
+    }
+  }
+  if (tasks.length > 12) {
+    const error: any = new Error('تطلب المستند عدداً زائداً من مراحل الصياغة؛ أوقفت العملية بدلاً من إنتاج نتيجة مبتورة.');
+    error.statusCode = 422;
+    throw error;
+  }
+
+  let assembled = '';
+  for (let index = 0; index < tasks.length; index += 1) {
+    if (Date.now() >= deadlineAt - 10000) {
+      const error: any = new Error('انتهى الوقت المتاح قبل إتمام جميع أقسام المستند. احتفظت الواجهة بما وصل من نص.');
+      error.statusCode = 504;
+      throw error;
+    }
+    const task = tasks[index];
+    const originalSources = task.sourceParts.map((id) =>
+      '===== النص الأصلي الكامل للجزء ' + id + ' =====' + NL + context.sourceParts[id - 1],
+    ).join(NL + NL);
+    const previousTail = assembled.slice(-7000);
+    const sectionPrompt =
+      basePrompt + NL + NL +
+      '[مخطط المستند الكامل — حافظ على الترتيب والترابط]' + NL +
+      tasks.map((item, i) => (i + 1) + '. ' + item.title).join(NL) + NL + NL +
+      '[القسم المطلوب الآن ' + (index + 1) + ' من ' + tasks.length + ']' + NL +
+      'العنوان: ' + task.title + NL +
+      'الغرض والنطاق: ' + task.purpose + NL +
+      'الأجزاء الأصلية المحددة لهذا القسم: ' + task.sourceParts.join(', ') + NL +
+      '[المصادر الأصلية ذات الصلة — المرجع الحاسم للوقائع والتواريخ والأرقام]' + NL +
+      originalSources + NL + NL +
+      (previousTail
+        ? '[آخر ما تم إنجازه من المستند — للسياق والاتساق فقط، لا تعِد كتابته]' + NL + previousTail + NL + NL
+        : '') +
+      'اكتب هذا القسم وحده الآن، ولا تكتب عناوين الأقسام الأخرى ولا تعِد كتابة ما سبق. ' +
+      'اعتمد على النصوص الأصلية المحددة لهذا القسم، واستعن بالفهرس فقط لتحديد الروابط. ' +
+      'لا تختلق واقعة أو مستنداً أو اسماً أو تاريخاً أو مادة أو حكماً. لا تسقط تفصيلاً جوهرياً. ' +
+      (task.final
+        ? 'هذا هو القسم الختامي: أتمم النتيجة والطلبات التي حددها المحامي فقط، ولا تضف طلباً جديداً.'
+        : 'لا تضع خاتمة نهائية أو طلبات ختامية؛ اتركها للقسم الختامي.') +
+      ' أخرج نص القسم القانوني فقط دون مقدمات محادثية أو شرح لآلية العمل.';
+    if (onChunk) onChunk(NL + NL + task.title + NL + NL);
+    const sectionText = await generateDeepLegalResponse(
+      sectionPrompt,
+      onChunk,
+      { legalResearch: options.legalResearch, draftingOnly: true, deadlineAt },
+    );
+    if (!sectionText.trim()) {
+      const error: any = new Error('لم ينتج نص للقسم: ' + task.title);
+      error.statusCode = 502;
+      throw error;
+    }
+    assembled += (assembled ? NL + NL : '') + task.title + NL + NL + sectionText.trim();
+    console.info('[counter-brief] section completed', {
+      section: index + 1, totalSections: tasks.length,
+      sourceParts: task.sourceParts, generatedCharacters: sectionText.length,
+    });
+  }
+  return assembled.trim();
 }
 
 export default async function handler(req: any, res: any) {
@@ -481,9 +652,11 @@ export default async function handler(req: any, res: any) {
 
     let draftingFacts = facts;
     let draftingVaultContext = vaultContext;
+    let longDraftContext: { sourceParts: string[]; caseIndex: string; styleGuide: string } | null = null;
     const needsContextPreparation = facts.length > 22000 || vaultContext.length > 12000;
+    const longDraftDeadlineAt = needsContextPreparation ? Date.now() + 270000 : undefined;
     if (needsContextPreparation) {
-      const prepared = await prepareLongDraftContext({
+      longDraftContext = await prepareLongDraftContext({
         facts,
         defenses,
         requests,
@@ -497,12 +670,21 @@ export default async function handler(req: any, res: any) {
         caseNumber,
         sessionDate,
         workType: finalWorkType,
+        deadlineAt: longDraftDeadlineAt,
       });
-      draftingFacts = prepared.caseDossier;
-      draftingVaultContext = prepared.styleGuide;
+      draftingFacts = longDraftContext.caseIndex;
+      draftingVaultContext = longDraftContext.styleGuide;
     }
 
-    const prompt = `[لغة الإخراج والتنسيق الإلزامية — أولوية قصوى]: اكتب المستند القانوني كله باللغة العربية فقط، بما في ذلك العناوين والديباجة وأي ملاحظات تحريرية. يُحظر إدراج كلمات أو تعليمات تنسيق باللغة الإنجليزية داخل المستند، مثل Centered Title أو Center Align أو Heading أو Bold أو Justify أو أي وصف لطريقة التنسيق. لا تكتب تعليمات التنسيق كنص؛ طبّق شكل العناوين وترتيبها مباشرةً باستخدام النص العربي وحده. احتفظ بالمصطلح الأجنبي فقط إذا كان اسماً رسمياً أو اختصاراً ضرورياً ورد في وقائع القضية، وليس لوصف التنسيق. لا تغيّر الديباجة العربية أو أسلوبها المستخلص من خزنة المحامي؛ المطلوب تنسيقها بالعربية لا ترجمتها أو شرحها. [مهمة إعداد وصياغة قانونية شاملة]: ${workTypeInstruction} المحكمة: ${courtType || 'المحكمة المختصة'} الدائرة: ${circuit || ''} الصفة التي حددها المحامي: ${clientRole || 'غير محددة صراحةً؛ لا تفترض أن الموكل هو المدعى عليه، واستدل من الوقائع فقط إذا كانت واضحة، وإلا نبّه إلى ضرورة تحديد الصفة'} (${clientName ? `السيد / ${clientName}` : 'الموكل'}) الخصم: ${opponentName || 'الخصم'} رقم الدعوى: ${caseNumber || ''} الجلسة: ${sessionDate || ''} ملف القضية المنظم والمستخرج من كامل الأوراق: ${draftingFacts} ${defenses ? `أوجه الدفاع والدفوع التي أدخلها المحامي:\n${defenses}\n` : ''} ${requests ? `الطلبات التي أدخلها المحامي:\n${requests}\n` : ''} ${customInstructions ? `[تعليمات إضافية]:\n${customInstructions}\n` : ''} ${draftingVaultContext ? `\n[دليل أسلوب وبنية المحامي المستخلص من خزانته، لا تستورد منها وقائع أو أرقاماً]:\n${draftingVaultContext}\n` : ''} قبل الصياغة نفّذ داخلياً: - فحص اكتمال الوقائع وتحديد أي معلومات جوهرية ناقصة. - تحديد نوع المستند القانوني المطلوب أو الأنسب أولاً، وعدم افتراض أن كل رد يجب أن يكون مذكرة دفاع. - تحديد التكييف القانوني الأرجح وأي تكييف بديل ذي أثر. - استخراج أقوى الدفوع والأسانيد المرتبطة بالوقائع. - فحص الصفة والمصلحة والاختصاص والإجراءات والمواعيد متى كانت ذات صلة. - مطابقة كل دفع مع الواقعة والمستند/الدليل المتاح. - تحديد التناقضات أو نقاط الضعف إن وجدت. - ترتيب النقاط بحسب أثرها القانوني والإثباتي: معالجة الجوهرية، ودمج المساندة، وعدم إنشاء رد مستقل على الهامشية إلا إذا كان لها أثر حقيقي. - بناء الطلبات الختامية من النتيجة التي انتهى إليها التحليل فقط، ومطابقة كل طلب صراحةً مع طلبات المحامي ووقائع القضية والدفوع والأسباب والنتيجة النهائية. - الالتزام الصارم بنطاق الطلبات التي أدخلها المحامي: لا تضف أو تحذف أو تستبدل أو توسّع طلباً قضائياً من تلقاء نفسك. يجوز تحسين الصياغة وترتيب الطلبات المحددة فقط مع الحفاظ على مضمونها. - إذا ظهر طلب إضافي قد يكون مهماً، فاذكره في تنبيه منفصل للمحامي ولا تدرجه في الطلبات الختامية إلا إذا فوّضك صراحةً في تحديد الطلبات أو وافق عليه. - إذا لم يحدد المحامي طلباته وتركها للنظام صراحةً، فاقترح الطلبات الضرورية فقط التي تسندها الوقائع والمستندات والتكييف القانوني، ولا تفترض تفويضاً لم يمنحه. - راجع أن كل طلب ختامي يطابق طلباً حدده المحامي أو تفويضاً صريحاً منه، وأنه لم يُحذف أي طلب أدخله. لا تعتبر احتمال أهمية طلب إضافي إذناً بإدراجه تلقائياً. [التزام حرفي بالقالب — Strict Pattern Base / أولوية قصوى]: اعتبر النص المرجعي الفعلي المرفق من خزنة هذا الحساب هو القالب البنيوي الإلزامي للمستند متى كان متاحاً، وليس خياراً استرشادياً. طابق هيكل النموذج وترتيب أقسامه وعناوينه وتسلسل الدفوع والبنود والمصطلحات القانونية وطريقة الترقيم والديباجة والخاتمة والترويسة بقدر انطباقها على القضية الحالية. لا تحذف أو تضف أو تعيد ترتيب قسم أو دفع أو بند ولا تستبدل مصطلحاً قانونياً خاصاً بالقالب بتعبير عام لمجرد تحسين الأسلوب؛ عدّل فقط ما تفرضه وقائع القضية الحالية أو نوع المستند المطلوب، مع الحفاظ على كل عنصر بنيوي صالح. إذا كان القالب لا يتضمن قسماً لازماً بطبيعة العمل الحالي، أضف الحد الضروري فقط ولا تعِد تصميم بقية الهيكل. تعامل مع وقائع الدعوى الحالية والطلبات والدفوع التي أدخلها المحامي باعتبارها مصدر المحتوى الموضوعي، ومع القالب باعتباره مصدر الهيكل والأسلوب. لا تنقل أي وقائع أو أسماء أو أرقام أو تواريخ أو طلبات تخص القضية المرجعية. اكتب بصوت المحامي المصري الممارس وببصمته المهنية، لا بصيغة مساعد ذكاء اصطناعي ولا بصيغة اقتراحات أو توصيات. [Zero Chatter — منع الثرثرة]: أخرج المستند القانوني وحده، وابدأ فوراً من أول سطر في الديباجة القانونية كما ورد نمطها في القالب؛ ممنوع أي مقدمة أو تحية أو تمهيد أو شرح لطريقة العمل أو عبارة مثل «إليك الصياغة» أو أي خاتمة محادثية. لا تضع ملاحظات خارج المستند إلا عند ضرورة تحقق قانوني محددة، وعندها افصلها بوضوح عن نص المستند ولا تخلطها بالديباجة أو الطلبات الختامية. استخلص الدفوع والتحليل للقضية الحالية استقلالاً، ولا تنقل وقائع القضية المرجعية أو أسماء أطرافها أو أرقامها أو تواريخها أو طلباتها الخاصة. يجوز استخدام اسم المكتب والترويسة والتوقيع الثابت الوارد في النموذج المرجعي إذا كان واضحاً، مع عدم اختراع بيانات أو نقل بيانات القضية القديمة. لا تدّعِ أن المرجع غير موجود؛ النص المرجعي مرفق داخل سياق الخزانة. اعتمد في مضمون المستند حصراً على مدخلات القضية الحالية ومستنداتها والطلبات التي حددها المستخدم. لا تفرض هيكل نوع مستند آخر؛ التزم حرفياً بنوع العمل القضائي المطلوب حالياً، سواء كان صحيفة دعوى أو مذكرة أو إعادة إعلان أو إنذاراً أو غير ذلك. إذا لم يوجد في الخزنة نموذج من النوع نفسه، استخدم أقرب مرجع اختير وفق نوع المستند والفرع القانوني وجهة القضاء، مع الاقتداء بأسلوب المحامي وترويسته وبنائه العام وتكييف هيكل المستند ليتفق مع نوع العمل الحالي. لا تذكر للمستخدم أنك استخدمت الخزنة أو تشرح آلية استخلاص البصمة. لا تختصر نقطة مؤثرة، ولا تُطِل في نقطة لا تحتاج إلى تفصيل؛ اجعل التفصيل تابعاً لحاجة القضية. لا تفصل «الأسانيد القانونية» كقسم مستقل؛ ضع القاعدة القانونية داخل سياق الحجة في موضعها الطبيعي. لا تضف واقعة أو مستنداً أو اسماً أو تاريخاً غير موجود. إذا كانت نقطة جوهرية تحتاج تحققاً، ضع تنبيهاً واضحاً للمحامي بدلاً من اختلاقها. لا تذكر حكماً أو رقم طعن أو مادة قانونية إلا إذا كانت موثوقة في السياق المتاح؛ وإلا اذكر أن التحقق مطلوب. وفي النهاية راجع المسودة داخلياً مرة أخرى بحثاً عن أي واقعة أو مستند أو دفع أو طلب أو تناقض تم إغفاله قبل إخراج النص النهائي. لا تعتبر المذكرة مكتملة إذا انتهى الإخراج قبل إتمام بنيتها المطلوبة؛ أكمل جميع الأقسام اللازمة لنوع المستند، ولا تتوقف عند الملخص أو منتصف الحجة أو قبل الطلبات الختامية. إذا كان النص طويلاً، حافظ على نفس مستوى التحليل وأكمل حتى النهاية بدلاً من اختزال الأجزاء الأخيرة.`;
+    const prompt = `[لغة الإخراج والتنسيق الإلزامية — أولوية قصوى]: اكتب المستند القانوني كله باللغة العربية فقط، بما في ذلك العناوين والديباجة وأي ملاحظات تحريرية. يُحظر إدراج كلمات أو تعليمات تنسيق باللغة الإنجليزية داخل المستند، مثل Centered Title أو Center Align أو Heading أو Bold أو Justify أو أي وصف لطريقة التنسيق. لا تكتب تعليمات التنسيق كنص؛ طبّق شكل العناوين وترتيبها مباشرةً باستخدام النص العربي وحده. احتفظ بالمصطلح الأجنبي فقط إذا كان اسماً رسمياً أو اختصاراً ضرورياً ورد في وقائع القضية، وليس لوصف التنسيق. لا تغيّر الديباجة العربية أو أسلوبها المستخلص من خزنة المحامي؛ المطلوب تنسيقها بالعربية لا ترجمتها أو شرحها. [مهمة إعداد وصياغة قانونية شاملة]: ${workTypeInstruction} المحكمة: ${courtType || 'المحكمة المختصة'} الدائرة: ${circuit || ''} الصفة التي حددها المحامي: ${clientRole || 'غير محددة صراحةً؛ لا تفترض أن الموكل هو المدعى عليه، واستدل من الوقائع فقط إذا كانت واضحة، وإلا نبّه إلى ضرورة تحديد الصفة'} (${clientName ? `السيد / ${clientName}` : 'الموكل'}) الخصم: ${opponentName || 'الخصم'} رقم الدعوى: ${caseNumber || ''} الجلسة: ${sessionDate || ''} ملف القضية المنظم والمستخرج من كامل الأوراق: ${draftingFacts} ${defenses ? `أوجه الدفاع والدفوع التي أدخلها المحامي:\n${defenses}\n` : ''} ${requests ? `الطلبات التي أدخلها المحامي:\n${requests}\n` : ''} ${customInstructions ? `[تعليمات إضافية]:\n${customInstructions}\n` : ''} ${draftingVaultContext ? `\n[دليل أسلوب وبنية المحامي المستخلص من خزانته، لا تستورد منها وقائع أو أرقاماً]:\n${draftingVaultContext}\n` : ''} قبل الصياغة نفّذ داخلياً: - فحص اكتمال الوقائع وتحديد أي معلومات جوهرية ناقصة. - تحديد نوع المستند القانوني المطلوب أو الأنسب أولاً، وعدم افتراض أن كل رد يجب أن يكون مذكرة دفاع. - تحديد التكييف القانوني الأرجح وأي تكييف بديل ذي أثر. - استخراج أقوى الدفوع والأسانيد المرتبطة بالوقائع. - فحص الصفة والمصلحة والاختصاص والإجراءات والمواعيد متى كانت ذات صلة. - مطابقة كل دفع مع الواقعة والمستند/الدليل المتاح. - تحديد التناقضات أو نقاط الضعف إن وجدت. - ترتيب النقاط بحسب أثرها القانوني والإثباتي: معالجة الجوهرية، ودمج المساندة، وعدم إنشاء رد مستقل على الهامشية إلا إذا كان لها أثر حقيقي. - بناء الطلبات الختامية من النتيجة التي انتهى إليها التحليل فقط، ومطابقة كل طلب صراحةً مع طلبات المحامي ووقائع القضية والدفوع والأسباب والنتيجة النهائية. - الالتزام الصارم بنطاق الطلبات التي أدخلها المحامي: لا تضف أو تحذف أو تستبدل أو توسّع طلباً قضائياً من تلقاء نفسك. يجوز تحسين الصياغة وترتيب الطلبات المحددة فقط مع الحفاظ على مضمونها. - إذا ظهر طلب إضافي قد يكون مهماً، فاذكره في تنبيه منفصل للمحامي ولا تدرجه في الطلبات الختامية إلا إذا فوّضك صراحةً في تحديد الطلبات أو وافق عليه. - إذا لم يحدد المحامي طلباته وتركها للنظام صراحةً، فاقترح الطلبات الضرورية فقط التي تسندها الوقائع والمستندات والتكييف القانوني، ولا تفترض تفويضاً لم يمنحه. - راجع أن كل طلب ختامي يطابق طلباً حدده المحامي أو تفويضاً صريحاً منه، وأنه لم يُحذف أي طلب أدخله. لا تعتبر احتمال أهمية طلب إضافي إذناً بإدراجه تلقائياً. [التزام حرفي بالقالب — Strict Pattern Base / أولوية قصوى]: اعتبر النص المرجعي الفعلي المرفق من خزنة هذا الحساب هو القالب البنيوي الإلزامي للمستند متى كان متاحاً، وليس خياراً استرشادياً. طابق هيكل النموذج وترتيب أقسامه وعناوينه وتسلسل الدفوع والبنود والمصطلحات القانونية وطريقة الترقيم والديباجة والخاتمة والترويسة بقدر انطباقها على القضية الحالية. لا تحذف أو تضف أو تعيد ترتيب قسم أو دفع أو بند ولا تستبدل مصطلحاً قانونياً خاصاً بالقالب بتعبير عام لمجرد تحسين الأسلوب؛ عدّل فقط ما تفرضه وقائع القضية الحالية أو نوع المستند المطلوب، مع الحفاظ على كل عنصر بنيوي صالح. إذا كان القالب لا يتضمن قسماً لازماً بطبيعة العمل الحالي، أضف الحد الضروري فقط ولا تعِد تصميم بقية الهيكل. تعامل مع وقائع الدعوى الحالية والطلبات والدفوع التي أدخلها المحامي باعتبارها مصدر المحتوى الموضوعي، ومع القالب باعتباره مصدر الهيكل والأسلوب. لا تنقل أي وقائع أو أسماء أو أرقام أو تواريخ أو طلبات تخص القضية المرجعية. اكتب بصوت المحامي المصري الممارس وببصمته المهنية، لا بصيغة مساعد ذكاء اصطناعي ولا بصيغة اقتراحات أو توصيات. [Zero Chatter — منع الثرثرة]: أخرج المستند القانوني وحده، وابدأ فوراً من أول سطر في الديباجة القانونية كما ورد نمطها في القالب؛ ممنوع أي مقدمة أو تحية أو تمهيد أو شرح لطريقة العمل أو عبارة مثل «إليك الصياغة» أو أي خاتمة محادثية. لا تضع ملاحظات خارج المستند إلا عند ضرورة تحقق قانوني محددة، وعندها افصلها بوضوح عن نص المستند ولا تخلطها بالديباجة أو الطلبات الختامية. استخلص الدفوع والتحليل للقضية الحالية استقلالاً، ولا تنقل وقائع القضية المرجعية أو أسماء أطرافها أو أرقامها أو تواريخها أو طلباتها الخاصة. يجوز استخدام اسم المكتب والترويسة والتوقيع الثابت الوارد في النموذج المرجعي إذا كان واضحاً، مع عدم اختراع بيانات أو نقل بيانات القضية القديمة. لا تدّعِ أن المرجع غير موجود؛ النص المرجعي مرفق داخل سياق الخزانة. اعتمد في مضمون المستند حصراً على مدخلات القضية الحالية ومستنداتها والطلبات التي حددها المستخدم. لا تفرض هيكل نوع مستند آخر؛ التزم حرفياً بنوع العمل القضائي المطلوب حالياً، سواء كان صحيفة دعوى أو مذكرة أو إعادة إعلان أو إنذاراً أو غير ذلك. إذا لم يوجد في الخزنة نموذج من النوع نفسه، استخدم أقرب مرجع اختير وفق نوع المستند والفرع القانوني وجهة القضاء، مع الاقتداء بأسلوب المحامي وترويسته وبنائه العام وتكييف هيكل المستند ليتفق مع نوع العمل الحالي. لا تذكر للمستخدم أنك استخدمت الخزنة أو تشرح آلية استخلاص البصمة. لا تختصر نقطة مؤثرة، ولا تُطِل في نقطة لا تحتاج إلى تفصيل؛ اجعل التفصيل تابعاً لحاجة القضية. لا تفصل «الأسانيد القانونية» كقسم مستقل؛ ضع القاعدة القانونية داخل سياق الحجة في موضعها الطبيعي. لا تضف واقعة أو مستنداً أو اسماً أو تاريخاً غير موجود. إذا كانت نقطة جوهرية تحتاج تحققاً، ضع تنبيهاً واضحاً للمحامي بدلاً من اختلاقها. لا تذكر حكماً أو رقم طعن أو مادة قانونية إلا إذا كانت موثوقة في السياق المتاح؛ وإلا اذكر أن التحقق مطلوب. وفي النهاية راجع المسودة داخلياً مرة أخرى بحثاً عن أي واقعة أو مستند أو دفع أو طلب أو تناقض تم إغفاله قبل إخراج النص النهائي. لا تعتبر المذكرة مكتملة إذا انتهى الإخراج قبل إتمام بنيتها المطلوبة؛ أكمل جميع الأقسام اللازمة لنوع المستند، ولا تتوقف عند الملخص أو منتصف الحجة أو قبل الطلبات الختامية. إذا كان النص طويلاً، حافظ على نفس مستوى التحليل وأكمل حتى النهاية بدلاً من اختزال الأجزاء الأخيرة.`;;
+
+    const runDraftGeneration = (writeChunk?: (text: string) => void) =>
+      longDraftContext
+        ? generateLongDraftInSections(prompt, longDraftContext, writeChunk, {
+            legalResearch,
+            deadlineAt: longDraftDeadlineAt,
+          })
+        : generateDeepLegalResponse(prompt, writeChunk, { legalResearch, draftingOnly: true })
 
     if (body?.stream === true) {
       res.statusCode = 200;
@@ -531,7 +713,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, draftingOnly: true });
+        await runDraftGeneration(writeChunk);
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -547,7 +729,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, draftingOnly: true });
+    const resultText = await runDraftGeneration();
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
