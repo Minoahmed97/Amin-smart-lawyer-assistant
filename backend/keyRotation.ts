@@ -764,7 +764,10 @@ export async function executeWithKeyRotationStream(
 
       for (let m = 0; m < keyModels.length; m++) {
         attemptedModelCount += 1;
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
+        const remainingMs = Math.max(1000, deadlineAt - Date.now());
+        // A fixed 18-second SDK timeout aborted long legal-document continuation streams.
+        // Let each stream use the remaining generation budget (capped at 120 seconds).
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, remainingMs)));
         let emittedAnyChunk = false;
         try {
           const stream = await action(ai, currentKey, keyModels[m]);
