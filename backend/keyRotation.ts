@@ -122,6 +122,18 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
   return 'other';
 }
 
+function safeProviderErrorSummary(error: any): string {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status);
+  const code = String(error?.code || error?.error?.code || '').slice(0, 80);
+  const rawMessage = String(error?.message || error?.error?.message || 'Unknown provider error');
+  const message = rawMessage
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[مفتاح محجوب]')
+    .replace(/Bearer\\s+[A-Za-z0-9._-]+/gi, 'Bearer [محجوب]')
+    .replace(/sk-[A-Za-z0-9_-]{16,}/g, '[مفتاح محجوب]')
+    .slice(0, 420);
+  return [status ? `HTTP ${status}` : '', code ? `code=${code}` : '', message].filter(Boolean).join(' | ');
+}
+
 function shouldFallbackFromOpenRouter(error: any): boolean {
   const status = Number(error?.status || error?.statusCode || error?.response?.status);
   const message = String(error?.message || error?.error?.message || '').toLowerCase();
@@ -509,6 +521,7 @@ export async function executeWithKeyRotation<T>(
         });
       } catch (geminiError: any) {
         lastProviderError = geminiError;
+        console.error('[ai-provider] Gemini generation attempt failed:', safeProviderErrorSummary(geminiError));
       }
       if (roundEnd - Date.now() < 10000) break;
       try {
@@ -520,9 +533,10 @@ export async function executeWithKeyRotation<T>(
         });
       } catch (openRouterError: any) {
         lastProviderError = openRouterError;
+        console.error('[ai-provider] OpenRouter generation attempt failed:', safeProviderErrorSummary(openRouterError));
       }
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
+    const combined: any = new Error(`تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة. السبب الفني الأخير: ${safeProviderErrorSummary(lastProviderError)}`);
     combined.status = 503;
     combined.statusCode = 503;
     combined.cause = lastProviderError;
@@ -663,6 +677,7 @@ export async function executeWithKeyRotationStream(
         return;
       } catch (geminiError: any) {
         lastProviderError = geminiError;
+        console.error('[ai-provider] Gemini streaming attempt failed:', safeProviderErrorSummary(geminiError));
         if (anyProviderEmittedText) throw geminiError;
       }
       if (roundEnd - Date.now() < 10000) break;
@@ -679,10 +694,11 @@ export async function executeWithKeyRotationStream(
         return;
       } catch (openRouterError: any) {
         lastProviderError = openRouterError;
+        console.error('[ai-provider] OpenRouter streaming attempt failed:', safeProviderErrorSummary(openRouterError));
         if (anyProviderEmittedText) throw openRouterError;
       }
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
+    const combined: any = new Error(`تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة. السبب الفني الأخير: ${safeProviderErrorSummary(lastProviderError)}`);
     combined.status = 503;
     combined.statusCode = 503;
     combined.cause = lastProviderError;
