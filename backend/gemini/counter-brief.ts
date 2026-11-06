@@ -157,6 +157,7 @@ ${accumulatedText.slice(-14000)}
         }, undefined, undefined, false, {
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
+          longFormGeneration: true,
         });
       } catch (error: any) {
         segmentError = error;
