@@ -517,33 +517,6 @@ export async function executeWithKeyRotation<T>(
     { status: 504, statusCode: 504 },
   );
 
-  if (!_forceGeminiFallback && executionOptions?.longFormGeneration && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
-    let geminiEmittedText = false;
-    try {
-      await executeWithKeyRotationStream(action, (chunk) => {
-        if (chunk) geminiEmittedText = true;
-        onChunk(chunk);
-      }, preferredModels, _ignoredClientFallbackKey, true, {
-        ...executionOptions,
-        providerAttempt: 'gemini-primary',
-        deadlineAt,
-      });
-      return;
-    } catch (geminiError: any) {
-      console.error('[ai-provider] Gemini long-form streaming attempt failed:', safeProviderErrorSummary(geminiError));
-      // Never switch providers after text has reached the draft: continuation
-      // must resume the same Gemini path instead of mixing provider outputs.
-      if (geminiEmittedText || deadlineAt - Date.now() < 10000) throw geminiError;
-      await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
-        ...executionOptions,
-        providerAttempt: 'openrouter-fallback',
-        deadlineAt,
-        previousProviderError: safeProviderErrorSummary(geminiError),
-      });
-      return;
-    }
-  }
-
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const overallStart = Date.now();
     const totalBudget = Math.max(0, deadlineAt - overallStart);
@@ -695,6 +668,33 @@ export async function executeWithKeyRotationStream(
   }
   const deadlineAt = Number(executionOptions.deadlineAt);
   const timeoutError = () => Object.assign(new Error('انتهت المهلة المتاحة للتوليد.'), { status: 504, statusCode: 504 });
+
+  if (!_forceGeminiFallback && executionOptions?.longFormGeneration && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
+    let geminiEmittedText = false;
+    try {
+      await executeWithKeyRotationStream(action, (chunk) => {
+        if (chunk) geminiEmittedText = true;
+        onChunk(chunk);
+      }, preferredModels, _ignoredClientFallbackKey, true, {
+        ...executionOptions,
+        providerAttempt: 'gemini-primary',
+        deadlineAt,
+      });
+      return;
+    } catch (geminiError: any) {
+      console.error('[ai-provider] Gemini long-form streaming attempt failed:', safeProviderErrorSummary(geminiError));
+      // Never switch providers after text has reached the draft: continuation
+      // must resume the same Gemini path instead of mixing provider outputs.
+      if (geminiEmittedText || deadlineAt - Date.now() < 10000) throw geminiError;
+      await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
+        ...executionOptions,
+        providerAttempt: 'openrouter-fallback',
+        deadlineAt,
+        previousProviderError: safeProviderErrorSummary(geminiError),
+      });
+      return;
+    }
+  }
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const overallStart = Date.now();
