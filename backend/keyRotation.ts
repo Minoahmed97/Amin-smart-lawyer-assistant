@@ -128,7 +128,7 @@ function safeProviderErrorSummary(error: any): string {
   const rawMessage = String(error?.message || error?.error?.message || 'Unknown provider error');
   const message = rawMessage
     .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[مفتاح محجوب]')
-    .replace(/Bearer\\s+[A-Za-z0-9._-]+/gi, 'Bearer [محجوب]')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [محجوب]')
     .replace(/sk-[A-Za-z0-9_-]{16,}/g, '[مفتاح محجوب]')
     .slice(0, 420);
   return [status ? `HTTP ${status}` : '', code ? `code=${code}` : '', message].filter(Boolean).join(' | ');
