@@ -122,6 +122,19 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
   return 'other';
 }
 
+function isOpenRouterDailyFreeLimit(error: any): boolean {
+  if (Number(error?.status || error?.statusCode || error?.response?.status) !== 429) return false;
+  const detail = [
+    error?.message,
+    error?.error?.message,
+    error?.response?.data?.error?.message,
+    error?.response?.data?.error?.metadata?.limit_source,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return detail.includes('free-models-per-day') ||
+    detail.includes('openrouter_free_tier_daily') ||
+    detail.includes('free model requests per day');
+}
+
 function safeProviderErrorSummary(error: any): string {
   const status = Number(error?.status || error?.statusCode || error?.response?.status);
   const code = String(error?.code || error?.error?.code || '').slice(0, 80);
@@ -696,6 +709,9 @@ export async function executeWithKeyRotationStream(
         lastProviderError = openRouterError;
         console.error('[ai-provider] OpenRouter streaming attempt failed:', safeProviderErrorSummary(openRouterError));
         if (anyProviderEmittedText) throw openRouterError;
+        // A daily account-wide free-tier quota cannot be fixed by trying
+        // another model or repeating the same provider round.
+        if (isOpenRouterDailyFreeLimit(openRouterError)) break;
       }
     }
     const combined: any = new Error(`تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة. السبب الفني الأخير: ${safeProviderErrorSummary(lastProviderError)}`);
@@ -744,6 +760,7 @@ export async function executeWithKeyRotationStream(
       } catch (error: any) {
         if (emittedOpenRouterText) throw error;
         lastOpenRouterError = error;
+        if (isOpenRouterDailyFreeLimit(error)) break;
       }
     }
 
