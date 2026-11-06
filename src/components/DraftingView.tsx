@@ -1079,7 +1079,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
             )}
 
             <div className="flex-1 bg-[#1e293b] border-2 border-slate-700/80 rounded-2xl p-4 sm:p-6 overflow-y-auto max-h-[850px] shadow-inner text-slate-100 relative">
-              {isLoading && !generatedBrief ? (
+              {isLoading ? (
                 <div className="h-full flex flex-col items-center justify-center py-24 sm:py-28 text-center gap-4">
                   <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 animate-pulse">
                     <Scale className="w-8 h-8" />
