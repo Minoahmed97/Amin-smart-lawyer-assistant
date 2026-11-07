@@ -84,8 +84,12 @@ export default async function handler(req: any, res: any) {
     const explicitlyRequestsAnEdit =
       /^(?:(?:انا|أنا)\s+)?(?:(?:عايز|عاوز|اريد|أريد)\s+)?(?:اطلب|أطلب)\s+(?:منك\s+)?(?:ان\s+)?(?:تعديل|تعدل|تغيير|تغير|تنفيذ|تنفذ)/i.test(normalizedMessage);
 
+    const explicitlyRequestsChatOnly =
+      /(?:في الشات|داخل الشات|هنا في الشات|في رسالة الشات|كرد هنا|في الرد هنا)/i.test(normalizedMessage);
+
     const isDocumentEditIntent =
       (startsWithExplicitEditVerb || explicitlyRequestsAnEdit) &&
+      !explicitlyRequestsChatOnly &&
       !/(?:اشرح|وضح|اعرض|وريني|اكتبلي في الشات|هاتلي في الشات)/i.test(normalizedMessage);
 
     let answer = '';
