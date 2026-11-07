@@ -71,9 +71,10 @@ export const AuthGate: React.FC<Props> = ({ onAuthenticated }) => {
     setLoading(true);
     try {
       const device = await getDeviceFingerprint();
+      const crossVersionFingerprint = getLegacyDeviceFingerprint();
       const user = mode === 'register'
-        ? await registerAccount(username, password, displayName, device)
-        : await loginAccount(username, password, device, getLegacyDeviceFingerprint());
+        ? await registerAccount(username, password, displayName, device, crossVersionFingerprint)
+        : await loginAccount(username, password, device, crossVersionFingerprint);
       onAuthenticated(user);
     } catch (e: any) {
       setError(e?.message || 'تعذر تنفيذ العملية.');
