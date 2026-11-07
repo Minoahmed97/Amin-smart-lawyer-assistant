@@ -214,6 +214,19 @@ async function findDevice(deviceFingerprint: string) {
   return Array.isArray(rows) ? rows[0] : null;
 }
 
+function hashCrossVersionDeviceFingerprint(fingerprint: string): string {
+  return crypto.createHmac('sha256', sessionSecret())
+    .update(`amin-cross-version-device|${fingerprint}`)
+    .digest('hex');
+}
+
+async function findDeviceAlias(aliasHash: string) {
+  const res = await supabase(`platform_users?select=id,username,account_status&device_fingerprint_alias=eq.${encodeURIComponent(aliasHash)}&account_status=neq.deleted&limit=1`);
+  if (!res.ok) throw new Error(`تعذر فحص ربط الجهاز بين النسختين (${res.status}).`);
+  const rows = await res.json();
+  return Array.isArray(rows) ? rows[0] : null;
+}
+
 async function claimRegistrationGuard(guardKey: string): Promise<boolean> {
   const res = await supabase('registration_guards', {
     method: 'POST',
@@ -234,7 +247,7 @@ async function releaseRegistrationGuard(guardKey: string): Promise<void> {
   } catch {}
 }
 
-export async function registerAccount(username: string, password: string, displayName: string, deviceFingerprint: string, req?: any) {
+export async function registerAccount(username: string, password: string, displayName: string, deviceFingerprint: string, crossVersionFingerprint = '', req?: any) {
   const cleanUsername = username.trim().toLowerCase();
   const cleanName = displayName.trim() || cleanUsername;
   if (!/^[a-zA-Z0-9_.-]{4,32}$/.test(cleanUsername)) {
@@ -242,10 +255,14 @@ export async function registerAccount(username: string, password: string, displa
   }
   if (password.length < 8) throw new Error('كلمة المرور يجب ألا تقل عن 8 أحرف.');
   if (!/^EGY-[A-F0-9]+$/i.test(deviceFingerprint)) throw new Error('تعذر التحقق من الجهاز.');
+  if (!/^EGY-[A-F0-9]+$/i.test(crossVersionFingerprint)) throw new Error('تعذر التحقق من بصمة ربط النسختين.');
+  const crossVersionAlias = hashCrossVersionDeviceFingerprint(crossVersionFingerprint);
 
   if (await findUser(cleanUsername)) throw new Error('اسم المستخدم مستخدم بالفعل.');
   const existingDevice = await findDevice(deviceFingerprint);
   if (existingDevice) throw new Error('هذا الجهاز مرتبط بحساب بالفعل. لا يمكن إنشاء حساب ثانٍ من نفس الجهاز.');
+  const existingAlias = await findDeviceAlias(crossVersionAlias);
+  if (existingAlias) throw new Error('هذا الجهاز مرتبط بحساب بالفعل من خلال النسخة الأخرى. لا يمكن إنشاء حساب ثانٍ من نفس الجهاز.');
 
   // Persistent server-side guard: clearing localStorage or changing the
   // username must not grant another free trial from the same browser/device.
@@ -261,6 +278,7 @@ export async function registerAccount(username: string, password: string, displa
     display_name: cleanName,
     password_hash: hashPassword(password),
     device_fingerprint: deviceFingerprint,
+    device_fingerprint_alias: crossVersionAlias,
     role: 'lawyer',
     credits: 0,
     trial_operations_total: 20,
@@ -314,17 +332,22 @@ export async function loginAccount(username: string, password: string, deviceFin
     throw new Error('هذا الحساب موقوف حاليًا. إذا كان السبب انتهاء التجربة أو الرصيد، يُرجى مراجعة الإدارة لإعادة تفعيله أو شحنه.');
   }
 
-  if (user.device_fingerprint !== deviceFingerprint) {
-    const canMigrateLegacyBinding =
-      /^EGY-[A-F0-9]+$/i.test(legacyDeviceFingerprint) &&
-      user.device_fingerprint === legacyDeviceFingerprint;
+  const hasValidCrossVersionFingerprint = /^EGY-[A-F0-9]+$/i.test(legacyDeviceFingerprint);
+  const crossVersionAlias = hasValidCrossVersionFingerprint
+    ? hashCrossVersionDeviceFingerprint(legacyDeviceFingerprint)
+    : '';
+  const matchesPrimaryDevice = user.device_fingerprint === deviceFingerprint;
+  const matchesLinkedDevice = Boolean(crossVersionAlias && user.device_fingerprint_alias === crossVersionAlias);
+  const canMigrateLegacyBinding =
+    hasValidCrossVersionFingerprint && user.device_fingerprint === legacyDeviceFingerprint;
 
-    if (!canMigrateLegacyBinding) {
-      throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
-    }
+  if (!matchesPrimaryDevice && !matchesLinkedDevice && !canMigrateLegacyBinding) {
+    throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
+  }
 
-    // Upgrade only after the password has been verified and only when the
-    // stored value exactly matches this browser's previous legacy fingerprint.
+  if (canMigrateLegacyBinding && !matchesPrimaryDevice) {
+    // Preserve the legacy migration path while registering the same browser
+    // signature for the second deployment.
     const migrationRes = await supabase(
       `platform_users?id=eq.${encodeURIComponent(user.id)}&device_fingerprint=eq.${encodeURIComponent(legacyDeviceFingerprint)}&account_status=eq.active`,
       {
@@ -332,6 +355,7 @@ export async function loginAccount(username: string, password: string, deviceFin
         headers: { Prefer: 'return=minimal' },
         body: JSON.stringify({
           device_fingerprint: deviceFingerprint,
+          device_fingerprint_alias: crossVersionAlias,
           updated_at: new Date().toISOString(),
         }),
       },
@@ -341,10 +365,32 @@ export async function loginAccount(username: string, password: string, deviceFin
       error.statusCode = 503;
       throw error;
     }
-
     const refreshedUser = await findUser(user.username);
     if (refreshedUser?.device_fingerprint !== deviceFingerprint) {
       throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
+    }
+  } else if (matchesPrimaryDevice && hasValidCrossVersionFingerprint && !user.device_fingerprint_alias) {
+    // First successful login on the already-bound deployment enrolls the
+    // same-browser alias, allowing that browser to use the other deployment.
+    const linkRes = await supabase(
+      `platform_users?id=eq.${encodeURIComponent(user.id)}&device_fingerprint=eq.${encodeURIComponent(deviceFingerprint)}&device_fingerprint_alias=is.null&account_status=eq.active`,
+      {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          device_fingerprint_alias: crossVersionAlias,
+          updated_at: new Date().toISOString(),
+        }),
+      },
+    );
+    if (!linkRes.ok) {
+      const error: any = new Error('تعذر تفعيل الربط الآمن بين نسختي التطبيق. حاول تسجيل الدخول مرة أخرى.');
+      error.statusCode = 503;
+      throw error;
+    }
+    const refreshedUser = await findUser(user.username);
+    if (refreshedUser?.device_fingerprint_alias !== crossVersionAlias) {
+      throw new Error('تعذر تأكيد ربط الجهاز بين النسختين. يرجى إعادة تسجيل الدخول.');
     }
   }
 
