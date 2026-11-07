@@ -299,7 +299,10 @@ export async function registerAccount(username: string, password: string, displa
   };
 }
 
-export async function loginAccount(username: string, password: string, deviceFingerprint: string) {
+export async function loginAccount(username: string, password: string, deviceFingerprint: string, legacyDeviceFingerprint = '') {
+  if (!/^EGY-[A-F0-9]+$/i.test(deviceFingerprint)) {
+    throw new Error('تعذر التحقق من الجهاز.');
+  }
   const user = await findUser(username.trim().toLowerCase());
   if (!user || !verifyPassword(password, user.password_hash)) {
     throw new Error('اسم المستخدم أو كلمة المرور غير صحيح.');
@@ -310,9 +313,41 @@ export async function loginAccount(username: string, password: string, deviceFin
   if (user.account_status !== 'active') {
     throw new Error('هذا الحساب موقوف حاليًا. إذا كان السبب انتهاء التجربة أو الرصيد، يُرجى مراجعة الإدارة لإعادة تفعيله أو شحنه.');
   }
+
   if (user.device_fingerprint !== deviceFingerprint) {
-    throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
+    const canMigrateLegacyBinding =
+      /^EGY-[A-F0-9]+$/i.test(legacyDeviceFingerprint) &&
+      user.device_fingerprint === legacyDeviceFingerprint;
+
+    if (!canMigrateLegacyBinding) {
+      throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
+    }
+
+    // Upgrade only after the password has been verified and only when the
+    // stored value exactly matches this browser's previous legacy fingerprint.
+    const migrationRes = await supabase(
+      `platform_users?id=eq.${encodeURIComponent(user.id)}&device_fingerprint=eq.${encodeURIComponent(legacyDeviceFingerprint)}&account_status=eq.active`,
+      {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          device_fingerprint: deviceFingerprint,
+          updated_at: new Date().toISOString(),
+        }),
+      },
+    );
+    if (!migrationRes.ok) {
+      const error: any = new Error('تعذر تحديث ربط الجهاز للحساب. حاول تسجيل الدخول مرة أخرى.');
+      error.statusCode = 503;
+      throw error;
+    }
+
+    const refreshedUser = await findUser(user.username);
+    if (refreshedUser?.device_fingerprint !== deviceFingerprint) {
+      throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
+    }
   }
+
   return {
     token: createSession(user.id, user.username),
     user: {
