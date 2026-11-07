@@ -26,14 +26,18 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; allowLegalSearch?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
   const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
-  const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
+  const researchInstruction = options.legalResearch
+    ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n'
+    : options.allowLegalSearch
+      ? '\n\n[البحث القانوني عند الحاجة فقط] أداة البحث متاحة لك، لكن لا تستخدمها تلقائياً ولا لمجرد ورود اسم قانون أو رقم مادة أو إشارة إلى حكم داخل الوقائع. استخدم البحث فقط إذا احتجت فعلاً أثناء إعداد المستند إلى التحقق من نص قانوني أو مادة أو حكم أو مصدر أو معلومة قانونية لازمة لصحة الصياغة ولا تكون مؤكدة من السياق المتاح. إذا كانت البيانات المتاحة كافية، أكمل الصياغة مباشرةً من دون بحث. وعند استخدام البحث، لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، ولا تختلق نصاً أو حكماً أو رقماً أو مصدراً.\n'
+      : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   const maxContinuations = 5;
@@ -44,13 +48,23 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
+  // Do not resend the original (potentially very long) case file on every
+  // continuation. Repeating it together with the growing draft caused prompt
+  // size to grow on each retry and could exceed provider context limits.
   const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
+    ? `${optimizedPrompt}
+
+[استكمال إلزامي لمستند قانوني بدأ توليده بالفعل]
+هذا آخر جزء من النص الذي تم توليده حتى الآن؛ اعتبره جزءاً من المستند نفسه:
+${accumulatedText.slice(-14000)}
+
+تابع مباشرة من آخر كلمة في النص السابق. لا تعِد كتابة النص السابق ولا تلخصه ولا تكرر أي قسم مكتمل. أكمل الأجزاء المتبقية فقط، مع الحفاظ على اتساق الصياغة والطلبات والوقائع التي سبق أن عالجها المستند. لا تضف واقعة أو طلباً أو سنداً غير ثابت. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه المطلوبة. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل.`
     : optimizedPrompt;
 
   if (onChunk) {
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
+      const segmentStartedAt = Date.now();
       const segmentPrompt = makeContinuationPrompt();
       const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
@@ -65,9 +79,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         await executeWithKeyRotationStream(async (ai, key, model) => {
           activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
           activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-          const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-            ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-            : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+          const providerSearchEnabled = Boolean(options.legalResearch || options.allowLegalSearch) && key !== 'openrouter';
 
           return (async function* () {
             let pendingMarkerTail = '';
@@ -147,13 +159,36 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         }, undefined, undefined, false, {
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
+          longFormGeneration: true,
+          hasPriorOutput: Boolean(accumulatedText.trim()),
+          disableOpenRouterFallback: Boolean(options.legalResearch),
         });
       } catch (error: any) {
         segmentError = error;
         lastError = error;
       }
 
-      if (activePair) usedPairs.add(activePair);
+      // A pair that produced text (or completed a segment without the
+      // completion marker) is still valid for the next continuation request.
+      // Blacklisting it here prevented a single-key/single-model setup from
+      // continuing a partially generated legal document.
+      if (activePair && segmentBuffer.trim()) usedPairs.add(activePair);
+
+      if (segmentError) {
+        const segmentErrorMessage = String(segmentError?.message || segmentError || 'Unknown stream error')
+          .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[مفتاح محجوب]')
+          .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [محجوب]')
+          .slice(0, 500);
+        console.error('[counter-brief] generation segment ended before completion', {
+          providerModel: activePairLabel || 'unknown',
+          generatedCharacters: segmentBuffer.length,
+          accumulatedCharacters: accumulatedText.length,
+          finishReason: finishReason || 'UNKNOWN',
+          elapsedMs: Date.now() - segmentStartedAt,
+          error: segmentErrorMessage,
+        });
+      }
+
       if (segmentError?.blockedResponse) throw segmentError;
       if (!segmentPrefixResolved && segmentBuffer) {
         const addition = mergeContinuation(segmentBaseText, segmentBuffer);
@@ -169,6 +204,15 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         break;
       }
       if (!segmentBuffer.trim() || accumulatedText.length === segmentBaseText.length) {
+        const exhaustedGeminiPairs = String(segmentError?.message || '').includes('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini');
+        if (exhaustedGeminiPairs && accumulatedText.trim() && usedPairs.size > 0 && continuationCount < maxContinuations) {
+          // All currently available Gemini key/model pairs have had a turn.
+          // Start a fresh Gemini rotation cycle; hasPriorOutput prevents OpenRouter
+          // from ever being used to continue a document that Gemini already began.
+          usedPairs.clear();
+          continuationCount += 1;
+          continue;
+        }
         throw segmentError || new Error('لم يصل نص جديد أثناء محاولة استكمال المستند.');
       }
       if (continuationCount >= maxContinuations) {
@@ -209,9 +253,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-          ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-          : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+        const providerSearchEnabled = Boolean(options.legalResearch || options.allowLegalSearch) && key !== 'openrouter';
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
@@ -246,6 +288,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       }, undefined, undefined, false, {
         deadlineAt,
         avoidPairs: Array.from(usedPairs),
+        disableOpenRouterFallback: Boolean(options.legalResearch),
       });
     } catch (error: any) {
       lastError = error;
@@ -320,7 +363,6 @@ export default async function handler(req: any, res: any) {
     }
 
     rateLimit(req, 'gemini-counter-brief', 8, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
 
     limitBodyString(facts, 200000, 'الوقائع');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
@@ -330,16 +372,55 @@ export default async function handler(req: any, res: any) {
       throw err;
     }
 
-    const finalWorkType =
+    let finalWorkType =
       (customJudicialWorkType && customJudicialWorkType.trim()) ||
       (effectiveWorkType && effectiveWorkType.trim()) ||
       (briefType && briefType.trim()) ||
       '';
-    const workTypeInstruction = finalWorkType
-      ? `نوع المستند المطلوب من المحامي: ${finalWorkType}. التزم بهذا النوع.`
-      : 'نوع المستند غير محدد مسبقاً: حدّد داخلياً أنسب نوع مستند قانوني للرد على المادة المنقولة (مذكرة رد/دفاع، عريضة/صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار أو غير ذلك) بناءً على الغرض والطلبات والوقائع، ولا تفترض تلقائياً أنها مذكرة دفاع.';
 
-    const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
+    if (!finalWorkType) {
+      const classificationEvidence = [
+        `المحكمة/الجهة: ${String(courtType || '').slice(0, 500)}`,
+        `الوقائع/المستند المنقول (مقتطف البداية): ${String(facts || '').slice(0, 10000)}`,
+        `الوقائع/المستند المنقول (مقتطف النهاية): ${String(facts || '').slice(-5000)}`,
+        `الدفوع أو نتيجة الفحص: ${String(defenses || '').slice(0, 7000)}`,
+        `الطلبات: ${String(requests || '').slice(0, 4000)}`,
+        `تعليمات المحامي: ${String(customInstructions || '').slice(0, 5000)}`,
+      ].join('\n\n');
+
+      const classificationRaw = await executeWithKeyRotation(async (ai, _key, model) => {
+        const response = await ai.models.generateContent({
+          model,
+          contents: `حدّد نوع العمل القانوني الذي يريد المحامي إنشاءه الآن، لا نوع المستند الذي أرسله كمصدر فقط. استنتج النوع حصراً من غرض المهمة والطلبات والتعليمات والسياق. لا تفترض أن المطلوب مذكرة دفاع. الأنواع الممكنة تشمل: صحيفة/عريضة دعوى، دعوى إلغاء قرار إداري أمام مجلس الدولة، عقد، إنذار، تظلم، مذكرة دفاع أو رد، صحيفة طعن، طلب أو غير ذلك. إذا كان الغرض واضحاً أعد JSON فقط بهذا الشكل: {"status":"clear","workType":"اسم نوع المستند المحدد"}. إذا لم يكن واضحاً بما يكفي لتحديد نوع المستند دون تخمين، أعد JSON فقط بهذا الشكل: {"status":"unclear"}.\n\nالمعطيات:\n${classificationEvidence}`,
+          config: { temperature: 0, maxOutputTokens: 300 },
+        });
+        return String(response?.text || '');
+      }, undefined, undefined, false, { deadlineAt: Date.now() + 45000 });
+
+      let classification: any = null;
+      try {
+        const jsonMatch = String(classificationRaw || '').match(/\{[\s\S]*\}/);
+        if (jsonMatch) classification = JSON.parse(jsonMatch[0]);
+      } catch {}
+
+      if (classification?.status !== 'clear' || typeof classification?.workType !== 'string' || !classification.workType.trim()) {
+        const clarificationError: any = new Error('قبل أن أبدأ الصياغة، أحتاج تحديد نوع المستند المطلوب: هل تريد صحيفة أو عريضة دعوى، أم عقداً، أم إنذاراً أو تظلماً، أم مذكرة أو رداً، أم نوعاً آخر؟ اكتب نوع العمل المطلوب حتى لا أُنشئ مستنداً من نوع غير الذي تقصده.');
+        clarificationError.status = 409;
+        clarificationError.statusCode = 409;
+        clarificationError.needsClarification = true;
+        throw clarificationError;
+      }
+
+      finalWorkType = classification.workType.trim().slice(0, 180);
+    }
+
+    // Clarification is a pre-generation step: do not claim the operation
+    // cooldown until the intended legal document type is known.
+    await enforceAiCooldown(req);
+
+    const workTypeInstruction = `نوع المستند المطلوب من المحامي: ${finalWorkType}. التزم بهذا النوع ولا تحوّله إلى مذكرة دفاع أو أي نوع آخر.`;
+
+    const legalResearch = /(?:ابحث\s+(?:لي\s+)?(?:عن|في)|قم\s+بالبحث|أجرِ\s+بحثاً?\s+قانونياً?|بحث\s+قانوني\s+(?:موثق|بالمصادر|مع\s+المصادر)|تحقق\s+من\s+(?:مصدر|صحة\s+(?:نص|حكم|مادة|قانون))|هات\s+المصادر\s+(?:الرسمية|الموثوقة)|زوّدني\s+بمصادر\s+(?:رسمية|موثوقة)|أحدث\s+تعديل\s+(?:للقانون|للمادة)|أحكام\s+نقض\s+موثقة)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
     const prompt = `[لغة الإخراج والتنسيق الإلزامية — أولوية قصوى]: اكتب المستند القانوني كله باللغة العربية فقط، بما في ذلك العناوين والديباجة وأي ملاحظات تحريرية. يُحظر إدراج كلمات أو تعليمات تنسيق باللغة الإنجليزية داخل المستند، مثل Centered Title أو Center Align أو Heading أو Bold أو Justify أو أي وصف لطريقة التنسيق. لا تكتب تعليمات التنسيق كنص؛ طبّق شكل العناوين وترتيبها مباشرةً باستخدام النص العربي وحده. احتفظ بالمصطلح الأجنبي فقط إذا كان اسماً رسمياً أو اختصاراً ضرورياً ورد في وقائع القضية، وليس لوصف التنسيق. لا تغيّر الديباجة العربية أو أسلوبها المستخلص من خزنة المحامي؛ المطلوب تنسيقها بالعربية لا ترجمتها أو شرحها. [مهمة إعداد وصياغة قانونية شاملة]: ${workTypeInstruction} المحكمة: ${courtType || 'المحكمة المختصة'} الدائرة: ${circuit || ''} الصفة التي حددها المحامي: ${clientRole || 'غير محددة صراحةً؛ لا تفترض أن الموكل هو المدعى عليه، واستدل من الوقائع فقط إذا كانت واضحة، وإلا نبّه إلى ضرورة تحديد الصفة'} (${clientName ? `السيد / ${clientName}` : 'الموكل'}) الخصم: ${opponentName || 'الخصم'} رقم الدعوى: ${caseNumber || ''} الجلسة: ${sessionDate || ''} الوقائع والمعلومات الحالية: ${facts} ${defenses ? `أوجه الدفاع والدفوع التي أدخلها المحامي:\n${defenses}\n` : ''} ${requests ? `الطلبات التي أدخلها المحامي:\n${requests}\n` : ''} ${customInstructions ? `[تعليمات إضافية]:\n${customInstructions}\n` : ''} ${vaultContext ? `\n[خزانة المحامي — أسلوب وبنية فقط، لا تستورد منها وقائع أو أرقاماً]:\n${vaultContext}\n` : ''} قبل الصياغة نفّذ داخلياً: - فحص اكتمال الوقائع وتحديد أي معلومات جوهرية ناقصة. - تحديد نوع المستند القانوني المطلوب أو الأنسب أولاً، وعدم افتراض أن كل رد يجب أن يكون مذكرة دفاع. - تحديد التكييف القانوني الأرجح وأي تكييف بديل ذي أثر. - استخراج أقوى الدفوع والأسانيد المرتبطة بالوقائع. - فحص الصفة والمصلحة والاختصاص والإجراءات والمواعيد متى كانت ذات صلة. - مطابقة كل دفع مع الواقعة والمستند/الدليل المتاح. - تحديد التناقضات أو نقاط الضعف إن وجدت. - ترتيب النقاط بحسب أثرها القانوني والإثباتي: معالجة الجوهرية، ودمج المساندة، وعدم إنشاء رد مستقل على الهامشية إلا إذا كان لها أثر حقيقي. - بناء الطلبات الختامية من النتيجة التي انتهى إليها التحليل فقط، ومطابقة كل طلب صراحةً مع طلبات المحامي ووقائع القضية والدفوع والأسباب والنتيجة النهائية. - الالتزام الصارم بنطاق الطلبات التي أدخلها المحامي: لا تضف أو تحذف أو تستبدل أو توسّع طلباً قضائياً من تلقاء نفسك. يجوز تحسين الصياغة وترتيب الطلبات المحددة فقط مع الحفاظ على مضمونها. - إذا ظهر طلب إضافي قد يكون مهماً، فاذكره في تنبيه منفصل للمحامي ولا تدرجه في الطلبات الختامية إلا إذا فوّضك صراحةً في تحديد الطلبات أو وافق عليه. - إذا لم يحدد المحامي طلباته وتركها للنظام صراحةً، فاقترح الطلبات الضرورية فقط التي تسندها الوقائع والمستندات والتكييف القانوني، ولا تفترض تفويضاً لم يمنحه. - راجع أن كل طلب ختامي يطابق طلباً حدده المحامي أو تفويضاً صريحاً منه، وأنه لم يُحذف أي طلب أدخله. لا تعتبر احتمال أهمية طلب إضافي إذناً بإدراجه تلقائياً. [التزام حرفي بالقالب — Strict Pattern Base / أولوية قصوى]: اعتبر النص المرجعي الفعلي المرفق من خزنة هذا الحساب هو القالب البنيوي الإلزامي للمستند متى كان متاحاً، وليس خياراً استرشادياً. طابق هيكل النموذج وترتيب أقسامه وعناوينه وتسلسل الدفوع والبنود والمصطلحات القانونية وطريقة الترقيم والديباجة والخاتمة والترويسة بقدر انطباقها على القضية الحالية. لا تحذف أو تضف أو تعيد ترتيب قسم أو دفع أو بند ولا تستبدل مصطلحاً قانونياً خاصاً بالقالب بتعبير عام لمجرد تحسين الأسلوب؛ عدّل فقط ما تفرضه وقائع القضية الحالية أو نوع المستند المطلوب، مع الحفاظ على كل عنصر بنيوي صالح. إذا كان القالب لا يتضمن قسماً لازماً بطبيعة العمل الحالي، أضف الحد الضروري فقط ولا تعِد تصميم بقية الهيكل. تعامل مع وقائع الدعوى الحالية والطلبات والدفوع التي أدخلها المحامي باعتبارها مصدر المحتوى الموضوعي، ومع القالب باعتباره مصدر الهيكل والأسلوب. لا تنقل أي وقائع أو أسماء أو أرقام أو تواريخ أو طلبات تخص القضية المرجعية. اكتب بصوت المحامي المصري الممارس وببصمته المهنية، لا بصيغة مساعد ذكاء اصطناعي ولا بصيغة اقتراحات أو توصيات. [Zero Chatter — منع الثرثرة]: أخرج المستند القانوني وحده، وابدأ فوراً من أول سطر في الديباجة القانونية كما ورد نمطها في القالب؛ ممنوع أي مقدمة أو تحية أو تمهيد أو شرح لطريقة العمل أو عبارة مثل «إليك الصياغة» أو أي خاتمة محادثية. لا تضع ملاحظات خارج المستند إلا عند ضرورة تحقق قانوني محددة، وعندها افصلها بوضوح عن نص المستند ولا تخلطها بالديباجة أو الطلبات الختامية. استخلص الدفوع والتحليل للقضية الحالية استقلالاً، ولا تنقل وقائع القضية المرجعية أو أسماء أطرافها أو أرقامها أو تواريخها أو طلباتها الخاصة. يجوز استخدام اسم المكتب والترويسة والتوقيع الثابت الوارد في النموذج المرجعي إذا كان واضحاً، مع عدم اختراع بيانات أو نقل بيانات القضية القديمة. لا تدّعِ أن المرجع غير موجود؛ النص المرجعي مرفق داخل سياق الخزانة. اعتمد في مضمون المستند حصراً على مدخلات القضية الحالية ومستنداتها والطلبات التي حددها المستخدم. لا تفرض هيكل نوع مستند آخر؛ التزم حرفياً بنوع العمل القضائي المطلوب حالياً، سواء كان صحيفة دعوى أو مذكرة أو إعادة إعلان أو إنذاراً أو غير ذلك. إذا لم يوجد في الخزنة نموذج من النوع نفسه، استخدم أقرب مرجع اختير وفق نوع المستند والفرع القانوني وجهة القضاء، مع الاقتداء بأسلوب المحامي وترويسته وبنائه العام وتكييف هيكل المستند ليتفق مع نوع العمل الحالي. لا تذكر للمستخدم أنك استخدمت الخزنة أو تشرح آلية استخلاص البصمة. لا تختصر نقطة مؤثرة، ولا تُطِل في نقطة لا تحتاج إلى تفصيل؛ اجعل التفصيل تابعاً لحاجة القضية. لا تفصل «الأسانيد القانونية» كقسم مستقل؛ ضع القاعدة القانونية داخل سياق الحجة في موضعها الطبيعي. لا تضف واقعة أو مستنداً أو اسماً أو تاريخاً غير موجود. إذا كانت نقطة جوهرية تحتاج تحققاً، ضع تنبيهاً واضحاً للمحامي بدلاً من اختلاقها. لا تذكر حكماً أو رقم طعن أو مادة قانونية إلا إذا كانت موثوقة في السياق المتاح؛ وإلا اذكر أن التحقق مطلوب. وفي النهاية راجع المسودة داخلياً مرة أخرى بحثاً عن أي واقعة أو مستند أو دفع أو طلب أو تناقض تم إغفاله قبل إخراج النص النهائي. لا تعتبر المذكرة مكتملة إذا انتهى الإخراج قبل إتمام بنيتها المطلوبة؛ أكمل جميع الأقسام اللازمة لنوع المستند، ولا تتوقف عند الملخص أو منتصف الحجة أو قبل الطلبات الختامية. إذا كان النص طويلاً، حافظ على نفس مستوى التحليل وأكمل حتى النهاية بدلاً من اختزال الأجزاء الأخيرة.`;
 
@@ -370,7 +451,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, allowLegalSearch: true });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -386,7 +467,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, allowLegalSearch: true });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
@@ -398,7 +479,10 @@ export default async function handler(req: any, res: any) {
       : 500;
     if (!res.headersSent) {
       if (err?.retryAfter) res.setHeader('Retry-After', String(err.retryAfter));
-      return res.status(status).json({ error: err.message || 'فشلت الصياغة.' });
+      return res.status(status).json({
+        error: err.message || 'فشلت الصياغة.',
+        ...(err?.needsClarification ? { needsClarification: true } : {}),
+      });
     }
     if (!res.writableEnded) {
       res.write(JSON.stringify({ type: 'error', error: err.message || 'فشلت الصياغة.' }) + '\n');
