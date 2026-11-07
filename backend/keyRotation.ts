@@ -632,7 +632,7 @@ export async function executeWithKeyRotation<T>(
           lastError = timeoutError();
           break geminiKeyLoop;
         }
-        const model = keyModels[m];
+        const model = modelsToTry[m];
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(30000, remainingMs)));
         try {
           const result = await action(ai, currentKey, model);
@@ -820,8 +820,15 @@ export async function executeWithKeyRotationStream(
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+      const modelsToTry = executionOptions?.longFormGeneration
+        ? preferredModels.filter((model) =>
+            !isCooling(modelCooldownUntil, model) &&
+            !isCooling(keyModelCooldownUntil, rotationPairKey(currentKey, model)) &&
+            !avoidedPairs.has(`${currentKey}::${model}`)
+          )
+        : keyModels;
 
-      for (let m = 0; m < keyModels.length; m++) {
+      for (let m = 0; m < modelsToTry.length; m++) {
         attemptedModelCount += 1;
         const remainingMs = Math.max(1000, deadlineAt - Date.now());
         // A fixed 18-second SDK timeout aborted long legal-document continuation streams.
