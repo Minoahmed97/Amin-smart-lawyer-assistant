@@ -26,14 +26,18 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; allowLegalSearch?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
   const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
-  const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
+  const researchInstruction = options.legalResearch
+    ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n'
+    : options.allowLegalSearch
+      ? '\n\n[البحث القانوني عند الحاجة فقط] أداة البحث متاحة لك، لكن لا تستخدمها تلقائياً ولا لمجرد ورود اسم قانون أو رقم مادة أو إشارة إلى حكم داخل الوقائع. استخدم البحث فقط إذا احتجت فعلاً أثناء إعداد المستند إلى التحقق من نص قانوني أو مادة أو حكم أو مصدر أو معلومة قانونية لازمة لصحة الصياغة ولا تكون مؤكدة من السياق المتاح. إذا كانت البيانات المتاحة كافية، أكمل الصياغة مباشرةً من دون بحث. وعند استخدام البحث، لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، ولا تختلق نصاً أو حكماً أو رقماً أو مصدراً.\n'
+      : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   const maxContinuations = 5;
@@ -75,7 +79,7 @@ ${accumulatedText.slice(-14000)}
         await executeWithKeyRotationStream(async (ai, key, model) => {
           activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
           activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-          const providerSearchEnabled = options.legalResearch && key !== 'openrouter';
+          const providerSearchEnabled = Boolean(options.legalResearch || options.allowLegalSearch) && key !== 'openrouter';
 
           return (async function* () {
             let pendingMarkerTail = '';
@@ -249,7 +253,7 @@ ${accumulatedText.slice(-14000)}
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const providerSearchEnabled = options.legalResearch && key !== 'openrouter';
+        const providerSearchEnabled = Boolean(options.legalResearch || options.allowLegalSearch) && key !== 'openrouter';
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
@@ -447,7 +451,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, allowLegalSearch: true });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -463,7 +467,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, allowLegalSearch: true });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
