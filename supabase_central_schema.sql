@@ -10,6 +10,7 @@ create table if not exists public.platform_users (
   display_name text not null,
   password_hash text not null,
   device_fingerprint text not null unique,
+  device_fingerprint_alias text unique,
   role text not null default 'lawyer' check (role = 'lawyer'),
   credits integer not null default 0 check (credits >= 0),
   trial_operations_total integer not null default 20,
@@ -27,6 +28,10 @@ create table if not exists public.platform_users (
 alter table public.platform_users add column if not exists operations_used integer not null default 0;
 alter table public.platform_users add column if not exists last_seen_at timestamptz not null default now();
 alter table public.platform_users add column if not exists deleted_at timestamptz null;
+alter table public.platform_users add column if not exists device_fingerprint_alias text;
+create unique index if not exists platform_users_device_fingerprint_alias_uidx
+  on public.platform_users(device_fingerprint_alias)
+  where device_fingerprint_alias is not null;
 alter table public.platform_users drop constraint if exists platform_users_account_status_check;
 alter table public.platform_users add constraint platform_users_account_status_check
   check (account_status in ('active','suspended','deleted'));
