@@ -75,9 +75,7 @@ ${accumulatedText.slice(-14000)}
         await executeWithKeyRotationStream(async (ai, key, model) => {
           activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
           activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-          const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-            ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-            : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+          const providerSearchEnabled = options.legalResearch && key !== 'openrouter';
 
           return (async function* () {
             let pendingMarkerTail = '';
@@ -159,6 +157,7 @@ ${accumulatedText.slice(-14000)}
           avoidPairs: Array.from(usedPairs),
           longFormGeneration: true,
           hasPriorOutput: Boolean(accumulatedText.trim()),
+          disableOpenRouterFallback: Boolean(options.legalResearch),
         });
       } catch (error: any) {
         segmentError = error;
@@ -250,9 +249,7 @@ ${accumulatedText.slice(-14000)}
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-          ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-          : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+        const providerSearchEnabled = options.legalResearch && key !== 'openrouter';
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
@@ -287,6 +284,7 @@ ${accumulatedText.slice(-14000)}
       }, undefined, undefined, false, {
         deadlineAt,
         avoidPairs: Array.from(usedPairs),
+        disableOpenRouterFallback: Boolean(options.legalResearch),
       });
     } catch (error: any) {
       lastError = error;
