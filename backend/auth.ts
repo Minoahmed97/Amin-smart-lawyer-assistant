@@ -207,7 +207,8 @@ async function findUser(username: string) {
 }
 
 async function findDevice(deviceFingerprint: string) {
-  const res = await supabase(`platform_users?select=id,username&device_fingerprint=eq.${encodeURIComponent(deviceFingerprint)}&limit=1`);
+  // Soft-deleted account rows must not keep a device locked forever.
+  const res = await supabase(`platform_users?select=id,username,account_status&device_fingerprint=eq.${encodeURIComponent(deviceFingerprint)}&account_status=neq.deleted&limit=1`);
   if (!res.ok) throw new Error(`تعذر فحص الجهاز (${res.status}).`);
   const rows = await res.json();
   return Array.isArray(rows) ? rows[0] : null;
