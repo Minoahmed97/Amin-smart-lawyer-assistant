@@ -500,6 +500,7 @@ type KeyRotationExecutionOptions = {
   avoidPairs?: string[];
   longFormGeneration?: boolean;
   hasPriorOutput?: boolean;
+  disableOpenRouterFallback?: boolean;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -537,6 +538,7 @@ export async function executeWithKeyRotation<T>(
       } catch (geminiError: any) {
         lastProviderError = geminiError;
         console.error('[ai-provider] Gemini generation attempt failed:', safeProviderErrorSummary(geminiError));
+        if (executionOptions?.disableOpenRouterFallback) throw geminiError;
       }
       if (roundEnd - Date.now() < 10000) break;
       try {
@@ -699,7 +701,7 @@ export async function executeWithKeyRotationStream(
       console.error('[ai-provider] Gemini long-form streaming attempt failed:', safeProviderErrorSummary(geminiError));
       // Never switch providers after text has reached the draft: continuation
       // must resume the same Gemini path instead of mixing provider outputs.
-      if (geminiEmittedText || executionOptions?.hasPriorOutput || deadlineAt - Date.now() < 10000) throw geminiError;
+      if (geminiEmittedText || executionOptions?.hasPriorOutput || executionOptions?.disableOpenRouterFallback || deadlineAt - Date.now() < 10000) throw geminiError;
       await executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
         ...executionOptions,
         providerAttempt: 'openrouter-fallback',
@@ -814,6 +816,7 @@ export async function executeWithKeyRotationStream(
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
+  let lastGeminiStreamError: any = null;
   for (let cycle = 0; cycle < 1; cycle++) {
     const startIdx = reserveStartIndex(keys.length, 'general');
     for (let offset = 0; offset < keys.length; offset++) {
@@ -847,6 +850,8 @@ export async function executeWithKeyRotationStream(
           activeKeyIndex = currentKeyIndex;
           return;
         } catch (err: any) {
+          lastGeminiStreamError = err;
+          console.warn('[ai-provider] Gemini stream pair failed:', safeProviderErrorSummary(err));
           // A transport abort after useful text is a continuation event, not
           // evidence that this key/model is unhealthy. Do not quarantine it.
           if (!emittedAnyChunk || !executionOptions?.longFormGeneration) {
@@ -870,7 +875,15 @@ export async function executeWithKeyRotationStream(
       avoidPairs: undefined,
     });
   }
-  throw new Error('فشلت جميع محاولات تدوير البث.');
+  if (attemptedModelCount === 0) {
+    console.warn('[ai-provider] Gemini stream had no eligible key/model pairs:', {
+      keyCount: keys.length,
+      modelCount: preferredModels.length,
+      avoidedPairCount: avoidedPairs.size,
+    });
+    throw Object.assign(new Error('لم توجد أزواج مفتاح/نموذج Gemini متاحة للمحاولة؛ راجع حالة المفاتيح وفترات التهدئة.'), { status: 503, statusCode: 503 });
+  }
+  throw lastGeminiStreamError || new Error('فشلت جميع محاولات تدوير البث بعد تجربة أزواج Gemini المتاحة.');
 }
 
 export default function handler(req: any, res: any) {
