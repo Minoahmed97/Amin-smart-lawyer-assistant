@@ -107,10 +107,10 @@ export async function registerAccount(username: string, password: string, displa
   const user = data.user as PlatformUser; cacheUser(user); return user;
 }
 
-export async function loginAccount(username: string, password: string, deviceFingerprint: string) {
+export async function loginAccount(username: string, password: string, deviceFingerprint: string, legacyDeviceFingerprint = '') {
   const data = await request('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username, password, deviceFingerprint }),
+    body: JSON.stringify({ username, password, deviceFingerprint, legacyDeviceFingerprint }),
   });
   saveSession(data.token);
   const user = data.user as PlatformUser; cacheUser(user); return user;
