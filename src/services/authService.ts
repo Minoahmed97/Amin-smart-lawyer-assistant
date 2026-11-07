@@ -98,10 +98,10 @@ async function request(path: string, init: RequestInit = {}) {
   return data;
 }
 
-export async function registerAccount(username: string, password: string, displayName: string, deviceFingerprint: string) {
+export async function registerAccount(username: string, password: string, displayName: string, deviceFingerprint: string, crossVersionFingerprint = '') {
   const data = await request('/api/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ username, password, displayName, deviceFingerprint }),
+    body: JSON.stringify({ username, password, displayName, deviceFingerprint, crossVersionFingerprint }),
   });
   saveSession(data.token);
   const user = data.user as PlatformUser; cacheUser(user); return user;
