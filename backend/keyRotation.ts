@@ -433,13 +433,26 @@ export function getVercelGeminiKeys(): string[] {
 
 async function getAvailableGeminiKeys(timeoutMs?: number): Promise<string[]> {
   const keys = getVercelGeminiKeys();
+  const vercelKeyCount = keys.length;
+  let supabaseKeyCount = 0;
   try {
-    for (const key of await fetchServerCloudGeminiKeys(timeoutMs)) {
+    const cloudKeys = await fetchServerCloudGeminiKeys(timeoutMs);
+    supabaseKeyCount = cloudKeys.filter((key) => isValidGeminiApiKey(key)).length;
+    for (const key of cloudKeys) {
       if (isValidGeminiApiKey(key) && !keys.includes(key)) keys.push(key);
     }
-  } catch (error) {
+  } catch (error: any) {
+    console.warn('[ai-provider][rotation-diagnostic] تعذر جلب مفاتيح Gemini من Supabase:', {
+      message: safeProviderErrorSummary(error),
+      vercelKeyCount,
+    });
     if (keys.length === 0) throw error;
   }
+  console.info('[ai-provider][rotation-diagnostic] Gemini key pool loaded:', {
+    vercelKeyCount,
+    supabaseKeyCount,
+    uniqueKeyCount: keys.length,
+  });
   return keys;
 }
 
@@ -572,7 +585,7 @@ export async function executeWithKeyRotation<T>(
     for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
       try {
         const result = await action(
-          withAdaptiveAnswerLength(createOpenRouterCompatibleClient(12000, deadlineAt)) as unknown as GoogleGenAI,
+          withAdaptiveAnswerLength(createOpenRouterCompatibleClient(60000, deadlineAt)) as unknown as GoogleGenAI,
           'openrouter',
           model,
         );
@@ -784,7 +797,7 @@ export async function executeWithKeyRotationStream(
       let emittedOpenRouterText = false;
       try {
         const ai = withAdaptiveAnswerLength(
-          createOpenRouterCompatibleClient(12000, deadlineAt),
+          createOpenRouterCompatibleClient(60000, deadlineAt),
         ) as unknown as GoogleGenAI;
         const stream = await action(ai, 'openrouter', model);
         for await (const chunk of stream) {
@@ -817,6 +830,14 @@ export async function executeWithKeyRotationStream(
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
   let lastGeminiStreamError: any = null;
+  console.info('[ai-provider][rotation-diagnostic] Gemini stream rotation started:', {
+    keyCount: keys.length,
+    modelCount: preferredModels.length,
+    longFormGeneration: Boolean(executionOptions?.longFormGeneration),
+    avoidedPairCount: avoidedPairs.size,
+    providerAttempt: executionOptions?.providerAttempt || 'unspecified',
+    remainingBudgetMs: Math.max(0, deadlineAt - Date.now()),
+  });
   for (let cycle = 0; cycle < 1; cycle++) {
     const startIdx = reserveStartIndex(keys.length, 'general');
     for (let offset = 0; offset < keys.length; offset++) {
@@ -836,10 +857,19 @@ export async function executeWithKeyRotationStream(
         const remainingMs = Math.max(1000, deadlineAt - Date.now());
         // A fixed 18-second SDK timeout aborted long legal-document continuation streams.
         // Let each stream use the remaining generation budget (capped at 120 seconds).
+        const model = modelsToTry[m];
+        const attemptNumber = attemptedModelCount;
+        const safeKeyLabel = `key_${currentKeyIndex + 1}`;
+        console.info('[ai-provider][rotation-diagnostic] Gemini stream attempt:', {
+          attemptNumber,
+          keyLabel: safeKeyLabel,
+          model,
+          remainingBudgetMs: remainingMs,
+        });
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, remainingMs)));
         let emittedAnyChunk = false;
         try {
-          const stream = await action(ai, currentKey, modelsToTry[m]);
+          const stream = await action(ai, currentKey, model);
           for await (const chunk of stream) {
             const text = typeof chunk?.text === 'string' ? chunk.text : '';
             if (text) {
@@ -848,10 +878,22 @@ export async function executeWithKeyRotationStream(
             }
           }
           activeKeyIndex = currentKeyIndex;
+          console.info('[ai-provider][rotation-diagnostic] Gemini stream attempt succeeded:', {
+            attemptNumber,
+            keyLabel: safeKeyLabel,
+            model,
+            emittedText: emittedAnyChunk,
+          });
           return;
         } catch (err: any) {
           lastGeminiStreamError = err;
-          console.warn('[ai-provider] Gemini stream pair failed:', safeProviderErrorSummary(err));
+          console.warn('[ai-provider][rotation-diagnostic] Gemini stream attempt failed:', {
+            attemptNumber,
+            keyLabel: safeKeyLabel,
+            model,
+            status: Number(err?.status || err?.statusCode || err?.response?.status) || null,
+            error: safeProviderErrorSummary(err),
+          });
           // A transport abort after useful text is a continuation event, not
           // evidence that this key/model is unhealthy. Do not quarantine it.
           if (!emittedAnyChunk || !executionOptions?.longFormGeneration) {
@@ -883,6 +925,14 @@ export async function executeWithKeyRotationStream(
     });
     throw Object.assign(new Error('لم توجد أزواج مفتاح/نموذج Gemini متاحة للمحاولة؛ راجع حالة المفاتيح وفترات التهدئة.'), { status: 503, statusCode: 503 });
   }
+  console.warn('[ai-provider][rotation-diagnostic] Gemini stream rotation exhausted:', {
+    keyCount: keys.length,
+    modelCount: preferredModels.length,
+    attemptedPairCount: attemptedModelCount,
+    avoidedPairCount: avoidedPairs.size,
+    remainingBudgetMs: Math.max(0, deadlineAt - Date.now()),
+    lastError: safeProviderErrorSummary(lastGeminiStreamError),
+  });
   throw lastGeminiStreamError || new Error('فشلت جميع محاولات تدوير البث بعد تجربة أزواج Gemini المتاحة.');
 }
 
