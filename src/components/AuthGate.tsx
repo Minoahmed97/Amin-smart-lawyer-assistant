@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { LogIn, UserPlus, ShieldCheck } from 'lucide-react';
-import { getDeviceFingerprint } from '../utils/deviceFingerprint.ts';
+import { getDeviceFingerprint, getLegacyDeviceFingerprint } from '../utils/deviceFingerprint.ts';
 import { getSessionToken, clearSession, loginAccount, registerAccount, PlatformUser } from '../services/authService.ts';
 
 interface Props { onAuthenticated: (user: PlatformUser) => void; }
