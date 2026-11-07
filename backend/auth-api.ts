@@ -33,7 +33,7 @@ export default async function handler(req: any, res: any) {
       return res.json(await registerAccount(body?.username || '', body?.password || '', body?.displayName || '', body?.deviceFingerprint || '', req));
     }
     if (req.method === 'POST' && route === 'login') {
-      return res.json(await loginAccount(body?.username || '', body?.password || '', body?.deviceFingerprint || ''));
+      return res.json(await loginAccount(body?.username || '', body?.password || '', body?.deviceFingerprint || '', body?.legacyDeviceFingerprint || ''));
     }
     if (req.method === 'GET' && route === 'me') {
       return res.json({ user: await getCurrentAccount(req) });
