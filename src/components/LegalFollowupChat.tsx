@@ -205,14 +205,14 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
             body: JSON.stringify({
               taskType: 'legal-chat',
               jobId,
-              // Send only the current request to the AI. Keep the full transcript
-              // in local UI state, but do not resend old chat turns or duplicate case context.
+              // Send the recent transcript so the server can resolve a destination
+              // clarification against the original edit request.
               payload: {
-              taskType,
-              originalContext: requestOriginalContext,
-              result: requestResult,
-              messages: [{ role: 'user', content: question }],
-            },
+                taskType,
+                originalContext: requestOriginalContext,
+                result: requestResult,
+                messages: [...messages.slice(-8), { role: 'user', content: question }],
+              },
             }),
           });
           createError = null;
