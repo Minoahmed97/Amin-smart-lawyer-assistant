@@ -84,12 +84,19 @@ export default async function handler(req: any, res: any) {
     const explicitlyRequestsAnEdit =
       /^(?:(?:انا|أنا)\s+)?(?:(?:عايز|عاوز|عايزه|عاوزة|اريد|أريد)\s+)?(?:اطلب|أطلب)\s+(?:(?:منك|منه|منها)\s+)?(?:(?:ان|إن|انه|إنه|انك|إنك|انها|إنها)\s+)?(?:تعديل|تعدل|يعدل|تعدلي|يعدّل|تغيير|تغير|يغير|تنفيذ|تنفذ|ينفذ)/i.test(normalizedMessage);
 
+    // طلبات الشات/النقل/العرض لا تغيّر المستند الأساسي.
     const explicitlyRequestsChatOnly =
-      /(?:في الشات|داخل الشات|هنا في الشات|في رسالة الشات|كرد هنا|في الرد هنا)/i.test(normalizedMessage);
+      /(?:في الشات|داخل الشات|هنا في الشات|للشات|الى الشات|إلى الشات|في رسالة الشات|كرد هنا|في الرد هنا)/i.test(normalizedMessage) ||
+      /(?:انقل|نقل|انسخ|نسخ|اعرض|وريني|هات|استخرج|اكتب|اكتبلي|اكتب لي|جاوب|اجب|أجب|رد|اشرح|وضح|لخص|لخّص|ناقش).{0,50}(?:الشات|الرد هنا)/i.test(normalizedMessage);
+
+    // إذا سمّى المستخدم النتيجة/المستند صراحةً كهدف للتعديل، تكون الأولوية لهذا الهدف.
+    const explicitlyTargetsDocument =
+      /(?:في|داخل|على|ضمن)\\s*(?:النتيجة|المستند|المذكرة|الصحيفة|الفقرة|النص)/i.test(normalizedMessage) ||
+      /(?:النتيجة|المستند|المذكرة|الصحيفة|الفقرة|النص).{0,35}(?:عدل|عدّل|تعديل|غير|غيّر|تغيير|احذف|امسح|أضف|اضف|استبدل|صحح)/i.test(normalizedMessage);
 
     const isDocumentEditIntent =
       (startsWithExplicitEditVerb || explicitlyRequestsAnEdit) &&
-      !explicitlyRequestsChatOnly &&
+      (!explicitlyRequestsChatOnly || explicitlyTargetsDocument) &&
       !/(?:اشرح|وضح|اعرض|وريني|اكتبلي في الشات|هاتلي في الشات)/i.test(normalizedMessage);
 
     let answer = '';
