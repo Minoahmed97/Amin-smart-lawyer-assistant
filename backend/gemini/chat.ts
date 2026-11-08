@@ -74,109 +74,34 @@ export default async function handler(req: any, res: any) {
 
     const latestUserMessage = lastMessage.content.trim();
 
-    // تحديد وجهة الطلب أولاً: النتيجة الأساسية أم المحادثة.
+    // اكتشاف طلب تعديل النتيجة
     const normalizedMessage = latestUserMessage
-      .replace(/[\\u064B-\\u065F\\u0670]/g, '')
+      .replace(/[\u064B-\u065F\u0670]/g, '')
       .trim();
-
-    const mentionsDocument =
-      /(?:النتيجة|المستند|المذكرة|الصحيفة|الصياغة|الفقرة|النص)/i.test(normalizedMessage);
-
-    const mentionsChat =
-      /(?:الشات|المحادثة|الرد هنا|هنا في الرد)/i.test(normalizedMessage);
-
-    const hasEditAction =
-      /(?:عدل|عدّل|تعديل|تعديلات|تعدل|غيّر|غير|تغيير|أعد صياغة|اعد صياغة|صياغة|احذف|امسح|أضف|اضف|استبدل|صحح|صلح|تصلح|نفذ|نفّذ|طبق|طبّق|خلي|اجعل|حوّل|حول)/i.test(normalizedMessage);
-
-    // وجهة الشات لا تُفهم من مجرد ذكره؛ يجب أن يكون المطلوب عرضه أو كتابته فيه.
-    // إذا ذكر المستخدم النتيجة/المستند كهدف للتعديل، فهي الوجهة الأساسية
-    // حتى لو ذكر الشات كمصدر للصياغة أو كنموذج يريد محاكاته.
-    const explicitlyTargetsDocument =
-      /(?:النتيجة الأساسية|النتيجة|المستند الأساسي|المستند|المذكرة|الصحيفة|الصياغة)/i.test(normalizedMessage) &&
-      hasEditAction;
-
-    // لا نختار الشات إلا عندما يكون هو الوجهة الصريحة، ولا يكون المستند
-    // هو الهدف المذكور في نفس الطلب.
-    const explicitlyTargetsChat =
-      !explicitlyTargetsDocument &&
-      mentionsChat &&
-      /(?:في الشات|داخل الشات|بالشات|للشات|في المحادثة|داخل المحادثة|هنا في الرد)/i.test(normalizedMessage) &&
-      /(?:اكتب|اكتبلي|اكتب لي|انقل|نقل|انسخ|نسخ|اعرض|وريني|هات|استخرج|ضع|حط|اعرضه|اعرضها|رد|جاوب|اجب|أجب|اشرح|وضح|لخص|لخّص|ناقش|عدل|عدّل|تعديل|غيّر|غير|صيّغ|صيغ)/i.test(normalizedMessage);
-
-    // استكمال سؤال تحديد الوجهة: إذا كان آخر رد من المستخدم اختياراً
-    // للنتيجة الأساسية، نربطه بطلب التعديل السابق بدلاً من معاملته كسؤال جديد.
-    const previousUserMessage = [...messages.slice(0, -1)]
-      .reverse()
-      .find((message: any) => message?.role === 'user' && typeof message.content === 'string');
-    const previousAssistantMessage = [...messages.slice(0, -1)]
-      .reverse()
-      .find((message: any) => message?.role === 'assistant' && typeof message.content === 'string');
-    const previousRequest = String(previousUserMessage?.content || '')
-      .replace(/[\\u064B-\\u065F\\u0670]/g, '')
-      .trim();
-    const confirmsMainResult =
-      /(?:على|في|داخل)\s*(?:النتيجة الأساسية|النتيجة|المستند الأساسي)/i.test(normalizedMessage) ||
-      /(?:النتيجة الأساسية|النتيجة|المستند الأساسي)/i.test(normalizedMessage);
-    const previousWasEditRequest =
-      /(?:عدل|عدّل|تعديل|تعديلات|تعدل|غيّر|غير|تغيير|أعد صياغة|اعد صياغة|صياغة|احذف|امسح|أضف|اضف|استبدل|صحح|صلح|تصلح|نفذ|نفّذ|طبق|طبّق|خلي|اجعل|حوّل|حول)/i.test(previousRequest);
-    const assistantWasAskingDestination =
-      /(?:هل تريد|حدد الوجهة|النتيجة الأساسية|داخل الشات)/i.test(String(previousAssistantMessage?.content || ''));
-    const isConfirmedDocumentEdit =
-      confirmsMainResult && previousWasEditRequest && assistantWasAskingDestination;
 
     const isDocumentEditIntent =
-      (hasEditAction && explicitlyTargetsDocument) || isConfirmedDocumentEdit;
-
-    const isChatOnlyIntent =
-      explicitlyTargetsChat && !explicitlyTargetsDocument;
-
-    const isAmbiguousEditIntent =
-      !isConfirmedDocumentEdit &&
-      hasEditAction && !explicitlyTargetsDocument && !isChatOnlyIntent;
-
-    const editInstruction = isConfirmedDocumentEdit
-      ? `طلب التعديل الأصلي: ${previousRequest}\\nتأكيد الوجهة من المحامي: ${latestUserMessage}`
-      : latestUserMessage;
+      /^(?:(?:من فضلك|لو سمحت|عايزك|عايز|عاوز|ممكن|ياريت)\s+)*(?:عدل|عدلي|تعديل|تعديلات|تعدل|تعدلي|اعدل|أعدل|غير|غيرلي|تغير|تغيير|بدل|بدلي|تبدل|احذف|تحذف|امسح|تمسح|شيل|تشيل|اضف|أضف|إضافة|ضيف|تضيف|زود|تزود|استبدل|استبدال|صحح|تصحح)(?=\s|$|[،,.!?؟:؛])/i.test(normalizedMessage) &&
+      !/(?:اشرح|وضح|اعرض|وريني|اكتبلي في الشات|هاتلي في الشات)/i.test(normalizedMessage);
 
     let answer = '';
     let updatedResult: string | null = null;
 
-    if (isAmbiguousEditIntent) {
-      answer = 'هل تريد تطبيق التعديل على النتيجة الأساسية وتحديث صياغتها، أم تريد كتابة التعديل داخل الشات فقط؟ حدد الوجهة وسأنفذ المطلوب.';
-    } else if (isDocumentEditIntent) {
-      // تعديل النتيجة يعني إعادة صياغة المستند كاملاً وإرجاع النسخة النهائية.
-      const editPrompt = `أنت محرر ومستشار قانوني مصري محترف. المطلوب تعديل وإعادة صياغة المستند القانوني الكامل وفق تعليمات المحامي، ثم إرجاع النسخة النهائية الكاملة للمستند.
+    if (isDocumentEditIntent) {
 
-[نوع المهمة]
-${taskLabel}
+      /* * تعديل موضعي: * لا نطلب إعادة توليد المستند بالكامل. * النموذج يحدد النص الأصلي والنص البديل فقط. */
 
-[سياق القضية]
-${originalContext || 'غير متاح'}
+      const editPrompt = `أنت محرر مستندات قانونية مصرية. المطلوب تنفيذ تعديل موضعي على المستند التالي. [طلب المحامي] ${latestUserMessage} [المستند الحالي] ${result} تعليمات إلزامية: 1. حدد النص الموجود فعلياً في المستند الذي يجب تغييره. 2. أرجع النص القديم حرفياً دون إعادة صياغته. 3. أرجع النص البديل المطلوب فقط. 4. لا تعيد كتابة المستند بالكامل. 5. لا تعدل أي فقرة أخرى. 6. لا تختلق وقائع أو أسماء أو مواد قانونية. 7. إذا كان التعديل غير واضح أو لا يمكن تحديد موضعه بدقة، أرجع status بقيمة unclear. 8. إذا كان المطلوب إضافة نص جديد، حدد نصاً موجوداً يتم إدراج الإضافة بعده. 9. لا تختصر النص القديم ولا تستخدم علامات الحذف بدلاً منه. 10. اختر موضعاً فريداً لا يتكرر داخل المستند. 11. إذا كان الطلب يتطلب تعديلات متعددة أو إعادة صياغة شاملة لا يمكن تمثيلها باستبدال موضعي واحد، أرجع unclear. أرجع JSON صالحاً فقط بهذا الشكل: { "status": "ok", "oldText": "النص الأصلي المطابق حرفياً", "newText": "النص البديل" } في حالة الإضافة، اجعل newText يحتوي على النص الأصلي المحدد ثم الإضافة المطلوبة بعده. في حالة عدم وضوح الطلب: { "status": "unclear", "oldText": "", "newText": "" } ممنوع إضافة أي شرح خارج JSON.`;
 
-[المستند الحالي بالكامل]
-${result}
-
-[تعليمات المحامي للتعديل]
-${editInstruction}
-
-قواعد إلزامية:
-1. أعد صياغة المستند كاملاً بعد تطبيق طلب المحامي، ولا تكتفِ بتعديل فقرة منفردة أو إرجاع الجزء المعدل.
-2. حافظ على جميع الوقائع والطلبات والدفوع والأسانيد والتفاصيل الصحيحة الموجودة في المستند، ما لم يطلب المحامي تغييرها صراحة.
-3. طبّق التعديل المطلوب على كامل المستند بالقدر اللازم، ووحّد الصياغة والأسلوب حتى تظهر النسخة متماسكة.
-4. إذا أرفق المحامي صياغة سابقة في الشات وطلب جعل النتيجة مثلها، اعتبر تلك الصياغة مرجعاً أسلوبياً وتعليمياً، وطبّقها على المستند الحالي كله بحسب السياق.
-5. لا تختلق وقائع أو مستندات أو أسماء أو أرقام أو مواد قانونية أو أحكاماً.
-6. لا تحذف أي جزء جوهري من المستند لمجرد الاختصار.
-7. أخرج المستند النهائي كاملاً فقط، دون مقدمة أو شرح أو تعليق خارج المستند.
-8. لا تقل إنك لم تحدد فقرة؛ فالمطلوب هنا هو معالجة المستند كاملاً.`;
-
-      const editedDocument = await executeWithKeyRotation(
+      // طلب قصير مخصص للتعديل بدلاً من مولد المستندات الطويلة
+      const editResponse = await executeWithKeyRotation(
         async (ai, key, model) => {
           const response = await ai.models.generateContent({
             model,
             contents: editPrompt,
             config: {
-              temperature: 0.2,
-              maxOutputTokens: 32768
+              temperature: 0.1,
+              maxOutputTokens: 8192,
+              responseMimeType: 'application/json'
             }
           });
 
@@ -185,44 +110,95 @@ ${editInstruction}
             : '';
 
           if (!text) {
-            throw new Error('لم يصل المستند المعدل كاملاً من النموذج.');
+            throw new Error('لم يصل رد صالح لتنفيذ التعديل.');
           }
 
-          return text
-            .replace(/^```(?:text|markdown)?\s*/i, '')
-            .replace(/\s*```$/, '')
-            .trim();
+          return text;
         }
       );
 
-      if (!editedDocument || editedDocument.length < 100) {
-        throw new Error('النسخة المعدلة غير مكتملة أو أقصر من أن تمثل المستند النهائي.');
+      let editData: any;
+
+      try {
+        const cleanJson = String(editResponse)
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```$/, '')
+          .trim();
+
+        editData = JSON.parse(cleanJson);
+
+      } catch {
+        throw new Error('تعذر قراءة التعديل المطلوب. حاول توضيح الجزء المراد تغييره.');
       }
 
-      if (editedDocument === result.trim()) {
-        answer = 'راجعت المستند، ولم ينتج عن التعليمات تغيير واضح في الصياغة. وضّح لي التغيير المطلوب بصورة أدق.';
+      if (
+        !editData ||
+        editData.status !== 'ok' ||
+        typeof editData.oldText !== 'string' ||
+        typeof editData.newText !== 'string' ||
+        !editData.oldText.length
+      ) {
+        return res.status(422).json({
+          error: 'لم أتمكن من تحديد موضع التعديل بدقة. حدد الجملة أو الفقرة المطلوب تعديلها.',
+          updatedResult: null
+        });
+      }
+
+      const oldText = editData.oldText;
+      const newText = editData.newText;
+
+      // التحقق من وجود النص الأصلي فعلياً
+      const firstIndex = result.indexOf(oldText);
+
+      if (firstIndex === -1) {
+        return res.status(422).json({
+          error: 'تعذر العثور على النص المطلوب تعديله داخل النتيجة الأصلية.',
+          updatedResult: null
+        });
+      }
+
+      // منع تعديل موضع خاطئ إذا تكرر النص
+      const secondIndex = result.indexOf(
+        oldText,
+        firstIndex + oldText.length
+      );
+
+      if (secondIndex !== -1) {
+        return res.status(422).json({
+          error: 'النص المطلوب تعديله متكرر داخل المستند. يرجى تحديد الفقرة المقصودة بدقة.',
+          updatedResult: null
+        });
+      }
+
+      // تنفيذ الاستبدال مع الحفاظ على باقي المستند حرفياً
+      const modifiedDocument =
+        result.slice(0, firstIndex) +
+        newText +
+        result.slice(firstIndex + oldText.length);
+
+      if (!modifiedDocument.trim()) {
+        throw new Error('لا يمكن استبدال المستند بنتيجة فارغة.');
+      }
+
+      if (modifiedDocument === result) {
+        answer = 'النص المطلوب موجود بالفعل ولا يحتاج إلى تعديل.';
+        updatedResult = null;
       } else {
-        updatedResult = editedDocument;
-        answer = 'تم تعديل وإعادة صياغة المستند بالكامل، وتحديث النتيجة الأساسية بالنسخة الجديدة.';
+        updatedResult = modifiedDocument;
+        answer = 'تم تنفيذ التعديل المطلوب على النتيجة.';
       }
+
     } else {
-      // الأسئلة وطلبات العرض أو النقل الموجهة للشات لا تغيّر المستند الأساسي.
-      const prompt = `أنت أمين، مساعد قانوني مصري محترف وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}). أجب على طلب المحامي داخل الشات فقط. إذا طلب نقل صياغة أو جزء من النتيجة إلى الشات، اعرضه هنا كما طلب. لا تعدّل المستند الأساسي ولا تدّعِ أنك حدّثته.
 
-[النتيجة الحالية للاطلاع والاستعانة بها فقط]
-${result}
+      /* * المحادثة القانونية العادية: * الحفاظ على نفس الوظيفة السابقة. */
 
-[سجل المحادثة]
-${messages.slice(-6).map((message: any) => `${message.role === 'user' ? 'المحامي' : 'أمين'}: ${message.content}`).join('\\n')}
-
-[طلب المحامي الحالي]
-${latestUserMessage}`;
+      const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}). أجب على طلب أو سؤال المحامي التالي في الشات مباشرة. إذا طلب عرض المذكرة أو جزء منها في الشات، اعرض المطلوب في الشات. لا تقم بتعديل المستند الأساسي. [النتيجة الحالية للمستند للاطلاع والاستعانة بها] ${result} [طلب أو سؤال المحامي] ${latestUserMessage}`;
 
       const rawAnswer = await generateDeepLegalResponse(prompt);
 
       answer = rawAnswer
-        .replace(/^\`\`\`(?:text|markdown|json)?\s*/i, '')
-        .replace(/\s*\`\`\`$/, '')
+        .replace(/^```(?:text|markdown|json)?\s*/i, '')
+        .replace(/\s*```$/, '')
         .trim();
 
       updatedResult = null;
