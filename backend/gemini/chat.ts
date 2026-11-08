@@ -102,7 +102,7 @@ export default async function handler(req: any, res: any) {
       hasEditAction &&
       !/(?:اكتب|انقل|انسخ|اعرض|هات|ضع|حط|عدل|عدّل|تعديل).{0,50}(?:في الشات|داخل الشات|في المحادثة|داخل المحادثة)/i.test(normalizedMessage) &&
       (
-        /(?:على|في|داخل|ضمن|عن)\\s*(?:النتيجة الأساسية|النتيجة|المستند الأساسي|المستند|المذكرة|الصحيفة|الصياغة|الفقرة|النص)/i.test(normalizedMessage) ||
+        /(?:على|في|داخل|ضمن|عن)\s*(?:النتيجة الأساسية|النتيجة|المستند الأساسي|المستند|المذكرة|الصحيفة|الصياغة|الفقرة|النص)/i.test(normalizedMessage) ||
         /(?:النتيجة الأساسية|النتيجة|المستند الأساسي|المستند|المذكرة|الصحيفة|الصياغة|الفقرة|النص).{0,70}(?:عدل|عدّل|تعديل|تعديلات|تعدل|غيّر|غير|تغيير|أعد صياغة|اعد صياغة|احذف|امسح|أضف|اضف|استبدل|صحح|صلح|تصلح|خلي|اجعل)/i.test(normalizedMessage)
       );
 
@@ -118,7 +118,7 @@ export default async function handler(req: any, res: any) {
       .replace(/[\\u064B-\\u065F\\u0670]/g, '')
       .trim();
     const confirmsMainResult =
-      /(?:على|في|داخل)\\s*(?:النتيجة الأساسية|النتيجة|المستند الأساسي)/i.test(normalizedMessage) ||
+      /(?:على|في|داخل)\s*(?:النتيجة الأساسية|النتيجة|المستند الأساسي)/i.test(normalizedMessage) ||
       /(?:النتيجة الأساسية|النتيجة|المستند الأساسي)/i.test(normalizedMessage);
     const previousWasEditRequest =
       /(?:عدل|عدّل|تعديل|تعديلات|تعدل|غيّر|غير|تغيير|أعد صياغة|اعد صياغة|صياغة|احذف|امسح|أضف|اضف|استبدل|صحح|صلح|تصلح|نفذ|نفّذ|طبق|طبّق|خلي|اجعل|حوّل|حول)/i.test(previousRequest);
@@ -224,8 +224,8 @@ ${latestUserMessage}`;
       const rawAnswer = await generateDeepLegalResponse(prompt);
 
       answer = rawAnswer
-        .replace(/^\`\`\`(?:text|markdown|json)?\\s*/i, '')
-        .replace(/\\s*\`\`\`$/, '')
+        .replace(/^\`\`\`(?:text|markdown|json)?\s*/i, '')
+        .replace(/\s*\`\`\`$/, '')
         .trim();
 
       updatedResult = null;
