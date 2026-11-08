@@ -187,7 +187,7 @@ ${latestUserMessage}
           return text
             .replace(/^```(?:text|markdown)?\s*/i, '')
             .replace(/\s*```$/, '')
-            .trim();    .trim();
+            .trim();
         }
       );
 
