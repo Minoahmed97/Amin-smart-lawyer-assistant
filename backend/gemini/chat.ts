@@ -99,14 +99,40 @@ export default async function handler(req: any, res: any) {
       mentionsDocument &&
       (hasEditAction || /(?:في|على|داخل|ضمن)\\s*(?:النتيجة|المستند|المذكرة|الصحيفة|الصياغة|الفقرة|النص)/i.test(normalizedMessage));
 
+    // استكمال سؤال تحديد الوجهة: إذا كان آخر رد من المستخدم اختياراً
+    // للنتيجة الأساسية، نربطه بطلب التعديل السابق بدلاً من معاملته كسؤال جديد.
+    const previousUserMessage = [...messages.slice(0, -1)]
+      .reverse()
+      .find((message: any) => message?.role === 'user' && typeof message.content === 'string');
+    const previousAssistantMessage = [...messages.slice(0, -1)]
+      .reverse()
+      .find((message: any) => message?.role === 'assistant' && typeof message.content === 'string');
+    const previousRequest = String(previousUserMessage?.content || '')
+      .replace(/[\\u064B-\\u065F\\u0670]/g, '')
+      .trim();
+    const confirmsMainResult =
+      /(?:على|في|داخل)\\s*(?:النتيجة الأساسية|النتيجة|المستند الأساسي)/i.test(normalizedMessage) ||
+      /(?:النتيجة الأساسية|النتيجة|المستند الأساسي)/i.test(normalizedMessage);
+    const previousWasEditRequest =
+      /(?:عدل|عدّل|تعديل|تعديلات|تعدل|غيّر|غير|تغيير|أعد صياغة|اعد صياغة|صياغة|احذف|امسح|أضف|اضف|استبدل|صحح|صلح|تصلح|نفذ|نفّذ|طبق|طبّق|خلي|اجعل|حوّل|حول)/i.test(previousRequest);
+    const assistantWasAskingDestination =
+      /(?:هل تريد|حدد الوجهة|النتيجة الأساسية|داخل الشات)/i.test(String(previousAssistantMessage?.content || ''));
+    const isConfirmedDocumentEdit =
+      confirmsMainResult && previousWasEditRequest && assistantWasAskingDestination;
+
     const isDocumentEditIntent =
-      hasEditAction && explicitlyTargetsDocument;
+      (hasEditAction && explicitlyTargetsDocument) || isConfirmedDocumentEdit;
 
     const isChatOnlyIntent =
       explicitlyTargetsChat && !explicitlyTargetsDocument;
 
     const isAmbiguousEditIntent =
+      !isConfirmedDocumentEdit &&
       hasEditAction && !explicitlyTargetsDocument && !isChatOnlyIntent;
+
+    const editInstruction = isConfirmedDocumentEdit
+      ? `طلب التعديل الأصلي: ${previousRequest}\\nتأكيد الوجهة من المحامي: ${latestUserMessage}`
+      : latestUserMessage;
 
     let answer = '';
     let updatedResult: string | null = null;
