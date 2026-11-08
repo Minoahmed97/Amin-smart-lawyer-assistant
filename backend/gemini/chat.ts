@@ -159,9 +159,9 @@ ${latestUserMessage}
           }
 
           return text
-            .replace(/^\`\`\`(?:text|markdown)?\\s*/i, '')
-            .replace(/\\s*\`\`\`$/, '')
-            .trim();
+            .replace(/^```(?:text|markdown)?\s*/i, '')
+            .replace(/\s*```$/, '')
+            .trim();    .trim();
         }
       );
 
