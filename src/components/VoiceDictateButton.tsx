@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, AlertCircle } from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
+import { SpeechRecognition } from '@capacitor-community/speech-recognition';
 
 interface VoiceDictateButtonProps {
   onTranscript: (text: string) => void;
@@ -81,13 +83,45 @@ export const VoiceDictateButton: React.FC<VoiceDictateButtonProps> = ({
     setErrorMessage(null);
 
     if (isListening) {
-      try { recognitionRef.current?.stop(); } catch {}
+      try {
+        if (Capacitor.isNativePlatform()) await SpeechRecognition.stop();
+        else recognitionRef.current?.stop();
+      } catch {}
       setIsListening(false);
       return;
     }
 
-    // Request microphone permission before checking SpeechRecognition support.
-    // Some Android browsers expose getUserMedia but not the Web Speech API.
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const permission = await SpeechRecognition.requestPermissions();
+        if (permission.speechRecognition !== 'granted') {
+          setErrorMessage('لم يتم منح إذن الميكروفون. اسمح للتطبيق باستخدام الميكروفون ثم أعد المحاولة.');
+          return;
+        }
+        const availability = await SpeechRecognition.available();
+        if (!availability.available) {
+          setErrorMessage('خدمة تحويل الكلام إلى نص غير متاحة على هذا الجهاز.');
+          return;
+        }
+        setIsListening(true);
+        const result = await SpeechRecognition.start({
+          language: lang,
+          maxResults: 5,
+          partialResults: false,
+          popup: true,
+        });
+        const transcript = (result.matches || []).filter(Boolean).join(' ').trim();
+        if (transcript) onTranscriptRef.current(transcript);
+      } catch (err: any) {
+        console.warn('Native speech recognition error:', err);
+        setErrorMessage(err?.message || 'تعذر تشغيل الإملاء الصوتي. تحقق من إذن الميكروفون وخدمة التعرف على الكلام.');
+      } finally {
+        setIsListening(false);
+      }
+      return;
+    }
+
+    // Browser fallback for the existing web application.
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         setErrorMessage('المتصفح لا يتيح طلب إذن الميكروفون. افتح التطبيق من متصفح Chrome عبر اتصال HTTPS وتحقق من أذونات الموقع.');
