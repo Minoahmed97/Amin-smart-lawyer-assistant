@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import {
 UploadCloud,
 Loader2,
@@ -615,6 +617,37 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
 if (event.target.files?.length) void processFilesBatch(event.target.files);
 };
 
+const handleTakePhoto = async () => {
+  if (!Capacitor.isNativePlatform()) {
+    cameraInputRef.current?.click();
+    return;
+  }
+  if (isProcessing || isRestoring) return;
+  try {
+    setErrorMsg(null);
+    const photo = await Camera.getPhoto({
+      quality: 90,
+      allowEditing: false,
+      resultType: CameraResultType.Uri,
+      source: CameraSource.Camera,
+      saveToGallery: false,
+    });
+    if (!photo.webPath) throw new Error('لم تُرجع الكاميرا مسار الصورة.');
+    const response = await fetch(photo.webPath);
+    if (!response.ok) throw new Error('تعذر قراءة الصورة الملتقطة من الكاميرا.');
+    const blob = await response.blob();
+    const imageFile = new File([blob], `document-${Date.now()}.jpg`, {
+      type: blob.type || 'image/jpeg',
+      lastModified: Date.now(),
+    });
+    await processFilesBatch([imageFile]);
+  } catch (error: any) {
+    if (error?.message && !/cancel|canceled|cancelled/i.test(error.message)) {
+      setErrorMsg(error.message || 'تعذر التقاط صورة المستند.');
+    }
+  }
+};
+
 const handleDragOver = (event: React.DragEvent) => {
 event.preventDefault();
 setIsDragging(true);
@@ -693,7 +726,7 @@ className="hidden"
 <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
     <button
       type="button"
-      onClick={() => cameraInputRef.current?.click()}
+      onClick={() => void handleTakePhoto()}
       disabled={isProcessing || isRestoring}
       className="w-full sm:w-auto px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-200 border border-amber-500/40 rounded-xl text-xs font-bold disabled:opacity-50 whitespace-nowrap"
     >
