@@ -145,7 +145,11 @@ export async function enableCompletionPushNotifications(): Promise<'enabled' | '
     const keyData = await keyResponse.json().catch(() => ({}));
     const publicKey = String(keyData?.publicKey || '').trim();
     if (!publicKey) return 'failed';
-    const permission = Notification.permission;
+    // This function is called only from the user's explicit enable-notifications action.
+    // Request permission here; merely checking Notification.permission never opens the prompt.
+    const permission = Notification.permission === 'default'
+      ? await Notification.requestPermission()
+      : Notification.permission;
     if (permission !== 'granted') return permission === 'denied' ? 'denied' : 'failed';
     await navigator.serviceWorker.register('/sw.js');
     const readyRegistration = await navigator.serviceWorker.ready;
