@@ -1,6 +1,18 @@
 name: Build Ameen Android APK
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'package.json'
+      - 'bun.lock'
+      - 'capacitor.config.ts'
+      - '.github/workflows/android-apk.yml'
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'vite.config.ts'
   workflow_dispatch:
   push:
     branches:
