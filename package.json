@@ -31,7 +31,9 @@
     "web-push": "^3.6.7",
     "pdfjs-dist": "^5.4.394",
     "@capacitor/android": "^7.4.3",
-    "@capacitor/core": "^7.4.3"
+    "@capacitor/core": "^7.4.3",
+    "@capacitor/camera": "^7.0.2",
+    "@capacitor-community/speech-recognition": "^7.0.1"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
