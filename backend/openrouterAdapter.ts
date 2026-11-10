@@ -285,19 +285,18 @@ export function getOpenRouterModels(): string[] {
     .map((x) => x.trim().replace(/^['\"]|['\"]$/g, ''))
     .filter(Boolean);
 
-  // Use explicit free model IDs only. The dynamic openrouter/free router
-  // can resolve to a model slug that is no longer available on the free tier.
+  // Keep this fallback free-only. In particular, reject the paid slug
+  // "qwen/qwen3.8-27b" and accept it only if the free variant is explicitly named.
   const configuredFree = configured.filter((model) =>
-    /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/i.test(model) &&
-    model !== 'qwen/qwen3.8-27b:free'
+    model === 'openrouter/free' || /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/i.test(model)
   );
   const knownFreeFallbacks = [
     'nvidia/nemotron-3-ultra-550b-a55b:free',
-    'nvidia/nemotron-3.5-super-vl:free',
     'nvidia/nemotron-3.5-lightning:free',
-    'dots-studio/dots-3-note-preview:free',
-    'cohere/north-mini-code:free',
+    'qwen/qwen3.8-27b:free',
   ];
 
-  return [...new Set(configuredFree.length ? configuredFree : knownFreeFallbacks)];
+  // The dynamic router selects from currently available free models, avoiding
+  // reliance on one hard-coded slug when provider availability changes.
+  return [...new Set(['openrouter/free', ...(configuredFree.length ? configuredFree.filter((m) => m !== 'openrouter/free') : knownFreeFallbacks)])];
 }
