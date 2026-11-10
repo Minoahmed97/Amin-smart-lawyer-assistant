@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "android:sync": "cap sync android",
+    "android:open": "cap open android"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -27,7 +29,9 @@
     "vite": "^8.3.0",
     "@vercel/functions": "^2.2.13",
     "web-push": "^3.6.7",
-    "pdfjs-dist": "^5.4.394"
+    "pdfjs-dist": "^5.4.394",
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/core": "^7.4.3"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
@@ -38,6 +42,7 @@
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
     "@types/express": "^4.17.21",
-    "@types/web-push": "^3.6.4"
+    "@types/web-push": "^3.6.4",
+    "@capacitor/cli": "^7.4.3"
   }
 }
