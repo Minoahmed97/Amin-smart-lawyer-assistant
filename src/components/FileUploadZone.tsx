@@ -642,9 +642,9 @@ const handleTakePhoto = async () => {
     });
     await processFilesBatch([imageFile]);
   } catch (error: any) {
-    if (error?.message && !/cancel|canceled|cancelled/i.test(error.message)) {
-      setErrorMsg(error.message || 'تعذر التقاط صورة المستند.');
-    }
+    const message = String(error?.message || '');
+    const wasCancelled = message.toLowerCase().includes('cancel');
+    if (!wasCancelled) setErrorMsg(message || 'تعذر التقاط صورة المستند.');
   }
 };
 
