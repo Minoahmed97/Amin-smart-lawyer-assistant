@@ -96,6 +96,7 @@ recoveryScope = 'general',
 userId,
 }) => {
 const fileInputRef = useRef<HTMLInputElement>(null);
+const cameraInputRef = useRef<HTMLInputElement>(null);
 const mountedRef = useRef(true);
 const onTextExtractedRef = useRef(onTextExtracted);
 const previewUrlsRef = useRef<Record<string, string>>({});
@@ -658,7 +659,15 @@ type="file"
 multiple  
 accept=".pdf,.docx,.doc,.txt,.png,.jpg,.jpeg,.webp,.bmp"  
 onChange={handleFileChange}  
-className="hidden"  
+className="hidden"
+/>
+<input
+  ref={cameraInputRef}
+  type="file"
+  accept="image/*"
+  capture="environment"
+  onChange={handleFileChange}
+  className="hidden"
 />
 <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-right">
 <div className="flex items-center gap-3.5 w-full sm:w-auto">
@@ -681,15 +690,24 @@ className="hidden"
 </div>
 </div>
 
-<button  
+<div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+    <button
+      type="button"
+      onClick={() => cameraInputRef.current?.click()}
+      disabled={isProcessing || isRestoring}
+      className="w-full sm:w-auto px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-200 border border-amber-500/40 rounded-xl text-xs font-bold disabled:opacity-50 whitespace-nowrap"
+    >
+      تصوير مستند
+    </button>
+    <button  
       type="button"  
       onClick={() => fileInputRef.current?.click()}  
       disabled={isProcessing || isRestoring}  
       className="w-full sm:w-auto px-4 py-2.5 bg-gradient-to-r from-[#b45309] to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-amber-950/50 cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2 flex-shrink-0 whitespace-nowrap"  
     >  
       {isProcessing || isRestoring ? <><Loader2 className="w-4 h-4 animate-spin text-amber-200" /><span>{isRestoring ? 'جارٍ استعادة الملفات...' : 'جارٍ المعالجة...'}</span></> : <><UploadCloud className="w-4 h-4" /><span>اختر مستندات</span></>}  
-    </button>  
-  </div>  
+    </button>
+  </div>
 
   {isRestoring && (  
     <div className="mt-3 text-[11px] text-slate-300 flex items-center gap-2" role="status">  
