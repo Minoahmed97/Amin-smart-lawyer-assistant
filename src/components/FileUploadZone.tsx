@@ -741,6 +741,7 @@ className="hidden"
       {isProcessing || isRestoring ? <><Loader2 className="w-4 h-4 animate-spin text-amber-200" /><span>{isRestoring ? 'جارٍ استعادة الملفات...' : 'جارٍ المعالجة...'}</span></> : <><UploadCloud className="w-4 h-4" /><span>اختر مستندات</span></>}  
     </button>
   </div>
+</div>
 
   {isRestoring && (  
     <div className="mt-3 text-[11px] text-slate-300 flex items-center gap-2" role="status">  
