@@ -309,7 +309,6 @@ export function getOpenRouterModels(): string[] {
   const knownFreeFallbacks = [
     'nvidia/nemotron-3-ultra-550b-a55b:free',
     'nvidia/nemotron-3.5-lightning:free',
-    'qwen/qwen3.8-27b:free',
   ];
 
   // The dynamic router selects from currently available free models, avoiding
