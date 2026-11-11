@@ -33,9 +33,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
   const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
-  const researchInstruction = options.legalResearch ? '\n\n[محاولة بحث قانوني غير معطلة للإنتاج] حاول الاستعانة بأداة البحث المتاحة للوصول إلى المصادر المصرية الأولية والرسمية ذات الصلة. البحث خطوة مساعدة فقط وليس شرطاً لإنتاج المستند. إذا تعذرت أداة البحث أو فشلت أو انتهت مهلتها، تابع التحليل والصياغة فوراً اعتماداً على الوقائع والمستندات والمعلومات المتاحة دون انتظار البحث، وصرّح بأن التحقق من المصادر الحديثة لم يكتمل. لا تختلق أحكاماً أو أرقام طعون أو مواد أو روابط أو مصادر لم تصل إليها فعلاً.\n' : '';
-  const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
-
   const maxContinuations = 5;
   const usedPairs = new Set<string>();
   const deadlineAt = Date.now() + 270000;
@@ -44,27 +41,51 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
-  const groundingQueries = new Set<string>();
-  const groundingSources = new Map<string, string>();
-  const recordGroundingMetadata = (metadata: any) => {
-    for (const query of metadata?.webSearchQueries || []) {
-      if (typeof query === 'string' && query.trim()) groundingQueries.add(query.trim());
+  // Run search in a bounded Gemini-only phase before drafting. Errors reach
+  // key rotation here, then are contained so drafting always gets its chance.
+  let groundedResearchContext = '';
+  if (options.legalResearch) {
+    const researchDeadlineAt = Math.min(deadlineAt - 60_000, Date.now() + 25_000);
+    const researchPrompt = `ابحث عبر Google Search عن المصادر القانونية المصرية الأولية والرسمية المرتبطة مباشرة بالمسألة التالية. أعطِ الأولوية للنصوص التشريعية المنشورة رسمياً ومواقع الجهات القضائية المصرية والمصادر الحكومية. استخرج فقط ما عثرت عليه فعلاً، مع اسم المصدر والرابط وتاريخ النص أو الحكم إن ظهر. لا تخترع مادة أو حكماً أو رقم طعن أو تاريخاً. إذا لم تجد مصدراً موثوقاً فلا تدّعِ العثور عليه. بيانات المهمة القانونية:\n${prompt.slice(0, 18000)}`;
+    try {
+      const research = await executeWithKeyRotation(async (ai, key, model) => {
+        if (key === 'openrouter') throw Object.assign(new Error('Google Search متاح عبر Gemini فقط.'), { status: 502, statusCode: 502 });
+        console.info('[counter-brief] Gemini legal search attempt', { model });
+        const response: any = await ai.models.generateContent({
+          model, contents: researchPrompt,
+          config: { systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION, temperature: 0.2, maxOutputTokens: 6000, tools: [{ googleSearch: {} }] },
+        });
+        const metadata = response?.candidates?.[0]?.groundingMetadata;
+        const queries = Array.isArray(metadata?.webSearchQueries) ? metadata.webSearchQueries.filter((v: any) => typeof v === 'string' && v.trim()) : [];
+        const sources = (Array.isArray(metadata?.groundingChunks) ? metadata.groundingChunks : [])
+          .map((chunk: any) => chunk?.web)
+          .filter((web: any) => typeof web?.uri === 'string' && /^https?:\/\//i.test(web.uri))
+          .map((web: any) => ({ title: typeof web.title === 'string' && web.title.trim() ? web.title.trim() : web.uri, uri: web.uri }));
+        const uniqueSources = Array.from(new Map(sources.map((source: any) => [source.uri, source])).values());
+        const researchText = typeof response?.text === 'string' ? response.text.trim() : '';
+        if (!uniqueSources.length || !researchText) {
+          const noGrounding: any = new Error('لم يُرجع بحث Gemini مصادر ويب موثقة.');
+          noGrounding.status = 502; noGrounding.statusCode = 502; throw noGrounding;
+        }
+        console.info('[counter-brief] Gemini legal search result', { model, queries, sources: uniqueSources, hasGroundingData: true });
+        return { text: researchText, sources: uniqueSources };
+      }, ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'], undefined, true, {
+        deadlineAt: researchDeadlineAt, providerAttempt: 'gemini-primary',
+      });
+      groundedResearchContext = `\n\n[نتيجة بحث قانوني موثقة عبر Google Search — استخدمها بقدر صلتها بالقضية ولا تضف إليها ما لم يرد بها]\n${research.text.slice(0, 16000)}\nالمصادر التي أعادها البحث:\n${research.sources.map((source: any) => `- ${source.title}: ${source.uri}`).join('\n')}\n`;
+    } catch (searchError: any) {
+      console.warn('[counter-brief] Gemini legal search unavailable; continuing drafting without search', {
+        error: searchError instanceof Error ? searchError.message : String(searchError),
+      });
     }
-    for (const chunk of metadata?.groundingChunks || []) {
-      const web = chunk?.web;
-      if (typeof web?.uri === 'string' && /^https?:\/\//i.test(web.uri)) {
-        groundingSources.set(web.uri, typeof web.title === 'string' && web.title.trim() ? web.title.trim() : web.uri);
-      }
-    }
-  };
-  const logGroundingResult = (model: string) => {
-    console.info('[counter-brief] Gemini legal search result', {
-      model,
-      queries: Array.from(groundingQueries),
-      sources: Array.from(groundingSources, ([uri, title]) => ({ title, uri })),
-      hasGroundingData: groundingQueries.size > 0 || groundingSources.size > 0,
-    });
-  };
+  }
+
+  const researchInstruction = options.legalResearch
+    ? groundedResearchContext
+      ? `\n${groundedResearchContext}\nلا تنسب أي قاعدة أو حكم أو مادة إلى هذه المصادر إلا إذا كان ذلك ظاهراً في نتيجة البحث. البحث لا يبرر إضافة وقائع أو طلبات جديدة.\n`
+      : '\n[تعذر الحصول على مصادر بحث قانوني موثقة في هذه المحاولة] أكمل الصياغة فوراً من واقع المستندات والبيانات المتاحة، ولا تختلق مواد أو أحكاماً أو أرقام طعون أو روابط أو مصادر. نبّه باقتضاب إلى أن التحقق من المصادر الحديثة لم يكتمل إذا كان ذلك مؤثراً.\n'
+    : '';
+  const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   const makeContinuationPrompt = () => accumulatedText
     ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
@@ -87,31 +108,12 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         await executeWithKeyRotationStream(async (ai, key, model) => {
           activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
           activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-          const providerSearchEnabled = options.legalResearch && key !== 'openrouter';
-          if (providerSearchEnabled) console.info('[counter-brief] Gemini legal search attempt', { model });
 
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
             let stream: any;
             try {
-              stream = await ai.models.generateContentStream({
-                model,
-                contents: segmentPrompt,
-                config: {
-                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                  temperature: 0.15,
-                  maxOutputTokens: 32768,
-                  ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-                  thinkingConfig: { thinkingLevel: 'low' },
-                },
-              });
-            } catch (searchError) {
-              if (!providerSearchEnabled) throw searchError;
-              console.warn('[counter-brief] Gemini legal search failed; retrying this generation without search', {
-                model,
-                error: searchError instanceof Error ? searchError.message : String(searchError),
-              });
               stream = await ai.models.generateContentStream({
                 model,
                 contents: segmentPrompt,
@@ -126,7 +128,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
             const forwardStream = async function* (activeStream: any) {
               for await (const chunk of activeStream) {
-                recordGroundingMetadata(chunk?.candidates?.[0]?.groundingMetadata);
                 const candidateReason = chunk?.candidates?.[0]?.finishReason;
                 if (candidateReason) finishReason = String(candidateReason).toUpperCase();
                 if (segmentCompleted) continue;
@@ -150,27 +151,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               }
             };
 
-            try {
-              for await (const part of forwardStream(stream)) yield part;
-            } catch (streamError) {
-              if (!providerSearchEnabled || receivedText) throw streamError;
-              console.warn('[counter-brief] Gemini search stream failed before first text; retrying generation without search', {
-                model,
-                error: streamError instanceof Error ? streamError.message : String(streamError),
-              });
-              stream = await ai.models.generateContentStream({
-                model,
-                contents: segmentPrompt,
-                config: {
-                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                  temperature: 0.15,
-                  maxOutputTokens: 32768,
-                  thinkingConfig: { thinkingLevel: 'low' },
-                },
-              });
-              for await (const part of forwardStream(stream)) yield part;
-            }
-            if (providerSearchEnabled) logGroundingResult(model);
+            for await (const part of forwardStream(stream)) yield part;
 
             if (!segmentCompleted && pendingMarkerTail) yield { text: pendingMarkerTail };
             if (!receivedText) {
@@ -269,40 +250,15 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const providerSearchEnabled = options.legalResearch && key !== 'openrouter';
-        if (providerSearchEnabled) console.info('[counter-brief] Gemini legal search attempt', { model });
-        let response: any;
-        try {
-          response = await ai.models.generateContent({
-            model,
-            contents: segmentPrompt,
-            config: {
-              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              maxOutputTokens: 32768,
-              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-            },
-          });
-        } catch (searchError) {
-          if (!providerSearchEnabled) throw searchError;
-          console.warn('[counter-brief] Gemini legal search failed; retrying this generation without search', {
-            model,
-            error: searchError instanceof Error ? searchError.message : String(searchError),
-          });
-          response = await ai.models.generateContent({
-            model,
-            contents: segmentPrompt,
-            config: {
-              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              maxOutputTokens: 32768,
-            },
-          });
-        }
-        if (providerSearchEnabled) {
-          recordGroundingMetadata(response?.candidates?.[0]?.groundingMetadata);
-          logGroundingResult(model);
-        }
+        const response: any = await ai.models.generateContent({
+          model,
+          contents: segmentPrompt,
+          config: {
+            systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+            temperature: 0.15,
+            maxOutputTokens: 32768,
+          },
+        });
         const rawText = typeof response.text === 'string' ? response.text : '';
         const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
         if (!rawText.trim()) {
