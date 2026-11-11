@@ -77,16 +77,37 @@ ${focusedResearchContext}
     try {
       const research = await executeWithKeyRotation(async (ai, key, model) => {
         if (key === 'openrouter') throw Object.assign(new Error('Google Search متاح عبر Gemini فقط.'), { status: 502, statusCode: 502 });
-        console.info('[counter-brief] Gemini legal search attempt', { model });
-        const response: any = await ai.models.generateContent({
-          model, contents: researchPrompt,
-          config: {
-            systemInstruction: 'أنت باحث قانوني مصري. حدّد مسائل البحث من الوقائع والدفوع والطلبات، ثم استخدم Google Search للعثور على مصادر مصرية موثوقة ومتصلة مباشرة بهذه المسائل. لا تصغ مستنداً ولا تخترع مصدراً أو حكماً أو نصاً.',
-            temperature: 0.1,
-            maxOutputTokens: 6000,
-            tools: [{ googleSearch: {} }],
-          },
-        });
+        let keyHash = 2166136261;
+        for (let i = 0; i < key.length; i++) {
+          keyHash = Math.imul(keyHash ^ key.charCodeAt(i), 16777619);
+        }
+        const keyTag = (keyHash >>> 0).toString(16).padStart(8, '0');
+        console.info('[counter-brief] Gemini legal search attempt', { model, keyTag });
+        let response: any;
+        try {
+          response = await ai.models.generateContent({
+            model, contents: researchPrompt,
+            config: {
+              systemInstruction: 'أنت باحث قانوني مصري. حدّد مسائل البحث من الوقائع والدفوع والطلبات، ثم استخدم Google Search للعثور على مصادر مصرية موثوقة ومتصلة مباشرة بهذه المسائل. لا تصغ مستنداً ولا تخترع مصدراً أو حكماً أو نصاً.',
+              temperature: 0.1,
+              maxOutputTokens: 6000,
+              tools: [{ googleSearch: {} }],
+            },
+          });
+        } catch (attemptError: any) {
+          const status = Number(attemptError?.status || attemptError?.statusCode || attemptError?.response?.status) || null;
+          const code = attemptError?.code || attemptError?.error?.status || attemptError?.error?.code || null;
+          let message = String(attemptError?.message || attemptError?.error?.message || 'Unknown Gemini search error').slice(0, 300);
+          if (key) message = message.split(key).join('[REDACTED]');
+          console.warn('[counter-brief] Gemini legal search attempt failed', {
+            model,
+            keyTag,
+            status,
+            code,
+            message,
+          });
+          throw attemptError;
+        }
         const metadata = response?.candidates?.[0]?.groundingMetadata;
         const queries = Array.isArray(metadata?.webSearchQueries)
           ? metadata.webSearchQueries.filter((v: any) => typeof v === 'string' && v.trim())
