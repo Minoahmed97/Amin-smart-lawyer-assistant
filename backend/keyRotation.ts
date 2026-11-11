@@ -472,13 +472,29 @@ function withAdaptiveAnswerLength(ai: any): any {
   };
 }
 
+function logLegalDraftProviderFailure(provider: string, model: string, error: any): void {
+  const rawMessage = String(error?.message || error?.error?.message || 'Unknown provider error');
+  const safeMessage = rawMessage
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_KEY]')
+    .replace(/Bearer\\s+[^\\s,;]+/gi, 'Bearer [REDACTED]')
+    .slice(0, 500);
+  console.error('[legal-drafting] provider attempt failed', JSON.stringify({
+    provider,
+    model,
+    status: Number(error?.status || error?.statusCode || error?.response?.status) || null,
+    code: error?.code ? String(error.code).slice(0, 100) : null,
+    message: safeMessage,
+  }));
+}
+
 type KeyRotationExecutionOptions = {
   ocrMode?: boolean;
   deadlineAt?: number;
   previousProviderError?: string;
   providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
-  /** Previously used key/model pairs are avoided first during continuation. */
+  geminiShare?: number;
   avoidPairs?: string[];
+  diagnosticScope?: 'legal-drafting';
 };
 
 export async function executeWithKeyRotation<T>(
@@ -647,7 +663,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     for (let round = 0; round < 2; round++) {
       const roundStart = overallStart + Math.floor(totalBudget * round / 2);
       const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
+      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * (executionOptions?.geminiShare ?? 0.55));
       if (deadlineAt - Date.now() < 10000) break;
       let anyProviderEmittedText = false;
       try {
@@ -725,6 +741,9 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         }
         return;
       } catch (error: any) {
+        if (executionOptions?.diagnosticScope === 'legal-drafting') {
+          logLegalDraftProviderFailure('OpenRouter', model, error);
+        }
         if (emittedOpenRouterText) throw error;
         lastOpenRouterError = error;
       }
@@ -762,6 +781,9 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           return;
         } catch (err: any) {
           markRotationFailure(currentKey, keyModels[m], err, 'general');
+          if (executionOptions?.diagnosticScope === 'legal-drafting') {
+            logLegalDraftProviderFailure('Gemini', keyModels[m], err);
+          }
           if (emittedAnyChunk) {
             activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
             throw err;
