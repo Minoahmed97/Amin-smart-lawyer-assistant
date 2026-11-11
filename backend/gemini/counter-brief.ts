@@ -26,7 +26,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; researchContext?: string } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -41,43 +41,90 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
-  // Run search in a bounded Gemini-only phase before drafting. Errors reach
-  // key rotation here, then are contained so drafting always gets its chance.
+  // Search is deliberately separate from drafting: send only a compact case brief,
+  // never the full drafting prompt, lawyer vault, template, or generated document.
   let groundedResearchContext = '';
-  if (options.legalResearch) {
+  const focusedResearchContext = typeof options.researchContext === 'string'
+    ? options.researchContext.trim()
+    : '';
+  if (options.legalResearch && focusedResearchContext) {
     const researchDeadlineAt = Math.min(deadlineAt - 60_000, Date.now() + 25_000);
-    const researchPrompt = `ابحث عبر Google Search عن المصادر القانونية المصرية الأولية والرسمية المرتبطة مباشرة بالمسألة التالية. أعطِ الأولوية للنصوص التشريعية المنشورة رسمياً ومواقع الجهات القضائية المصرية والمصادر الحكومية. استخرج فقط ما عثرت عليه فعلاً، مع اسم المصدر والرابط وتاريخ النص أو الحكم إن ظهر. لا تخترع مادة أو حكماً أو رقم طعن أو تاريخاً. إذا لم تجد مصدراً موثوقاً فلا تدّعِ العثور عليه. بيانات المهمة القانونية:\n${prompt.slice(0, 18000)}`;
+    const researchPrompt = `مهمتك الآن هي البحث القانوني فقط، وليست صياغة مذكرة أو مستند. لا تعِد كتابة الوقائع ولا تبحث في المستند كله باعتباره كتلة واحدة.
+
+استخرج من الوقائع والدفوع والطلبات أدناه من 2 إلى 5 مسائل قانونية محددة وقابلة للتحقق. حوّل كل مسألة إلى سؤال بحث واضح، ثم نفّذ Google Search باستعلام مستقل ودقيق لكل سؤال. لا تكتفِ بعبارات عامة مثل "القانون المصري" أو "أحكام محكمة النقض"؛ يجب أن يتضمن كل استعلام المبدأ أو الإجراء أو العنصر القانوني المحدد، مع اسم القانون أو جهة القضاء المختصة متى أمكن.
+
+نطاق البحث: القانون المصري وحده، وبحسب جهة القضاء ونوع النزاع المذكورين في السياق. ابحث عن النص القانوني أو القاعدة أو المبدأ الذي يحسم المسألة المحددة، لا عن معلومات عامة لا ترتبط بها مباشرة.
+
+ترتيب مصادر البحث:
+1) النصوص التشريعية من مصدر حكومي/رسمي أو نسخة منشورة رسمياً.
+2) الأحكام والمبادئ من الموقع الرسمي للمحكمة أو الجهة القضائية المختصة، مثل محكمة النقض أو المحكمة الدستورية العليا أو مجلس الدولة/المحكمة الإدارية العليا، بحسب الاختصاص الفعلي.
+3) لا تلجأ إلى المواقع القانونية غير الرسمية إلا عند تعذر المصدر الأولي، وميّزها بوضوح كمصادر ثانوية ولا تعاملها كأنها مصدر رسمي.
+
+قواعد إلزامية:
+- ابحث فقط في المسائل التي يمكن استخلاصها من الوقائع والدفوع والطلبات الواردة أدناه.
+- لا تبحث عن أسماء الخصوم أو أرقام القضايا أو بياناتهم الشخصية.
+- لا تستخدم القوالب أو البصمة الأسلوبية أو خزانة المحامي؛ فهي ليست موضوعاً للبحث القانوني.
+- لا تنقل نص الوقائع كاملاً إلى استعلام البحث؛ اختصره إلى المصطلحات القانونية اللازمة لكل مسألة.
+- لا تعرض نتيجة لمجرد أنها تتناول القانون المصري عموماً؛ يجب بيان صلتها المباشرة بمسألة البحث.
+- لكل نتيجة، اذكر المسألة التي تجيب عنها، والقاعدة/النص أو المبدأ الذي يظهر في المصدر، واسم الجهة، وعنوان المصدر، والرابط، والتاريخ أو رقم الحكم/المادة فقط إذا كان ظاهراً فعلاً.
+- أعد بحد أقصى 6 مصادر، مرتبة من الأكثر اتصالاً بالمسائل إلى الأقل. إذا لم تجد مصدراً أولياً مناسباً، فقل ذلك صراحة ولا تستبدله بمصدر غير موثوق.
+- لا تختلق مادة قانونية أو حكماً أو رقم طعن أو تاريخاً أو رابطاً أو اقتباساً.
+
+سياق البحث القانوني المختصر:
+${focusedResearchContext}
+
+ابدأ باستخراج أسئلة البحث المحددة، ثم نفّذ البحث الفعلي عنها، وأظهر الاستعلامات التي استخدمتها والنتائج ذات الصلة فقط.`;
     try {
       const research = await executeWithKeyRotation(async (ai, key, model) => {
         if (key === 'openrouter') throw Object.assign(new Error('Google Search متاح عبر Gemini فقط.'), { status: 502, statusCode: 502 });
         console.info('[counter-brief] Gemini legal search attempt', { model });
         const response: any = await ai.models.generateContent({
           model, contents: researchPrompt,
-          config: { systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION, temperature: 0.2, maxOutputTokens: 6000, tools: [{ googleSearch: {} }] },
+          config: {
+            systemInstruction: 'أنت باحث قانوني مصري. حدّد مسائل البحث من الوقائع والدفوع والطلبات، ثم استخدم Google Search للعثور على مصادر مصرية موثوقة ومتصلة مباشرة بهذه المسائل. لا تصغ مستنداً ولا تخترع مصدراً أو حكماً أو نصاً.',
+            temperature: 0.1,
+            maxOutputTokens: 6000,
+            tools: [{ googleSearch: {} }],
+          },
         });
         const metadata = response?.candidates?.[0]?.groundingMetadata;
-        const queries = Array.isArray(metadata?.webSearchQueries) ? metadata.webSearchQueries.filter((v: any) => typeof v === 'string' && v.trim()) : [];
+        const queries = Array.isArray(metadata?.webSearchQueries)
+          ? metadata.webSearchQueries.filter((v: any) => typeof v === 'string' && v.trim())
+          : [];
         const sources = (Array.isArray(metadata?.groundingChunks) ? metadata.groundingChunks : [])
           .map((chunk: any) => chunk?.web)
           .filter((web: any) => typeof web?.uri === 'string' && /^https?:\/\//i.test(web.uri))
-          .map((web: any) => ({ title: typeof web.title === 'string' && web.title.trim() ? web.title.trim() : web.uri, uri: web.uri }));
+          .map((web: any) => ({
+            title: typeof web.title === 'string' && web.title.trim() ? web.title.trim() : web.uri,
+            uri: web.uri,
+          }));
         const uniqueSources = Array.from(new Map(sources.map((source: any) => [source.uri, source])).values());
         const researchText = typeof response?.text === 'string' ? response.text.trim() : '';
-        if (!uniqueSources.length || !researchText) {
-          const noGrounding: any = new Error('لم يُرجع بحث Gemini مصادر ويب موثقة.');
-          noGrounding.status = 502; noGrounding.statusCode = 502; throw noGrounding;
+        if (!queries.length || !uniqueSources.length || !researchText) {
+          const noGrounding: any = new Error('لم يُرجع بحث Gemini استعلامات بحث فعلية ومصادر ويب موثقة مرتبطة بالمسألة.');
+          noGrounding.status = 502;
+          noGrounding.statusCode = 502;
+          throw noGrounding;
         }
-        console.info('[counter-brief] Gemini legal search result', { model, queries, sources: uniqueSources, hasGroundingData: true });
-        return { text: researchText, sources: uniqueSources };
+        console.info('[counter-brief] Gemini legal search result', {
+          model,
+          queries,
+          sourceCount: uniqueSources.length,
+          sources: uniqueSources,
+          hasGroundingData: true,
+        });
+        return { text: researchText, sources: uniqueSources, queries };
       }, ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'], undefined, true, {
         deadlineAt: researchDeadlineAt, providerAttempt: 'gemini-primary',
       });
-      groundedResearchContext = `\n\n[نتيجة بحث قانوني موثقة عبر Google Search — استخدمها بقدر صلتها بالقضية ولا تضف إليها ما لم يرد بها]\n${research.text.slice(0, 16000)}\nالمصادر التي أعادها البحث:\n${research.sources.map((source: any) => `- ${source.title}: ${source.uri}`).join('\n')}\n`;
+      groundedResearchContext = `\n\n[نتيجة بحث قانوني موثقة عبر Google Search]\nالمسائل/الاستعلامات التي بحث عنها Gemini:\n${research.queries.map((query: string) => `- ${query}`).join('\n')}\nنتائج البحث ذات الصلة:\n${research.text.slice(0, 12000)}\nالمصادر التي أعادها البحث:\n${research.sources.map((source: any) => `- ${source.title}: ${source.uri}`).join('\n')}\n`;
     } catch (searchError: any) {
       console.warn('[counter-brief] Gemini legal search unavailable; continuing drafting without search', {
         error: searchError instanceof Error ? searchError.message : String(searchError),
       });
     }
+  } else if (options.legalResearch) {
+    console.warn('[counter-brief] Gemini legal search skipped: focused research context is missing; continuing drafting without search');
   }
 
   const researchInstruction = options.legalResearch
@@ -379,6 +426,19 @@ export default async function handler(req: any, res: any) {
 
     const prompt = `[لغة الإخراج والتنسيق الإلزامية — أولوية قصوى]: اكتب المستند القانوني كله باللغة العربية فقط، بما في ذلك العناوين والديباجة وأي ملاحظات تحريرية. يُحظر إدراج كلمات أو تعليمات تنسيق باللغة الإنجليزية داخل المستند، مثل Centered Title أو Center Align أو Heading أو Bold أو Justify أو أي وصف لطريقة التنسيق. لا تكتب تعليمات التنسيق كنص؛ طبّق شكل العناوين وترتيبها مباشرةً باستخدام النص العربي وحده. احتفظ بالمصطلح الأجنبي فقط إذا كان اسماً رسمياً أو اختصاراً ضرورياً ورد في وقائع القضية، وليس لوصف التنسيق. لا تغيّر الديباجة العربية أو أسلوبها المستخلص من خزنة المحامي؛ المطلوب تنسيقها بالعربية لا ترجمتها أو شرحها. [مهمة إعداد وصياغة قانونية شاملة]: ${workTypeInstruction} المحكمة: ${courtType || 'المحكمة المختصة'} الدائرة: ${circuit || ''} الصفة التي حددها المحامي: ${clientRole || 'غير محددة صراحةً؛ لا تفترض أن الموكل هو المدعى عليه، واستدل من الوقائع فقط إذا كانت واضحة، وإلا نبّه إلى ضرورة تحديد الصفة'} (${clientName ? `السيد / ${clientName}` : 'الموكل'}) الخصم: ${opponentName || 'الخصم'} رقم الدعوى: ${caseNumber || ''} الجلسة: ${sessionDate || ''} الوقائع والمعلومات الحالية: ${facts} ${defenses ? `أوجه الدفاع والدفوع التي أدخلها المحامي:\n${defenses}\n` : ''} ${requests ? `الطلبات التي أدخلها المحامي:\n${requests}\n` : ''} ${customInstructions ? `[تعليمات إضافية]:\n${customInstructions}\n` : ''} ${vaultContext ? `\n[خزانة المحامي — أسلوب وبنية فقط، لا تستورد منها وقائع أو أرقاماً]:\n${vaultContext}\n` : ''} قبل الصياغة نفّذ داخلياً: - فحص اكتمال الوقائع وتحديد أي معلومات جوهرية ناقصة. - تحديد نوع المستند القانوني المطلوب أو الأنسب أولاً، وعدم افتراض أن كل رد يجب أن يكون مذكرة دفاع. - تحديد التكييف القانوني الأرجح وأي تكييف بديل ذي أثر. - استخراج أقوى الدفوع والأسانيد المرتبطة بالوقائع. - فحص الصفة والمصلحة والاختصاص والإجراءات والمواعيد متى كانت ذات صلة. - مطابقة كل دفع مع الواقعة والمستند/الدليل المتاح. - تحديد التناقضات أو نقاط الضعف إن وجدت. - ترتيب النقاط بحسب أثرها القانوني والإثباتي: معالجة الجوهرية، ودمج المساندة، وعدم إنشاء رد مستقل على الهامشية إلا إذا كان لها أثر حقيقي. - بناء الطلبات الختامية من النتيجة التي انتهى إليها التحليل فقط، ومطابقة كل طلب صراحةً مع طلبات المحامي ووقائع القضية والدفوع والأسباب والنتيجة النهائية. - الالتزام الصارم بنطاق الطلبات التي أدخلها المحامي: لا تضف أو تحذف أو تستبدل أو توسّع طلباً قضائياً من تلقاء نفسك. يجوز تحسين الصياغة وترتيب الطلبات المحددة فقط مع الحفاظ على مضمونها. - إذا ظهر طلب إضافي قد يكون مهماً، فاذكره في تنبيه منفصل للمحامي ولا تدرجه في الطلبات الختامية إلا إذا فوّضك صراحةً في تحديد الطلبات أو وافق عليه. - إذا لم يحدد المحامي طلباته وتركها للنظام صراحةً، فاقترح الطلبات الضرورية فقط التي تسندها الوقائع والمستندات والتكييف القانوني، ولا تفترض تفويضاً لم يمنحه. - راجع أن كل طلب ختامي يطابق طلباً حدده المحامي أو تفويضاً صريحاً منه، وأنه لم يُحذف أي طلب أدخله. لا تعتبر احتمال أهمية طلب إضافي إذناً بإدراجه تلقائياً. [التزام حرفي بالقالب — Strict Pattern Base / أولوية قصوى]: اعتبر النص المرجعي الفعلي المرفق من خزنة هذا الحساب هو القالب البنيوي الإلزامي للمستند متى كان متاحاً، وليس خياراً استرشادياً. طابق هيكل النموذج وترتيب أقسامه وعناوينه وتسلسل الدفوع والبنود والمصطلحات القانونية وطريقة الترقيم والديباجة والخاتمة والترويسة بقدر انطباقها على القضية الحالية. لا تحذف أو تضف أو تعيد ترتيب قسم أو دفع أو بند ولا تستبدل مصطلحاً قانونياً خاصاً بالقالب بتعبير عام لمجرد تحسين الأسلوب؛ عدّل فقط ما تفرضه وقائع القضية الحالية أو نوع المستند المطلوب، مع الحفاظ على كل عنصر بنيوي صالح. إذا كان القالب لا يتضمن قسماً لازماً بطبيعة العمل الحالي، أضف الحد الضروري فقط ولا تعِد تصميم بقية الهيكل. تعامل مع وقائع الدعوى الحالية والطلبات والدفوع التي أدخلها المحامي باعتبارها مصدر المحتوى الموضوعي، ومع القالب باعتباره مصدر الهيكل والأسلوب. لا تنقل أي وقائع أو أسماء أو أرقام أو تواريخ أو طلبات تخص القضية المرجعية. اكتب بصوت المحامي المصري الممارس وببصمته المهنية، لا بصيغة مساعد ذكاء اصطناعي ولا بصيغة اقتراحات أو توصيات. [Zero Chatter — منع الثرثرة]: أخرج المستند القانوني وحده، وابدأ فوراً من أول سطر في الديباجة القانونية كما ورد نمطها في القالب؛ ممنوع أي مقدمة أو تحية أو تمهيد أو شرح لطريقة العمل أو عبارة مثل «إليك الصياغة» أو أي خاتمة محادثية. لا تضع ملاحظات خارج المستند إلا عند ضرورة تحقق قانوني محددة، وعندها افصلها بوضوح عن نص المستند ولا تخلطها بالديباجة أو الطلبات الختامية. استخلص الدفوع والتحليل للقضية الحالية استقلالاً، ولا تنقل وقائع القضية المرجعية أو أسماء أطرافها أو أرقامها أو تواريخها أو طلباتها الخاصة. يجوز استخدام اسم المكتب والترويسة والتوقيع الثابت الوارد في النموذج المرجعي إذا كان واضحاً، مع عدم اختراع بيانات أو نقل بيانات القضية القديمة. لا تدّعِ أن المرجع غير موجود؛ النص المرجعي مرفق داخل سياق الخزانة. اعتمد في مضمون المستند حصراً على مدخلات القضية الحالية ومستنداتها والطلبات التي حددها المستخدم. لا تفرض هيكل نوع مستند آخر؛ التزم حرفياً بنوع العمل القضائي المطلوب حالياً، سواء كان صحيفة دعوى أو مذكرة أو إعادة إعلان أو إنذاراً أو غير ذلك. إذا لم يوجد في الخزنة نموذج من النوع نفسه، استخدم أقرب مرجع اختير وفق نوع المستند والفرع القانوني وجهة القضاء، مع الاقتداء بأسلوب المحامي وترويسته وبنائه العام وتكييف هيكل المستند ليتفق مع نوع العمل الحالي. لا تذكر للمستخدم أنك استخدمت الخزنة أو تشرح آلية استخلاص البصمة. لا تختصر نقطة مؤثرة، ولا تُطِل في نقطة لا تحتاج إلى تفصيل؛ اجعل التفصيل تابعاً لحاجة القضية. لا تفصل «الأسانيد القانونية» كقسم مستقل؛ ضع القاعدة القانونية داخل سياق الحجة في موضعها الطبيعي. لا تضف واقعة أو مستنداً أو اسماً أو تاريخاً غير موجود. إذا كانت نقطة جوهرية تحتاج تحققاً، ضع تنبيهاً واضحاً للمحامي بدلاً من اختلاقها. لا تذكر حكماً أو رقم طعن أو مادة قانونية إلا إذا كانت موثوقة في السياق المتاح؛ وإلا اذكر أن التحقق مطلوب. وفي النهاية راجع المسودة داخلياً مرة أخرى بحثاً عن أي واقعة أو مستند أو دفع أو طلب أو تناقض تم إغفاله قبل إخراج النص النهائي. لا تعتبر المذكرة مكتملة إذا انتهى الإخراج قبل إتمام بنيتها المطلوبة؛ أكمل جميع الأقسام اللازمة لنوع المستند، ولا تتوقف عند الملخص أو منتصف الحجة أو قبل الطلبات الختامية. إذا كان النص طويلاً، حافظ على نفس مستوى التحليل وأكمل حتى النهاية بدلاً من اختزال الأجزاء الأخيرة.`;
 
+    const factsForResearch = facts.length > 8000
+      ? `${facts.slice(0, 6000)}\n[مقتطف أخير من الوقائع]\n${facts.slice(-1500)}`
+      : facts;
+    const researchContext = [
+      'الاختصاص القانوني: جمهورية مصر العربية.',
+      `نوع العمل القضائي: ${finalWorkType || 'غير محدد'}.`,
+      `جهة القضاء/المحكمة: ${courtType || 'غير محددة'}؛ الدائرة: ${circuit || 'غير محددة'}.`,
+      clientRole ? `صفة الموكل: ${clientRole}.` : '',
+      `الوقائع ذات الصلة (مقتطف محدود لا يتضمن قالب الصياغة):\n${factsForResearch}`,
+      defenses ? `الدفوع التي أدخلها المحامي:\n${String(defenses).slice(0, 2500)}` : '',
+      requests ? `الطلبات التي أدخلها المحامي:\n${String(requests).slice(0, 1500)}` : '',
+    ].filter(Boolean).join('\n\n');
+
     if (body?.stream === true) {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
@@ -406,7 +466,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, researchContext });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -422,7 +482,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, researchContext });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
