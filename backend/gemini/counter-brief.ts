@@ -94,11 +94,22 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            if (!stream) throw new Error('لم يتم إنشاء بث Gemini.');
+            const stream = await ai.models.generateContentStream({
+              model,
+              contents: segmentPrompt,
+              config: {
+                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                temperature: 0.15,
+                maxOutputTokens: 32768,
+                ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+                thinkingConfig: { thinkingLevel: 'low' },
+              },
+            });
             for await (const chunk of stream) {
               recordGroundingMetadata(chunk?.candidates?.[0]?.groundingMetadata);
               const candidateReason = chunk?.candidates?.[0]?.finishReason;
               if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+              if (segmentCompleted) continue;
               const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
               if (!chunkText) continue;
               receivedText = true;
@@ -109,7 +120,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
                 pendingMarkerTail = '';
                 segmentCompleted = true;
                 if (visibleText) yield { text: visibleText };
-                break;
+                continue;
               }
               const keepLength = completionMarker.length - 1;
               const splitAt = Math.max(0, candidateText.length - keepLength);
