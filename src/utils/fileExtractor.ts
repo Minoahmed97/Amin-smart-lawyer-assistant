@@ -1,11 +1,6 @@
 import mammoth from 'mammoth';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 import { getSessionToken } from '../services/authService.ts';
 import { runSavedOcrTask } from '../services/aiService.ts';
-import type { SavedOcrTaskLifecycle } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from './legalVaultService.ts';
 
 export interface ExtractedFileResult {
@@ -254,71 +249,6 @@ export async function extractTextViaServerOCR(base64Data: string, mimeType: stri
   }
 }
 
-/**
- * Extract PDF page text locally when available; rasterize only pages without
- * a usable text layer and send each rendered page through the existing image OCR endpoint.
- */
-async function extractTextFromPdfPages(
-  file: File,
-  options: FileExtractionOptions,
-): Promise<string> {
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(await file.arrayBuffer()),
-    isEvalSupported: false,
-  });
-  const pdf = await loadingTask.promise;
-  const pageResults: string[] = [];
-
-  try {
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-      if (options.signal?.aborted) {
-        throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-      }
-      await options.onStage?.('processing');
-      const page = await pdf.getPage(pageNumber);
-      try {
-        // Always rasterize every PDF page and send it through the existing OCR service.
-        // Some scanned PDFs contain a misleading/incomplete hidden text layer.
-        const baseViewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(2, 1800 / Math.max(baseViewport.width, baseViewport.height));
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.ceil(viewport.width);
-        canvas.height = Math.ceil(viewport.height);
-        await page.render({ canvas, viewport }).promise;
-        const renderedBlob = await new Promise<Blob>((resolve, reject) => {
-          canvas.toBlob(
-            (blob) => blob ? resolve(blob) : reject(new Error(`تعذر تحويل الصفحة ${pageNumber} إلى صورة.`)),
-            'image/jpeg',
-            0.88,
-          );
-        });
-        canvas.width = 0;
-        canvas.height = 0;
-
-        const pageFile = new File(
-          [renderedBlob],
-          `${file.name.replace(/\.pdf$/i, '')}-page-${pageNumber}.jpg`,
-          { type: 'image/jpeg' },
-        );
-        const compressed = await compressAndResizeImage(pageFile, 1800, 0.82);
-        const pageOcrText = await extractTextViaServerOCR(
-          compressed.base64Data,
-          compressed.mimeType,
-          pageFile.name,
-        );
-        pageResults.push(`--- صفحة ${pageNumber} ---\n${pageOcrText}`);
-      } finally {
-        page.cleanup();
-      }
-    }
-  } finally {
-    await loadingTask.destroy();
-  }
-
-  return pageResults.filter(Boolean).join('\n\n').trim();
-}
-
 export async function extractTextFromDocx(file: File): Promise<string> {
   if (file.name.startsWith('~$')) {
     throw new Error(
@@ -363,43 +293,8 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
   throw new Error(`تعذر استخراج نص وورد القديم (${file.name}).`);
 }
 
-/** * أداة الاستخراج الشاملة والسريعة مع دعم حفظ هوية المهمة ومراحلها لاستعادتها بعد تحديث الصفحة. */
-export interface FileExtractionOptions {
-  userId?: string;
-  jobId?: string;
-  onStage?: (stage: 'preparing' | 'processing') => void | Promise<void>;
-  onJobStatus?: SavedOcrTaskLifecycle['onStatus'];
-  signal?: AbortSignal;
-}
-
-async function extractUsingSavedOcr(
-  file: File,
-  recoveryScope: string,
-  options: FileExtractionOptions,
-  suppliedBase64?: string,
-  suppliedMimeType?: string,
-): Promise<{ text: string; jobId: string }> {
-  if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-  const base64Data = suppliedBase64 || await fileToBase64(file);
-  const mimeType = suppliedMimeType || resolveMimeType(file);
-  if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-  await options.onStage?.('processing');
-  return runSavedOcrTask(
-    base64Data,
-    mimeType,
-    file.name,
-    recoveryScope,
-    options.userId || getActiveLawyerUserId(),
-    options.jobId,
-    { onStatus: options.onJobStatus, signal: options.signal },
-  );
-}
-
-export async function extractTextFromAnyFile(
-  file: File,
-  recoveryScope = 'general',
-  options: FileExtractionOptions = {},
-): Promise<ExtractedFileResult> {
+/** * أداة الاستخراج الشاملة والسريعة: * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. * 4. الملفات النصية (.txt): قراءة فورية للنص. */
+export async function extractTextFromAnyFile(file: File, recoveryScope = 'general'): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
   let extractedText = '';
@@ -409,35 +304,28 @@ export async function extractTextFromAnyFile(
     throw new Error(`ملف مؤقت (${fileName}) من وورد. اختر المستند الأصلي.`);
   }
 
-  await options.onStage?.('preparing');
-
   // 1. الملفات النصية العادية
   if (lowerName.endsWith('.txt')) {
-    await options.onStage?.('processing');
     extractedText = await file.text();
   }
   // 2. ملفات وورد الحديثة docx
   else if (lowerName.endsWith('.docx')) {
     try {
-      await options.onStage?.('processing');
       extractedText = await extractTextFromDocx(file);
-    } catch (localError) {
-      console.warn('Local DOCX extraction failed; continuing through the durable OCR job queue:', localError);
-      const savedTask = await extractUsingSavedOcr(file, recoveryScope, options);
-      extractedText = savedTask.text;
-      backgroundJobId = savedTask.jobId;
+    } catch {
+      const base64Data = await fileToBase64(file);
+      const mimeType = resolveMimeType(file);
+      extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
   // 3. ملفات وورد القديمة .doc
   else if (lowerName.endsWith('.doc')) {
     try {
-      await options.onStage?.('processing');
       extractedText = await extractTextFromLegacyDoc(file);
-    } catch (localError) {
-      console.warn('Local legacy DOC extraction failed; continuing through the durable OCR job queue:', localError);
-      const savedTask = await extractUsingSavedOcr(file, recoveryScope, options);
-      extractedText = savedTask.text;
-      backgroundJobId = savedTask.jobId;
+    } catch {
+      const base64Data = await fileToBase64(file);
+      const mimeType = resolveMimeType(file);
+      extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
   // 4. مستندات بي دي إف والصور
@@ -451,25 +339,36 @@ export async function extractTextFromAnyFile(
     file.type.startsWith('image/')
   ) {
     const isImage = file.type.startsWith('image/') || /\.(jpe?g|png|webp|bmp)$/i.test(lowerName);
-    if (!isImage) {
-      // Process PDF pages individually; existing image uploads keep their original path.
-      extractedText = await extractTextFromPdfPages(file, options);
+    let base64Data = '';
+    let mimeType = resolveMimeType(file);
+    if (isImage) {
+      try {
+        const compressed = await compressAndResizeImage(file, 1800, 0.82);
+        base64Data = compressed.base64Data;
+        mimeType = compressed.mimeType;
+      } catch (error) {
+        // لا نرسل الصورة الأصلية عند فشل الضغط؛ حتى لا نتجاوز حد الحجم المتفق عليه.
+        throw error instanceof Error
+          ? error
+          : new Error('تعذر ضغط الصورة مع الحفاظ على وضوح الكتابة. جرّب صورة أوضح أو أصغر.');
+      }
     } else {
-      const compressed = await compressAndResizeImage(file, 1800, 0.82);
-      if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-      const savedTask = await extractUsingSavedOcr(
-        file,
-        recoveryScope,
-        options,
-        compressed.base64Data,
-        compressed.mimeType,
-      );
-      extractedText = savedTask.text;
-      backgroundJobId = savedTask.jobId;
+      base64Data = await fileToBase64(file);
     }
+    // Route long-running PDFs/images through the existing durable server job queue.
+    // This keeps the current OCR handler and Gemini/Groq routing, while preserving
+    // the job id for recovery if the browser is backgrounded or the connection drops.
+    const savedTask = await runSavedOcrTask(
+      base64Data,
+      mimeType,
+      fileName,
+      recoveryScope,
+      getActiveLawyerUserId(),
+    );
+    extractedText = savedTask.text;
+    backgroundJobId = savedTask.jobId;
   } else {
     try {
-      await options.onStage?.('processing');
       extractedText = await file.text();
     } catch {
       throw new Error(`صيغة الملف (${fileName}) غير مدعومة.`);
@@ -479,26 +378,6 @@ export async function extractTextFromAnyFile(
   const cleanText = extractedText.trim();
   if (!cleanText) {
     throw new Error(`تعذر استخراج نص من "${fileName}".`);
-  }
-
-  // DOC/DOCX are normally extracted locally. Notify while the page is active;
-  // fallback jobs use the server Push channel and can notify after the page closes.
-  if (!backgroundJobId && /\.(docx?|doc)$/i.test(fileName)) {
-    try {
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && 'serviceWorker' in navigator) {
-        await navigator.serviceWorker.register('/sw.js');
-        const registration = await navigator.serviceWorker.ready;
-        await registration.showNotification('اكتمل استخراج ملف Word', {
-          body: `تم استخراج النص من ${fileName} بنجاح.`,
-          icon: '/pwa-icon-192.png',
-          badge: '/pwa-icon-192.png',
-          tag: `amin-word-${Date.now()}`,
-          data: { url: '/' },
-        });
-      }
-    } catch (notificationError) {
-      console.warn('Word extraction notification could not be displayed:', notificationError);
-    }
   }
 
   return {
