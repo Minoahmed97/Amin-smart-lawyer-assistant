@@ -50,11 +50,6 @@ function normalizeMessages(contents: any, systemInstruction?: any) {
 
 function buildPayload(options: any, model: string, stream: boolean) {
   const config = options?.config || {};
-  // Translate the GoogleGenAI search-tool shape used by the Gemini path into
-  // OpenRouter's supported server-tool format. The caller only adds this tool
-  // when legal research is explicitly enabled for the current task.
-  const requestsGoogleSearch = Array.isArray(config.tools) &&
-    config.tools.some((tool: any) => Boolean(tool?.googleSearch || tool?.google_search));
   return {
     model,
     messages: normalizeMessages(options?.contents, config.systemInstruction),
@@ -68,17 +63,6 @@ function buildPayload(options: any, model: string, stream: boolean) {
         ? Math.min(32768, Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS))
         : 16384,
     )),
-    ...(requestsGoogleSearch ? {
-      tools: [{
-        type: 'openrouter:web_search',
-        parameters: {
-          engine: 'auto',
-          max_results: 5,
-          max_total_results: 10,
-          search_context_size: 'medium',
-        },
-      }],
-    } : {}),
     stream,
   };
 }
@@ -309,6 +293,7 @@ export function getOpenRouterModels(): string[] {
   const knownFreeFallbacks = [
     'nvidia/nemotron-3-ultra-550b-a55b:free',
     'nvidia/nemotron-3.5-lightning:free',
+    'qwen/qwen3.8-27b:free',
   ];
 
   // The dynamic router selects from currently available free models, avoiding
