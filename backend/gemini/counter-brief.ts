@@ -33,7 +33,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
   const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
-  const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
+  const researchInstruction = options.legalResearch ? '\n\n[محاولة بحث قانوني غير معطلة للإنتاج] حاول الاستعانة بأداة البحث المتاحة للوصول إلى المصادر المصرية الأولية والرسمية ذات الصلة. البحث خطوة مساعدة فقط وليس شرطاً لإنتاج المستند. إذا تعذرت أداة البحث أو فشلت أو انتهت مهلتها، تابع التحليل والصياغة فوراً اعتماداً على الوقائع والمستندات والمعلومات المتاحة دون انتظار البحث، وصرّح بأن التحقق من المصادر الحديثة لم يكتمل. لا تختلق أحكاماً أو أرقام طعون أو مواد أو روابط أو مصادر لم تصل إليها فعلاً.\n' : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   const maxContinuations = 5;
@@ -71,17 +71,36 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            const stream = await ai.models.generateContentStream({
-              model,
-              contents: segmentPrompt,
-              config: {
-                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                temperature: 0.15,
-                maxOutputTokens: 32768,
-                ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-                thinkingConfig: { thinkingLevel: 'low' },
-              },
-            });
+            let stream: any;
+            try {
+              stream = await ai.models.generateContentStream({
+                model,
+                contents: segmentPrompt,
+                config: {
+                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                  temperature: 0.15,
+                  maxOutputTokens: 32768,
+                  ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+                  thinkingConfig: { thinkingLevel: 'low' },
+                },
+              });
+            } catch (searchError) {
+              if (!providerSearchEnabled) throw searchError;
+              console.warn('[counter-brief] Gemini search failed; continuing generation without search', {
+                model,
+                error: searchError instanceof Error ? searchError.message : String(searchError),
+              });
+              stream = await ai.models.generateContentStream({
+                model,
+                contents: segmentPrompt,
+                config: {
+                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                  temperature: 0.15,
+                  maxOutputTokens: 32768,
+                  thinkingConfig: { thinkingLevel: 'low' },
+                },
+              });
+            }
 
             try {
               for await (const chunk of stream) {
@@ -210,16 +229,34 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
         const providerSearchEnabled = options.legalResearch && key !== 'openrouter' &&
             process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
-        const response = await ai.models.generateContent({
-          model,
-          contents: segmentPrompt,
-          config: {
-            systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-            temperature: 0.15,
-            maxOutputTokens: 32768,
-            ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-          },
-        });
+        let response: any;
+        try {
+          response = await ai.models.generateContent({
+            model,
+            contents: segmentPrompt,
+            config: {
+              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+              temperature: 0.15,
+              maxOutputTokens: 32768,
+              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+            },
+          });
+        } catch (searchError) {
+          if (!providerSearchEnabled) throw searchError;
+          console.warn('[counter-brief] Gemini search failed; continuing generation without search', {
+            model,
+            error: searchError instanceof Error ? searchError.message : String(searchError),
+          });
+          response = await ai.models.generateContent({
+            model,
+            contents: segmentPrompt,
+            config: {
+              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+              temperature: 0.15,
+              maxOutputTokens: 32768,
+            },
+          });
+        }
         const rawText = typeof response.text === 'string' ? response.text : '';
         const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
         if (!rawText.trim()) {
