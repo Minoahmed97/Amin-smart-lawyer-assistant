@@ -112,19 +112,16 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            let stream: any;
-            try {
-              stream = await ai.models.generateContentStream({
-                model,
-                contents: segmentPrompt,
-                config: {
-                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                  temperature: 0.15,
-                  maxOutputTokens: 32768,
-                  thinkingConfig: { thinkingLevel: 'low' },
-                },
-              });
-            }
+            const stream = await ai.models.generateContentStream({
+              model,
+              contents: segmentPrompt,
+              config: {
+                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                temperature: 0.15,
+                maxOutputTokens: 32768,
+                thinkingConfig: { thinkingLevel: 'low' },
+              },
+            });
 
             const forwardStream = async function* (activeStream: any) {
               for await (const chunk of activeStream) {
