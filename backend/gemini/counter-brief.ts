@@ -125,9 +125,47 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
                 if (visibleText) yield { text: visibleText };
               }
             } catch (error) {
-              if (pendingMarkerTail) yield { text: pendingMarkerTail };
-              pendingMarkerTail = '';
-              throw error;
+              if (providerSearchEnabled && !receivedText) {
+                console.warn('[counter-brief] Gemini search stream failed before first text; retrying generation without search', {
+                  model,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+                stream = await ai.models.generateContentStream({
+                  model,
+                  contents: segmentPrompt,
+                  config: {
+                    systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                    temperature: 0.15,
+                    maxOutputTokens: 32768,
+                    thinkingConfig: { thinkingLevel: 'low' },
+                  },
+                });
+                for await (const chunk of stream) {
+                  const candidateReason = chunk?.candidates?.[0]?.finishReason;
+                  if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+                  const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+                  if (!chunkText) continue;
+                  receivedText = true;
+                  const candidateText = pendingMarkerTail + chunkText;
+                  const markerIndex = candidateText.indexOf(completionMarker);
+                  if (markerIndex >= 0) {
+                    const visibleText = candidateText.slice(0, markerIndex);
+                    pendingMarkerTail = '';
+                    segmentCompleted = true;
+                    if (visibleText) yield { text: visibleText };
+                    break;
+                  }
+                  const keepLength = completionMarker.length - 1;
+                  const splitAt = Math.max(0, candidateText.length - keepLength);
+                  const visibleText = candidateText.slice(0, splitAt);
+                  pendingMarkerTail = candidateText.slice(splitAt);
+                  if (visibleText) yield { text: visibleText };
+                }
+              } else {
+                if (pendingMarkerTail) yield { text: pendingMarkerTail };
+                pendingMarkerTail = '';
+                throw error;
+              }
             }
 
             if (!segmentCompleted && pendingMarkerTail) yield { text: pendingMarkerTail };
