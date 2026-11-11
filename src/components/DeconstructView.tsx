@@ -1,5 +1,5 @@
 import { getCurrentAccount } from '../services/authService.ts';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
 import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
@@ -81,41 +81,33 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   const [fontFamily, setFontFamily] = useState<'traditional' | 'amiri'>('traditional');
   const [fontSizePt, setFontSizePt] = useState<number>(18);
   const [isLiveEditing, setIsLiveEditing] = useState<boolean>(false);
-  const resultOperationRef = useRef(0);
-  const clearPersistenceRef = useRef(false);
 
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_brief'); else persistentStorage.setItem('judicial_deconstruct_brief', opponentBriefText);
+    persistentStorage.setItem('judicial_deconstruct_brief', opponentBriefText);
   }, [opponentBriefText]);
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_court'); else persistentStorage.setItem('judicial_deconstruct_court', courtType);
+    persistentStorage.setItem('judicial_deconstruct_court', courtType);
   }, [courtType]);
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_nature'); else persistentStorage.setItem('judicial_deconstruct_nature', caseNature);
+    persistentStorage.setItem('judicial_deconstruct_nature', caseNature);
   }, [caseNature]);
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_response_work_type'); else persistentStorage.setItem('judicial_deconstruct_response_work_type', responseWorkType);
+    persistentStorage.setItem('judicial_deconstruct_response_work_type', responseWorkType);
   }, [responseWorkType]);
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_position'); else persistentStorage.setItem('judicial_deconstruct_position', ourPosition);
+    persistentStorage.setItem('judicial_deconstruct_position', ourPosition);
   }, [ourPosition]);
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_addfacts'); else persistentStorage.setItem('judicial_deconstruct_addfacts', additionalFacts);
+    persistentStorage.setItem('judicial_deconstruct_addfacts', additionalFacts);
   }, [additionalFacts]);
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_result'); else persistentStorage.setItem('judicial_deconstruct_result', analysisResult);
+    persistentStorage.setItem('judicial_deconstruct_result', analysisResult);
   }, [analysisResult]);
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_docname'); else persistentStorage.setItem('judicial_deconstruct_docname', uploadedDocName);
+    persistentStorage.setItem('judicial_deconstruct_docname', uploadedDocName);
   }, [uploadedDocName]);
 
-  useEffect(() => { clearPersistenceRef.current = false; });
-
   const clearAllFields = () => {
-    resultOperationRef.current += 1;
-    setIsLoading(false);
-    setDeconstructError('');
-    clearPersistenceRef.current = true;
     setOpponentBriefText('');
     setCourtType('');
     setCaseNature('');
@@ -133,8 +125,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     persistentStorage.removeItem('judicial_deconstruct_addfacts');
     persistentStorage.removeItem('judicial_deconstruct_result');
     persistentStorage.removeItem('judicial_deconstruct_docname');
-    try { localStorage.removeItem(`amin_ai_job_deconstruct_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`); } catch {}
-    try { const prefix = `amin_legal_followup_deconstruct_` + (String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')) + '_'; for (let i = localStorage.length - 1; i >= 0; i -= 1) { const key = localStorage.key(i); if (key && key.startsWith(prefix)) { localStorage.removeItem(key); localStorage.removeItem(`${key}_pending_job`); } } } catch {}
   };
 
   const [deconstructError, setDeconstructError] = useState<string>('');
@@ -142,7 +132,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   // استرجاع مهمة ذكاء اصطناعي محفوظة مسبقاً إذا تم إعادة فتح الواجهة
   useEffect(() => {
     let active = true;
-    const operationId = resultOperationRef.current;
     let jobId = '';
     try {
       jobId = localStorage.getItem(`amin_ai_job_deconstruct_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`) || '';
@@ -151,20 +140,20 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setIsLoading(true);
     setDeconstructError('');
     void resumeSavedAiTask('deconstruct', jobId, (chunk) => {
-      if (active && operationId === resultOperationRef.current) setAnalysisResult((current) => {
+      if (active) setAnalysisResult((current) => {
         if (!current) return chunk;
         if (chunk.startsWith(current)) return chunk;
         if (current.startsWith(chunk)) return current;
         return current + chunk;
       });
     }, userId).then((result) => {
-      if (!active || operationId !== resultOperationRef.current) return;
+      if (!active) return;
       setAnalysisResult(result);
       persistentStorage.setItem('judicial_deconstruct_result', result);
     }).catch((err: any) => {
-      if (active && operationId === resultOperationRef.current) setDeconstructError(err?.message || 'تعذر استعادة المهمة المحفوظة.');
+      if (active) setDeconstructError(err?.message || 'تعذر استعادة المهمة المحفوظة.');
     }).finally(() => {
-      if (active && operationId === resultOperationRef.current) setIsLoading(false);
+      if (active) setIsLoading(false);
     });
     return () => { active = false; };
   }, [userId]);
@@ -183,7 +172,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
       return;
     }
 
-    const operationId = ++resultOperationRef.current;
     setIsLoading(true);
     setDeconstructError('');
     setAnalysisResult('');
@@ -197,9 +185,9 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
         additionalFacts,
         userId,
       }, (chunk) => {
-        if (operationId === resultOperationRef.current) setAnalysisResult((current) => current + chunk);
+        setAnalysisResult((current) => current + chunk);
       });
-      if (result && operationId === resultOperationRef.current) {
+      if (result) {
         setAnalysisResult(result);
         try {
           const account = await getCurrentAccount();
@@ -207,11 +195,10 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
         } catch {}
       }
     } catch (err: any) {
-      if (operationId !== resultOperationRef.current) return;
       console.warn('Deconstruct error:', err);
       setDeconstructError(err?.message || 'تعذر استكمال تفكيك المذكرة.');
     } finally {
-      if (operationId === resultOperationRef.current) setIsLoading(false);
+      setIsLoading(false);
     }
   };
 
@@ -299,7 +286,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   const shareResult = async () => {
     const shareText = displayedContent();
     if (!shareText) return;
-    await shareLegalDoc(shareText, 'تقرير تفنيد والرد على المستندات', () => {
+    await shareLegalDoc(shareText, 'تقرير التفنيد والرد على المستندات', () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -327,7 +314,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-300 mt-1">
-                الصح المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيتم تفنيد محتواه واستخراج نقاط الضعف وإعداد الرد القانوني المناسب.
+                الاصق المستند أو ارفعه بصيغة وورد أو ملف بي دي إف، وسيقوم المساعد بتفنيد محتواه واستخراج نقاط الضعف وإعداد الرد القانوني المناسب.
               </p>
             </div>
           </div>
@@ -360,7 +347,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
 
           {/* Immediate Auto-Paste File Upload Zone */}
           <FileUploadZone
-            userId={userId}
             recoveryScope="deconstruct"
             onProcessingChange={setIsUploadingDoc}
             onTextExtracted={(text, fileName) => {
@@ -378,7 +364,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
               });
             }}
             title="رفع مذكرة الخصم (وورد / بي دي إف / صور)"
-            description="يدعم ملفات وورد القديمة والحديثة، ويمكن استخراج النص من المستندات المصورة بحسب جودة الصورة."
+            description="يدعم ملفات وورد القديمة والحديثة والمستندات المصورة بدقة 100%."
           />
 
           {uploadedDocName && (
@@ -425,7 +411,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 rows={8}
                 value={opponentBriefText}
                 onChange={(e) => setOpponentBriefText(e.target.value)}
-                placeholder="الصق نص مذكرة الخصم هنا أو ارفع ملف وورد أو ملف بي دي إف أعلاه..."
+                placeholder="الاصق نص مذكرة الخصم هنا أو ارفع ملف وورد أو ملف بي دي إف أعلاه..."
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-xs sm:text-sm font-sans leading-relaxed focus:outline-none focus:border-[#b45309]"
               ></textarea>
             </div>
@@ -780,7 +766,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     تقرير التفنيد والرد والمذكرة المقابلة سيظهر هنا
                   </h4>
                   <p className="text-xs max-w-md leading-relaxed text-slate-400">
-                    الصق مذكرة الخصم أو ارفع ملف وورد أو ملف بي دي إف على اليمين ثم اضغط زر التفنيد والرد.
+                    الاصق مذكرة الخصم أو ارفع ملف وورد أو ملف بي دي إف على اليمين ثم اضغط زر التفنيد والرد.
                   </p>
                 </div>
               )}
@@ -831,7 +817,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
           </div>
         </div>
       </div>
-      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisResult} onResultChange={(nextResult) => { setAnalysisResult(nextResult); persistentStorage.setItem('judicial_deconstruct_result', nextResult); }} />}
+      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisResult} onResultChange={(nextResult) => { setAnalysisResult(nextResult); persistentStoragesetItem('judicial_deconstruct_result', nextResult); }} />}
     </div>
   );
 };
