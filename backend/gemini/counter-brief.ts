@@ -94,17 +94,28 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            const stream = await ai.models.generateContentStream({
-              model,
-              contents: segmentPrompt,
-              config: {
-                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                temperature: 0.15,
-                maxOutputTokens: 32768,
-                ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-                thinkingConfig: { thinkingLevel: 'low' },
-              },
-            });
+            let stream: any;
+            try {
+              stream = await ai.models.generateContentStream({
+                model,
+                contents: segmentPrompt,
+                config: {
+                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                  temperature: 0.15,
+                  maxOutputTokens: 32768,
+                  ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+                  thinkingConfig: { thinkingLevel: 'low' },
+                },
+              });
+            } catch (searchError) {
+              if (providerSearchEnabled) {
+                console.warn('[counter-brief] Gemini legal search request failed; rotating to the next Gemini key/model', {
+                  model,
+                  error: searchError instanceof Error ? searchError.message : String(searchError),
+                });
+              }
+              throw searchError;
+            }
             for await (const chunk of stream) {
               recordGroundingMetadata(chunk?.candidates?.[0]?.groundingMetadata);
               const candidateReason = chunk?.candidates?.[0]?.finishReason;
@@ -230,16 +241,27 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         const providerSearchEnabled = options.legalResearch && key !== 'openrouter' &&
             process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
         if (providerSearchEnabled) console.info('[counter-brief] Gemini legal search attempt', { model });
-        const response: any = await ai.models.generateContent({
-          model,
-          contents: segmentPrompt,
-          config: {
-            systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-            temperature: 0.15,
-            maxOutputTokens: 32768,
-            ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-          },
-        });
+        let response: any;
+        try {
+          response = await ai.models.generateContent({
+            model,
+            contents: segmentPrompt,
+            config: {
+              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+              temperature: 0.15,
+              maxOutputTokens: 32768,
+              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+            },
+          });
+        } catch (searchError) {
+          if (providerSearchEnabled) {
+            console.warn('[counter-brief] Gemini legal search request failed; rotating to the next Gemini key/model', {
+              model,
+              error: searchError instanceof Error ? searchError.message : String(searchError),
+            });
+          }
+          throw searchError;
+        }
         if (providerSearchEnabled) {
           recordGroundingMetadata(response?.candidates?.[0]?.groundingMetadata);
           logGroundingResult(model);
