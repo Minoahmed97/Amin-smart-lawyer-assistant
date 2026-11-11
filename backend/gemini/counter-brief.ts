@@ -87,8 +87,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         await executeWithKeyRotationStream(async (ai, key, model) => {
           activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
           activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-          const providerSearchEnabled = options.legalResearch && key !== 'openrouter' &&
-            process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
+          const providerSearchEnabled = options.legalResearch && key !== 'openrouter';
           if (providerSearchEnabled) console.info('[counter-brief] Gemini legal search attempt', { model });
 
           return (async function* () {
@@ -238,8 +237,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const providerSearchEnabled = options.legalResearch && key !== 'openrouter' &&
-            process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
+        const providerSearchEnabled = options.legalResearch && key !== 'openrouter';
         if (providerSearchEnabled) console.info('[counter-brief] Gemini legal search attempt', { model });
         let response: any;
         try {
