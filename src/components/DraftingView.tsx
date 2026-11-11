@@ -119,6 +119,16 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const resultOperationRef = useRef(0);
   const clearPersistenceRef = useRef(false);
+  const draftResultRef = useRef(generatedBrief);
+
+  const persistDraftChunk = (chunk: string) => {
+    if (!chunk) return;
+    const current = draftResultRef.current || '';
+    const next = chunk.startsWith(current) ? chunk : current.startsWith(chunk) ? current : current + chunk;
+    draftResultRef.current = next;
+    persistentStorage.setItem('amin_judicial_draft_result', next);
+    setGeneratedBrief(next);
+  };
 
   // General task types only. The AI decides which vault references are useful;
   // the user is not asked to choose an internal template/subtype.
@@ -254,6 +264,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setIsRefining(false);
     setDraftError('');
     clearPersistenceRef.current = true;
+    draftResultRef.current = '';
     setFormData({
       courtType: '',
       circuit: '',
@@ -316,14 +327,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setIsLoading(true);
     setDraftError('');
     void resumeDraftCounterBrief(jobId, (chunk) => {
-      if (active && operationId === resultOperationRef.current) setGeneratedBrief((current) => {
-        if (!current) return chunk;
-        if (chunk.startsWith(current)) return chunk;
-        if (current.startsWith(chunk)) return current;
-        return current + chunk;
-      });
+      if (active && operationId === resultOperationRef.current) persistDraftChunk(chunk);
     }, userId).then(async (result) => {
       if (!active || operationId !== resultOperationRef.current) return;
+      draftResultRef.current = result;
       setGeneratedBrief(result);
       persistentStorage.setItem('amin_judicial_draft_result', result);
       try {
@@ -359,6 +366,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setIsLoading(true);
     setRefineNote('');
     setDraftError('');
+    draftResultRef.current = '';
+    persistentStorage.setItem('amin_judicial_draft_result', '');
     setGeneratedBrief('');
     try {
       const aiText = await draftCounterBrief({
@@ -370,9 +379,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           : formData.briefType,
         userId,
       }, (chunk) => {
-        if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
+        if (operationId === resultOperationRef.current) persistDraftChunk(chunk);
       });
       if (aiText && operationId === resultOperationRef.current) {
+        draftResultRef.current = aiText;
         setGeneratedBrief(aiText);
         persistentStorage.setItem('amin_judicial_draft_result', aiText);
         try {
