@@ -74,7 +74,7 @@ function buildPayload(options: any, model: string, stream: boolean) {
         parameters: {
           engine: 'auto',
           max_results: 5,
-          max_uses: 3,
+          max_total_results: 10,
           search_context_size: 'medium',
         },
       }],
