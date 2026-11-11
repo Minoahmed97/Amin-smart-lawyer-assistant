@@ -761,39 +761,49 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
   let lastError: any = null;
-  for (let cycle = 0; cycle < 1; cycle++) {
-    const startIdx = reserveStartIndex(keys.length, 'general');
-    geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
-      if (deadlineAt - Date.now() < 10_000) break geminiKeyLoop;
+  const startIdx = reserveStartIndex(keys.length, 'general');
+
+  // Rotate through every usable key with the first preferred model before
+  // spending the remaining time trying a second model on keys already tested.
+  // This prevents a two-model attempt on each key from exhausting the deadline
+  // before the rest of the configured key pool gets a chance.
+  geminiAttempts: for (let modelRound = 0; modelRound < MAX_MODELS_PER_KEY_PER_REQUEST; modelRound++) {
+    for (let offset = 0; offset < keys.length; offset++) {
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs < 10_000) break geminiAttempts;
+
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+      if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
 
-      for (let m = 0; m < keyModels.length; m++) {
-        const remainingMs = deadlineAt - Date.now();
-        if (remainingMs < 10_000) break geminiKeyLoop;
-        attemptedModelCount += 1;
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(18000, remainingMs)));
-        let emittedAnyChunk = false;
-        try {
-          const stream = await action(ai, currentKey, keyModels[m]);
-          for await (const chunk of stream) {
-            const text = typeof chunk?.text === 'string' ? chunk.text : '';
-            if (text) {
-              emittedAnyChunk = true;
-              onChunk(text);
-            }
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+      const model = keyModels[modelRound];
+      if (!model) continue;
+
+      attemptedModelCount += 1;
+      // The timeout applies to the entire HTTP stream, not just first-token
+      // latency. Keep one attempt bounded so all configured keys can rotate,
+      // while the drafting handler continues the same document in later segments.
+      const attemptTimeoutMs = Math.max(1_000, Math.min(15_000, remainingMs - 1_000));
+      const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, attemptTimeoutMs));
+      let emittedAnyChunk = false;
+      try {
+        const stream = await action(ai, currentKey, model);
+        for await (const chunk of stream) {
+          const text = typeof chunk?.text === 'string' ? chunk.text : '';
+          if (text) {
+            emittedAnyChunk = true;
+            onChunk(text);
           }
-          activeKeyIndex = currentKeyIndex;
-          return;
-        } catch (err: any) {
-          lastError = err;
-          markRotationFailure(currentKey, keyModels[m], err, 'general');
-          if (emittedAnyChunk) {
-            activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
-            throw err;
-          }
-          if (permanentlyInvalidKeys.has(currentKey)) break;
+        }
+        activeKeyIndex = currentKeyIndex;
+        return;
+      } catch (err: any) {
+        lastError = err;
+        markRotationFailure(currentKey, model, err, 'general');
+        if (emittedAnyChunk) {
+          activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
+          throw err;
         }
       }
     }
