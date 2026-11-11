@@ -716,6 +716,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     const preferredModelsForAttempt = availableModels.filter((model) => !avoidedPairs.has(`openrouter::${model}`));
     const models = preferredModelsForAttempt.length ? preferredModelsForAttempt : availableModels;
     let lastOpenRouterError: any = null;
+    let openRouterSawQuotaLimit = false;
+    const openRouterFailures: string[] = [];
 
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       const missingKeyError: any = new Error('مفتاح OpenRouter غير مضبوط.');
@@ -749,9 +751,27 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       } catch (error: any) {
         if (emittedOpenRouterText) throw error;
         lastOpenRouterError = error;
+        const status = Number(error?.status || error?.statusCode || error?.response?.status) || 0;
+        if (status === 429) openRouterSawQuotaLimit = true;
+        const message = String(error?.message || 'unknown error').replace(/Bearer\\s+\\S+/gi, 'Bearer [hidden]').slice(0, 220);
+        openRouterFailures.push(`${model}: HTTP ${status || 'unknown'} — ${message}`);
+        console.warn('[legal-drafting] OpenRouter fallback model failed', {
+          model,
+          status: status || null,
+          message: String(error?.message || 'unknown error').slice(0, 300),
+        });
       }
     }
 
+    if (openRouterFailures.length) {
+      const aggregate: any = new Error(
+        `فشلت نماذج OpenRouter الاحتياطية: ${openRouterFailures.join(' | ')}`,
+      );
+      aggregate.status = openRouterSawQuotaLimit ? 429 : (lastOpenRouterError?.status || lastOpenRouterError?.statusCode || 503);
+      aggregate.statusCode = aggregate.status;
+      aggregate.cause = lastOpenRouterError;
+      throw aggregate;
+    }
     throw lastOpenRouterError || new Error('تعذر الحصول على نتيجة من نماذج OpenRouter الاحتياطية.');
   }
 
