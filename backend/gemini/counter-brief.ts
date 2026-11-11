@@ -44,6 +44,28 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
+  const groundingQueries = new Set<string>();
+  const groundingSources = new Map<string, string>();
+  const recordGroundingMetadata = (metadata: any) => {
+    for (const query of metadata?.webSearchQueries || []) {
+      if (typeof query === 'string' && query.trim()) groundingQueries.add(query.trim());
+    }
+    for (const chunk of metadata?.groundingChunks || []) {
+      const web = chunk?.web;
+      if (typeof web?.uri === 'string' && /^https?:\/\//i.test(web.uri)) {
+        groundingSources.set(web.uri, typeof web.title === 'string' && web.title.trim() ? web.title.trim() : web.uri);
+      }
+    }
+  };
+  const logGroundingResult = (model: string) => {
+    console.info('[counter-brief] Gemini legal search result', {
+      model,
+      queries: Array.from(groundingQueries),
+      sources: Array.from(groundingSources, ([uri, title]) => ({ title, uri })),
+      hasGroundingData: groundingQueries.size > 0 || groundingSources.size > 0,
+    });
+  };
+
   const makeContinuationPrompt = () => accumulatedText
     ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
     : optimizedPrompt;
@@ -67,106 +89,35 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
           const providerSearchEnabled = options.legalResearch && key !== 'openrouter' &&
             process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
+          if (providerSearchEnabled) console.info('[counter-brief] Gemini legal search attempt', { model });
 
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            let stream: any;
-            try {
-              stream = await ai.models.generateContentStream({
-                model,
-                contents: segmentPrompt,
-                config: {
-                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                  temperature: 0.15,
-                  maxOutputTokens: 32768,
-                  ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-                  thinkingConfig: { thinkingLevel: 'low' },
-                },
-              });
-            } catch (searchError) {
-              if (!providerSearchEnabled) throw searchError;
-              console.warn('[counter-brief] Gemini search failed; continuing generation without search', {
-                model,
-                error: searchError instanceof Error ? searchError.message : String(searchError),
-              });
-              stream = await ai.models.generateContentStream({
-                model,
-                contents: segmentPrompt,
-                config: {
-                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                  temperature: 0.15,
-                  maxOutputTokens: 32768,
-                  thinkingConfig: { thinkingLevel: 'low' },
-                },
-              });
-            }
-
-            try {
-              for await (const chunk of stream) {
-                const candidateReason = chunk?.candidates?.[0]?.finishReason;
-                if (candidateReason) finishReason = String(candidateReason).toUpperCase();
-                const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-                if (!chunkText) continue;
-                receivedText = true;
-                const candidateText = pendingMarkerTail + chunkText;
-                const markerIndex = candidateText.indexOf(completionMarker);
-                if (markerIndex >= 0) {
-                  const visibleText = candidateText.slice(0, markerIndex);
-                  pendingMarkerTail = '';
-                  segmentCompleted = true;
-                  if (visibleText) yield { text: visibleText };
-                  break;
-                }
-                const keepLength = completionMarker.length - 1;
-                const splitAt = Math.max(0, candidateText.length - keepLength);
-                const visibleText = candidateText.slice(0, splitAt);
-                pendingMarkerTail = candidateText.slice(splitAt);
-                if (visibleText) yield { text: visibleText };
-              }
-            } catch (error) {
-              if (providerSearchEnabled && !receivedText) {
-                console.warn('[counter-brief] Gemini search stream failed before first text; retrying generation without search', {
-                  model,
-                  error: error instanceof Error ? error.message : String(error),
-                });
-                stream = await ai.models.generateContentStream({
-                  model,
-                  contents: segmentPrompt,
-                  config: {
-                    systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                    temperature: 0.15,
-                    maxOutputTokens: 32768,
-                    thinkingConfig: { thinkingLevel: 'low' },
-                  },
-                });
-                for await (const chunk of stream) {
-                  const candidateReason = chunk?.candidates?.[0]?.finishReason;
-                  if (candidateReason) finishReason = String(candidateReason).toUpperCase();
-                  const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-                  if (!chunkText) continue;
-                  receivedText = true;
-                  const candidateText = pendingMarkerTail + chunkText;
-                  const markerIndex = candidateText.indexOf(completionMarker);
-                  if (markerIndex >= 0) {
-                    const visibleText = candidateText.slice(0, markerIndex);
-                    pendingMarkerTail = '';
-                    segmentCompleted = true;
-                    if (visibleText) yield { text: visibleText };
-                    break;
-                  }
-                  const keepLength = completionMarker.length - 1;
-                  const splitAt = Math.max(0, candidateText.length - keepLength);
-                  const visibleText = candidateText.slice(0, splitAt);
-                  pendingMarkerTail = candidateText.slice(splitAt);
-                  if (visibleText) yield { text: visibleText };
-                }
-              } else {
-                if (pendingMarkerTail) yield { text: pendingMarkerTail };
+            if (!stream) throw new Error('لم يتم إنشاء بث Gemini.');
+            for await (const chunk of stream) {
+              recordGroundingMetadata(chunk?.candidates?.[0]?.groundingMetadata);
+              const candidateReason = chunk?.candidates?.[0]?.finishReason;
+              if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+              const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+              if (!chunkText) continue;
+              receivedText = true;
+              const candidateText = pendingMarkerTail + chunkText;
+              const markerIndex = candidateText.indexOf(completionMarker);
+              if (markerIndex >= 0) {
+                const visibleText = candidateText.slice(0, markerIndex);
                 pendingMarkerTail = '';
-                throw error;
+                segmentCompleted = true;
+                if (visibleText) yield { text: visibleText };
+                break;
               }
+              const keepLength = completionMarker.length - 1;
+              const splitAt = Math.max(0, candidateText.length - keepLength);
+              const visibleText = candidateText.slice(0, splitAt);
+              pendingMarkerTail = candidateText.slice(splitAt);
+              if (visibleText) yield { text: visibleText };
             }
+            if (providerSearchEnabled) logGroundingResult(model);
 
             if (!segmentCompleted && pendingMarkerTail) yield { text: pendingMarkerTail };
             if (!receivedText) {
@@ -267,33 +218,20 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
         const providerSearchEnabled = options.legalResearch && key !== 'openrouter' &&
             process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
-        let response: any;
-        try {
-          response = await ai.models.generateContent({
-            model,
-            contents: segmentPrompt,
-            config: {
-              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              maxOutputTokens: 32768,
-              ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-            },
-          });
-        } catch (searchError) {
-          if (!providerSearchEnabled) throw searchError;
-          console.warn('[counter-brief] Gemini search failed; continuing generation without search', {
-            model,
-            error: searchError instanceof Error ? searchError.message : String(searchError),
-          });
-          response = await ai.models.generateContent({
-            model,
-            contents: segmentPrompt,
-            config: {
-              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              maxOutputTokens: 32768,
-            },
-          });
+        if (providerSearchEnabled) console.info('[counter-brief] Gemini legal search attempt', { model });
+        const response: any = await ai.models.generateContent({
+          model,
+          contents: segmentPrompt,
+          config: {
+            systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+            temperature: 0.15,
+            maxOutputTokens: 32768,
+            ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+          },
+        });
+        if (providerSearchEnabled) {
+          recordGroundingMetadata(response?.candidates?.[0]?.groundingMetadata);
+          logGroundingResult(model);
         }
         const rawText = typeof response.text === 'string' ? response.text : '';
         const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
@@ -412,7 +350,9 @@ export default async function handler(req: any, res: any) {
       ? `نوع المستند المطلوب من المحامي: ${finalWorkType}. التزم بهذا النوع.`
       : 'نوع المستند غير محدد مسبقاً: حدّد داخلياً أنسب نوع مستند قانوني للرد على المادة المنقولة (مذكرة رد/دفاع، عريضة/صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار أو غير ذلك) بناءً على الغرض والطلبات والوقائع، ولا تفترض تلقائياً أنها مذكرة دفاع.';
 
-    const legalResearch = /(?:ابحث\s+(?:عن|في|قانونياً|قانوني)|استخدم\s+(?:البحث|بحثاً|بحث)|بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
+    // This endpoint always drafts Egyptian legal work; allow Gemini Search to run for every drafting task.
+    // Google Search remains Gemini-only and is not required for the draft to be generated.
+    const legalResearch = true;
 
     const prompt = `[لغة الإخراج والتنسيق الإلزامية — أولوية قصوى]: اكتب المستند القانوني كله باللغة العربية فقط، بما في ذلك العناوين والديباجة وأي ملاحظات تحريرية. يُحظر إدراج كلمات أو تعليمات تنسيق باللغة الإنجليزية داخل المستند، مثل Centered Title أو Center Align أو Heading أو Bold أو Justify أو أي وصف لطريقة التنسيق. لا تكتب تعليمات التنسيق كنص؛ طبّق شكل العناوين وترتيبها مباشرةً باستخدام النص العربي وحده. احتفظ بالمصطلح الأجنبي فقط إذا كان اسماً رسمياً أو اختصاراً ضرورياً ورد في وقائع القضية، وليس لوصف التنسيق. لا تغيّر الديباجة العربية أو أسلوبها المستخلص من خزنة المحامي؛ المطلوب تنسيقها بالعربية لا ترجمتها أو شرحها. [مهمة إعداد وصياغة قانونية شاملة]: ${workTypeInstruction} المحكمة: ${courtType || 'المحكمة المختصة'} الدائرة: ${circuit || ''} الصفة التي حددها المحامي: ${clientRole || 'غير محددة صراحةً؛ لا تفترض أن الموكل هو المدعى عليه، واستدل من الوقائع فقط إذا كانت واضحة، وإلا نبّه إلى ضرورة تحديد الصفة'} (${clientName ? `السيد / ${clientName}` : 'الموكل'}) الخصم: ${opponentName || 'الخصم'} رقم الدعوى: ${caseNumber || ''} الجلسة: ${sessionDate || ''} الوقائع والمعلومات الحالية: ${facts} ${defenses ? `أوجه الدفاع والدفوع التي أدخلها المحامي:\n${defenses}\n` : ''} ${requests ? `الطلبات التي أدخلها المحامي:\n${requests}\n` : ''} ${customInstructions ? `[تعليمات إضافية]:\n${customInstructions}\n` : ''} ${vaultContext ? `\n[خزانة المحامي — أسلوب وبنية فقط، لا تستورد منها وقائع أو أرقاماً]:\n${vaultContext}\n` : ''} قبل الصياغة نفّذ داخلياً: - فحص اكتمال الوقائع وتحديد أي معلومات جوهرية ناقصة. - تحديد نوع المستند القانوني المطلوب أو الأنسب أولاً، وعدم افتراض أن كل رد يجب أن يكون مذكرة دفاع. - تحديد التكييف القانوني الأرجح وأي تكييف بديل ذي أثر. - استخراج أقوى الدفوع والأسانيد المرتبطة بالوقائع. - فحص الصفة والمصلحة والاختصاص والإجراءات والمواعيد متى كانت ذات صلة. - مطابقة كل دفع مع الواقعة والمستند/الدليل المتاح. - تحديد التناقضات أو نقاط الضعف إن وجدت. - ترتيب النقاط بحسب أثرها القانوني والإثباتي: معالجة الجوهرية، ودمج المساندة، وعدم إنشاء رد مستقل على الهامشية إلا إذا كان لها أثر حقيقي. - بناء الطلبات الختامية من النتيجة التي انتهى إليها التحليل فقط، ومطابقة كل طلب صراحةً مع طلبات المحامي ووقائع القضية والدفوع والأسباب والنتيجة النهائية. - الالتزام الصارم بنطاق الطلبات التي أدخلها المحامي: لا تضف أو تحذف أو تستبدل أو توسّع طلباً قضائياً من تلقاء نفسك. يجوز تحسين الصياغة وترتيب الطلبات المحددة فقط مع الحفاظ على مضمونها. - إذا ظهر طلب إضافي قد يكون مهماً، فاذكره في تنبيه منفصل للمحامي ولا تدرجه في الطلبات الختامية إلا إذا فوّضك صراحةً في تحديد الطلبات أو وافق عليه. - إذا لم يحدد المحامي طلباته وتركها للنظام صراحةً، فاقترح الطلبات الضرورية فقط التي تسندها الوقائع والمستندات والتكييف القانوني، ولا تفترض تفويضاً لم يمنحه. - راجع أن كل طلب ختامي يطابق طلباً حدده المحامي أو تفويضاً صريحاً منه، وأنه لم يُحذف أي طلب أدخله. لا تعتبر احتمال أهمية طلب إضافي إذناً بإدراجه تلقائياً. [التزام حرفي بالقالب — Strict Pattern Base / أولوية قصوى]: اعتبر النص المرجعي الفعلي المرفق من خزنة هذا الحساب هو القالب البنيوي الإلزامي للمستند متى كان متاحاً، وليس خياراً استرشادياً. طابق هيكل النموذج وترتيب أقسامه وعناوينه وتسلسل الدفوع والبنود والمصطلحات القانونية وطريقة الترقيم والديباجة والخاتمة والترويسة بقدر انطباقها على القضية الحالية. لا تحذف أو تضف أو تعيد ترتيب قسم أو دفع أو بند ولا تستبدل مصطلحاً قانونياً خاصاً بالقالب بتعبير عام لمجرد تحسين الأسلوب؛ عدّل فقط ما تفرضه وقائع القضية الحالية أو نوع المستند المطلوب، مع الحفاظ على كل عنصر بنيوي صالح. إذا كان القالب لا يتضمن قسماً لازماً بطبيعة العمل الحالي، أضف الحد الضروري فقط ولا تعِد تصميم بقية الهيكل. تعامل مع وقائع الدعوى الحالية والطلبات والدفوع التي أدخلها المحامي باعتبارها مصدر المحتوى الموضوعي، ومع القالب باعتباره مصدر الهيكل والأسلوب. لا تنقل أي وقائع أو أسماء أو أرقام أو تواريخ أو طلبات تخص القضية المرجعية. اكتب بصوت المحامي المصري الممارس وببصمته المهنية، لا بصيغة مساعد ذكاء اصطناعي ولا بصيغة اقتراحات أو توصيات. [Zero Chatter — منع الثرثرة]: أخرج المستند القانوني وحده، وابدأ فوراً من أول سطر في الديباجة القانونية كما ورد نمطها في القالب؛ ممنوع أي مقدمة أو تحية أو تمهيد أو شرح لطريقة العمل أو عبارة مثل «إليك الصياغة» أو أي خاتمة محادثية. لا تضع ملاحظات خارج المستند إلا عند ضرورة تحقق قانوني محددة، وعندها افصلها بوضوح عن نص المستند ولا تخلطها بالديباجة أو الطلبات الختامية. استخلص الدفوع والتحليل للقضية الحالية استقلالاً، ولا تنقل وقائع القضية المرجعية أو أسماء أطرافها أو أرقامها أو تواريخها أو طلباتها الخاصة. يجوز استخدام اسم المكتب والترويسة والتوقيع الثابت الوارد في النموذج المرجعي إذا كان واضحاً، مع عدم اختراع بيانات أو نقل بيانات القضية القديمة. لا تدّعِ أن المرجع غير موجود؛ النص المرجعي مرفق داخل سياق الخزانة. اعتمد في مضمون المستند حصراً على مدخلات القضية الحالية ومستنداتها والطلبات التي حددها المستخدم. لا تفرض هيكل نوع مستند آخر؛ التزم حرفياً بنوع العمل القضائي المطلوب حالياً، سواء كان صحيفة دعوى أو مذكرة أو إعادة إعلان أو إنذاراً أو غير ذلك. إذا لم يوجد في الخزنة نموذج من النوع نفسه، استخدم أقرب مرجع اختير وفق نوع المستند والفرع القانوني وجهة القضاء، مع الاقتداء بأسلوب المحامي وترويسته وبنائه العام وتكييف هيكل المستند ليتفق مع نوع العمل الحالي. لا تذكر للمستخدم أنك استخدمت الخزنة أو تشرح آلية استخلاص البصمة. لا تختصر نقطة مؤثرة، ولا تُطِل في نقطة لا تحتاج إلى تفصيل؛ اجعل التفصيل تابعاً لحاجة القضية. لا تفصل «الأسانيد القانونية» كقسم مستقل؛ ضع القاعدة القانونية داخل سياق الحجة في موضعها الطبيعي. لا تضف واقعة أو مستنداً أو اسماً أو تاريخاً غير موجود. إذا كانت نقطة جوهرية تحتاج تحققاً، ضع تنبيهاً واضحاً للمحامي بدلاً من اختلاقها. لا تذكر حكماً أو رقم طعن أو مادة قانونية إلا إذا كانت موثوقة في السياق المتاح؛ وإلا اذكر أن التحقق مطلوب. وفي النهاية راجع المسودة داخلياً مرة أخرى بحثاً عن أي واقعة أو مستند أو دفع أو طلب أو تناقض تم إغفاله قبل إخراج النص النهائي. لا تعتبر المذكرة مكتملة إذا انتهى الإخراج قبل إتمام بنيتها المطلوبة؛ أكمل جميع الأقسام اللازمة لنوع المستند، ولا تتوقف عند الملخص أو منتصف الحجة أو قبل الطلبات الختامية. إذا كان النص طويلاً، حافظ على نفس مستوى التحليل وأكمل حتى النهاية بدلاً من اختزال الأجزاء الأخيرة.`;
 
