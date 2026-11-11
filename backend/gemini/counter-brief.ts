@@ -107,36 +107,68 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
                 },
               });
             } catch (searchError) {
-              if (providerSearchEnabled) {
-                console.warn('[counter-brief] Gemini legal search request failed; rotating to the next Gemini key/model', {
-                  model,
-                  error: searchError instanceof Error ? searchError.message : String(searchError),
-                });
-              }
-              throw searchError;
+              if (!providerSearchEnabled) throw searchError;
+              console.warn('[counter-brief] Gemini legal search failed; retrying this generation without search', {
+                model,
+                error: searchError instanceof Error ? searchError.message : String(searchError),
+              });
+              stream = await ai.models.generateContentStream({
+                model,
+                contents: segmentPrompt,
+                config: {
+                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                  temperature: 0.15,
+                  maxOutputTokens: 32768,
+                  thinkingConfig: { thinkingLevel: 'low' },
+                },
+              });
             }
-            for await (const chunk of stream) {
-              recordGroundingMetadata(chunk?.candidates?.[0]?.groundingMetadata);
-              const candidateReason = chunk?.candidates?.[0]?.finishReason;
-              if (candidateReason) finishReason = String(candidateReason).toUpperCase();
-              if (segmentCompleted) continue;
-              const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-              if (!chunkText) continue;
-              receivedText = true;
-              const candidateText = pendingMarkerTail + chunkText;
-              const markerIndex = candidateText.indexOf(completionMarker);
-              if (markerIndex >= 0) {
-                const visibleText = candidateText.slice(0, markerIndex);
-                pendingMarkerTail = '';
-                segmentCompleted = true;
+
+            const forwardStream = async function* (activeStream: any) {
+              for await (const chunk of activeStream) {
+                recordGroundingMetadata(chunk?.candidates?.[0]?.groundingMetadata);
+                const candidateReason = chunk?.candidates?.[0]?.finishReason;
+                if (candidateReason) finishReason = String(candidateReason).toUpperCase();
+                if (segmentCompleted) continue;
+                const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+                if (!chunkText) continue;
+                receivedText = true;
+                const candidateText = pendingMarkerTail + chunkText;
+                const markerIndex = candidateText.indexOf(completionMarker);
+                if (markerIndex >= 0) {
+                  const visibleText = candidateText.slice(0, markerIndex);
+                  pendingMarkerTail = '';
+                  segmentCompleted = true;
+                  if (visibleText) yield { text: visibleText };
+                  continue;
+                }
+                const keepLength = completionMarker.length - 1;
+                const splitAt = Math.max(0, candidateText.length - keepLength);
+                const visibleText = candidateText.slice(0, splitAt);
+                pendingMarkerTail = candidateText.slice(splitAt);
                 if (visibleText) yield { text: visibleText };
-                continue;
               }
-              const keepLength = completionMarker.length - 1;
-              const splitAt = Math.max(0, candidateText.length - keepLength);
-              const visibleText = candidateText.slice(0, splitAt);
-              pendingMarkerTail = candidateText.slice(splitAt);
-              if (visibleText) yield { text: visibleText };
+            };
+
+            try {
+              for await (const part of forwardStream(stream)) yield part;
+            } catch (streamError) {
+              if (!providerSearchEnabled || receivedText) throw streamError;
+              console.warn('[counter-brief] Gemini search stream failed before first text; retrying generation without search', {
+                model,
+                error: streamError instanceof Error ? streamError.message : String(streamError),
+              });
+              stream = await ai.models.generateContentStream({
+                model,
+                contents: segmentPrompt,
+                config: {
+                  systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                  temperature: 0.15,
+                  maxOutputTokens: 32768,
+                  thinkingConfig: { thinkingLevel: 'low' },
+                },
+              });
+              for await (const part of forwardStream(stream)) yield part;
             }
             if (providerSearchEnabled) logGroundingResult(model);
 
@@ -252,13 +284,20 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             },
           });
         } catch (searchError) {
-          if (providerSearchEnabled) {
-            console.warn('[counter-brief] Gemini legal search request failed; rotating to the next Gemini key/model', {
-              model,
-              error: searchError instanceof Error ? searchError.message : String(searchError),
-            });
-          }
-          throw searchError;
+          if (!providerSearchEnabled) throw searchError;
+          console.warn('[counter-brief] Gemini legal search failed; retrying this generation without search', {
+            model,
+            error: searchError instanceof Error ? searchError.message : String(searchError),
+          });
+          response = await ai.models.generateContent({
+            model,
+            contents: segmentPrompt,
+            config: {
+              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+              temperature: 0.15,
+              maxOutputTokens: 32768,
+            },
+          });
         }
         if (providerSearchEnabled) {
           recordGroundingMetadata(response?.candidates?.[0]?.groundingMetadata);
