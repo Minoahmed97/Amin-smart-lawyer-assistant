@@ -62,8 +62,11 @@ export default async function handler(req: any, res: any) {
 
     limitBodyString(lastMessage.content, 10000, 'رسالة المحادثة');
 
-    rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
+    const { session } = await enforceAiCooldown(req);
+    rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000, {
+      identity: session.userId,
+      allowConfiguredAiExemption: true,
+    });
 
     const taskLabel =
       taskType === 'deconstruct'
