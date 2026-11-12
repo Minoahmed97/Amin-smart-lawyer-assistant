@@ -1111,7 +1111,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   ></textarea>
                 ) : (
                   <div
-                    className="text-slate-100 whitespace-pre-wrap text-justify tracking-wide leading-[2.4] select-text selection:bg-amber-500/40 selection:text-white"
+                    className="text-slate-100 whitespace-pre-wrap text-justify tracking-normal leading-[1.7] select-text selection:bg-amber-500/40 selection:text-white"
                     style={{
                       fontFamily:
                         fontFamily === 'traditional'
