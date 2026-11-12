@@ -1,6 +1,6 @@
 import mammoth from 'mammoth';
 import { getSessionToken } from '../services/authService.ts';
-import { runSavedOcrTask } from '../services/aiService.ts';
+import { runSavedOcrTask, runSavedOcrBatchTask } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from './legalVaultService.ts';
 
 export interface ExtractedFileResult {
@@ -330,6 +330,27 @@ async function runQueuedOcrTask(
   }
 }
 
+async function runQueuedOcrBatchTask(
+  images: Array<{ pageNumber: number; base64Data: string; mimeType: string }>,
+  pageTexts: Array<{ pageNumber: number; text: string }>,
+  fileName: string,
+  recoveryScope: string,
+): Promise<{ text: string; jobId: string }> {
+  let releaseQueue!: () => void;
+  const previous = ocrUploadQueue;
+  ocrUploadQueue = new Promise<void>((resolve) => { releaseQueue = resolve; });
+  await previous.catch(() => undefined);
+  try {
+    const minimumGapMs = 5000;
+    const waitMs = Math.max(0, minimumGapMs - (Date.now() - lastOcrUploadFinishedAt));
+    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    return await runSavedOcrBatchTask(images, pageTexts, fileName, recoveryScope, getActiveLawyerUserId());
+  } finally {
+    lastOcrUploadFinishedAt = Date.now();
+    releaseQueue();
+  }
+}
+
 async function extractTextFromPdfPageByPage(
   file: File,
   recoveryScope: string,
@@ -343,13 +364,11 @@ async function extractTextFromPdfPageByPage(
     isEvalSupported: false,
   }).promise;
 
-  const pageResults: string[] = new Array(pdfDocument.numPages).fill('');
-  let lastJobId: string | undefined;
+  const imagePages: Array<{ pageNumber: number; base64Data: string; mimeType: string }> = [];
+  const textPages: Array<{ pageNumber: number; text: string }> = [];
   const imageOperators = new Set([
-    pdfjs.OPS.paintImageXObject,
-    pdfjs.OPS.paintInlineImageXObject,
-    pdfjs.OPS.paintJpegXObject,
-    pdfjs.OPS.paintImageXObjectRepeat,
+    pdfjs.OPS.paintImageXObject, pdfjs.OPS.paintInlineImageXObject,
+    pdfjs.OPS.paintJpegXObject, pdfjs.OPS.paintImageXObjectRepeat,
   ].filter((value: any) => typeof value === 'number'));
   const imageMaskOperator = pdfjs.OPS.paintImageMaskXObject;
 
@@ -359,10 +378,7 @@ async function extractTextFromPdfPageByPage(
       try {
         const textContent = await page.getTextContent();
         const pageText = (textContent.items || [])
-          .map((item: any) => {
-            if (typeof item?.str !== 'string' || !item.str) return '';
-            return item.str + (item.hasEOL ? '\n' : ' ');
-          })
+          .map((item: any) => typeof item?.str === 'string' && item.str ? item.str + (item.hasEOL ? '\n' : ' ') : '')
           .join('')
           .replace(/[\t ]+/g, ' ')
           .replace(/ *\n */g, '\n')
@@ -374,8 +390,6 @@ async function extractTextFromPdfPageByPage(
           containsImage = (operatorList.fnArray || []).some((operator: number, index: number) => {
             if (imageOperators.has(operator)) return true;
             if (typeof imageMaskOperator !== 'number' || operator !== imageMaskOperator) return false;
-            // Ignore tiny glyph masks used by some PDF fonts, but detect sizeable
-            // monochrome scans that PDF.js represents as image-mask operators.
             const args = operatorList.argsArray?.[index];
             const image = Array.isArray(args) ? args[0] : args;
             const width = Number(image?.width || image?.bitmap?.width || 0);
@@ -388,7 +402,7 @@ async function extractTextFromPdfPageByPage(
         }
 
         if (!containsImage && pageText) {
-          pageResults[pageNumber - 1] = pageText;
+          textPages.push({ pageNumber, text: pageText });
           continue;
         }
 
@@ -404,34 +418,35 @@ async function extractTextFromPdfPageByPage(
         context.fillStyle = '#FFFFFF';
         context.fillRect(0, 0, canvas.width, canvas.height);
         await page.render({ canvasContext: context, viewport }).promise;
-
         const blob = await new Promise<Blob>((resolve, reject) => {
           canvas.toBlob((value) => value ? resolve(value) : reject(new Error('تعذر تحويل صفحة PDF إلى صورة.')), 'image/jpeg', 0.92);
         });
         canvas.width = 0;
         canvas.height = 0;
-
-        const pageFile = new File(
-          [blob],
-          `${file.name.replace(/\.pdf$/i, '')}-page-${pageNumber}.jpg`,
-          { type: 'image/jpeg' },
-        );
+        const pageFile = new File([blob], `${file.name.replace(/\.pdf$/i, '')}-page-${pageNumber}.jpg`, { type: 'image/jpeg' });
+        // Keep the original compression dimensions, grayscale and quality settings.
         const compressed = await compressAndResizeImage(pageFile, 1800, 0.82);
-        const task = await runQueuedOcrTask(
-          compressed.base64Data,
-          compressed.mimeType,
-          pageFile.name,
-          recoveryScope,
-        );
-        pageResults[pageNumber - 1] = task.text;
-        lastJobId = task.jobId;
+        imagePages.push({ pageNumber, ...compressed });
       } finally {
         page.cleanup?.();
       }
     }
-    const text = pageResults.map((value) => value.trim()).join('\n\n').trim();
-    if (!text) throw new Error(`تعذر استخراج نص من ملف PDF "${file.name}".`);
-    return { text, lastJobId };
+
+    if (!imagePages.length) {
+      const text = textPages.sort((a, b) => a.pageNumber - b.pageNumber).map((page) => page.text).join('\n\n').trim();
+      if (!text) throw new Error(`تعذر استخراج نص من ملف PDF "${file.name}".`);
+      return { text };
+    }
+    const totalImageBytes = imagePages.reduce((total, page) => {
+      const compact = page.base64Data.replace(/\s/g, '');
+      return total + Math.floor(compact.length * 3 / 4) - (compact.endsWith('==') ? 2 : compact.endsWith('=') ? 1 : 0);
+    }, 0);
+    if (totalImageBytes > 20 * 1024 * 1024) {
+      throw new Error('حجم صور صفحات PDF بعد الضغط أكبر من الحد الآمن لطلب واحد. قسّم الملف إلى أجزاء أصغر ثم أعد المحاولة.');
+    }
+    // One durable OCR job carries every scanned page and emits one completion push.
+    const task = await runQueuedOcrBatchTask(imagePages, textPages, file.name, recoveryScope);
+    return { text: task.text, lastJobId: task.jobId };
   } finally {
     await pdfDocument.destroy?.();
   }

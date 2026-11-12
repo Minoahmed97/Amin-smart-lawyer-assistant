@@ -435,6 +435,22 @@ export async function runSavedOcrTask(
   return { text, jobId };
 }
 
+export async function runSavedOcrBatchTask(
+  images: Array<{ pageNumber: number; base64Data: string; mimeType: string }>,
+  pageTexts: Array<{ pageNumber: number; text: string }>,
+  fileName: string,
+  storageScope: string,
+  userId?: string,
+): Promise<{ text: string; jobId: string }> {
+  const jobId = makeJobId();
+  const text = await requestSavedJob(
+    'ocr',
+    { images: JSON.stringify(images), pageTexts: JSON.stringify(pageTexts), mimeType: 'application/pdf', fileName, recoveryScope: sanitizeStoragePart(storageScope) },
+    undefined, userId, undefined, storageScope, { fileName, mimeType: 'application/pdf' }, jobId,
+  );
+  return { text, jobId };
+}
+
 export async function resumeSavedOcrTask(
   jobId: string,
   storageScope: string,
