@@ -177,7 +177,7 @@ export default async function handler(req: any, res: any) {
             .map((item: any) => typeof item?.str === 'string' ? item.str : '')
             .filter(Boolean)
             .join(' ')
-            .replace(/[\\t ]+/g, ' ')
+            .replace(/[\t ]+/g, ' ')
             .trim();
 
           let containsImage = false;
@@ -217,7 +217,7 @@ export default async function handler(req: any, res: any) {
         }
 
         if (imagePages.length === 0 && pageTexts.some((value) => value.trim())) {
-          const text = pageTexts.filter(Boolean).join('\\n\\n').trim();
+          const text = pageTexts.filter(Boolean).join('\n\n').trim();
           const usage = await consumeOperation(req, 'ocr');
           return res.json({ text, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
         }
@@ -230,7 +230,7 @@ export default async function handler(req: any, res: any) {
               { inlineData: { mimeType: 'image/jpeg', data: imagePage.base64 } },
             );
           }
-          const pagePrompt = `${ocrPrompt}\\n\\nهذا ملف PDF متعدد الصفحات حُولت صفحاته المصورة إلى صور مستقلة. أخرج نتيجة كل صورة في كتلة مستقلة بهذا الشكل الحرفي: [صفحة رقم الصفحة] ثم النص المستخرج منها. لا تدمج صفحتين في كتلة واحدة، ولا تسقط صفحة، وحافظ على ترتيب أرقام الصفحات.`;
+          const pagePrompt = `${ocrPrompt}\n\nهذا ملف PDF متعدد الصفحات حُولت صفحاته المصورة إلى صور مستقلة. أخرج نتيجة كل صورة في كتلة مستقلة بهذا الشكل الحرفي: [صفحة رقم الصفحة] ثم النص المستخرج منها. لا تدمج صفحتين في كتلة واحدة، ولا تسقط صفحة، وحافظ على ترتيب أرقام الصفحات.`;
           const visualText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
             const response = await ai.models.generateContent({
               skipAdaptiveAnswerLength: true,
@@ -244,7 +244,7 @@ export default async function handler(req: any, res: any) {
           }, GEMINI_MODELS, 280000);
 
           const extractedImagePages = new Map<number, string>();
-          const markers = Array.from(visualText.matchAll(/\\[(?:صفحة|PAGE)\\s*(\\d+)\\]/gi));
+          const markers = Array.from(visualText.matchAll(/\[(?:صفحة|PAGE)\s*(\d+)\]/gi));
           if (imagePages.length === 1 && markers.length === 0) {
             extractedImagePages.set(imagePages[0].pageNumber, visualText);
           } else {
@@ -264,7 +264,7 @@ export default async function handler(req: any, res: any) {
           }
 
           for (const [pageNumber, text] of extractedImagePages) pageTexts[pageNumber - 1] = text;
-          const combinedPdfText = pageTexts.map((value) => value.trim()).filter(Boolean).join('\\n\\n').trim();
+          const combinedPdfText = pageTexts.map((value) => value.trim()).filter(Boolean).join('\n\n').trim();
           if (!combinedPdfText) throw new Error('لم يُستخرج نص صالح من صفحات PDF.');
           const usage = await consumeOperation(req, 'ocr');
           return res.json({ text: combinedPdfText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
