@@ -230,7 +230,7 @@ export default async function handler(req: any, res: any) {
               { inlineData: { mimeType: 'image/jpeg', data: imagePage.base64 } },
             );
           }
-          const pagePrompt = `${ocrPrompt}\n\nهذا ملف PDF متعدد الصفحات حُولت صفحاته المصورة إلى صور مستقلة. أخرج نتيجة كل صورة في كتلة مستقلة بهذا الشكل الحرفي: [صفحة رقم الصفحة] ثم النص المستخرج منها. لا تدمج صفحتين في كتلة واحدة، ولا تسقط صفحة، وحافظ على ترتيب أرقام الصفحات.`;
+          const pagePrompt = `${ocrPrompt}\n\nهذا ملف PDF متعدد الصفحات حُولت صفحاته المصورة إلى صور مستقلة. أخرج نتيجة كل صورة في كتلة مستقلة بهذا الشكل الحرفي: [صفحة 3] مع استبدال الرقم 3 برقم الصفحة الفعلي، ثم النص المستخرج منها. لا تدمج صفحتين في كتلة واحدة، ولا تسقط صفحة، وحافظ على ترتيب أرقام الصفحات.`;
           const visualText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
             const response = await ai.models.generateContent({
               skipAdaptiveAnswerLength: true,
