@@ -304,7 +304,6 @@ async function requestSavedJob<T extends Record<string, any>>(
   const startedAt = Date.now();
   const NO_PROGRESS_TIMEOUT_MS = type === 'ocr' ? 5 * 60 * 1000 + 10 * 1000 : 4 * 60 * 1000 + 30 * 1000;
   let lastProgressAt = Date.now();
-  let lastUpdatedAt = '';
   while (Date.now() - startedAt < 1000 * 60 * 20) {
     await cancelIfAborted();
     try {
@@ -337,11 +336,11 @@ async function requestSavedJob<T extends Record<string, any>>(
         }
       }
       const currentText = String(data?.partialResult || data?.result || '');
-      const updatedAt = String(data?.updatedAt || '');
-      if ((currentText.length > lastText.length) || (updatedAt && updatedAt !== lastUpdatedAt)) {
+      // Heartbeats update the job's updatedAt timestamp but do not mean OCR
+      // produced new content. Only newly persisted text counts as real progress.
+      if (currentText.length > lastText.length) {
         lastProgressAt = Date.now();
       }
-      if (updatedAt) lastUpdatedAt = updatedAt;
       if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
