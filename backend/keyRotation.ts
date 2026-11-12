@@ -250,10 +250,6 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
 }
 
 let dedicatedOCRActiveKey = '';
-let dedicatedOCRActiveModel = '';
-// Avoid sending simultaneous image requests through the same key/model pair
-// on this warm server instance. Reservations are released after each attempt.
-const dedicatedOCRInFlightPairs = new Set<string>();
 
 export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): Promise<{ ready: boolean; keyCount: number; checkedKeys: number; message: string }> {
   let keys: string[];
@@ -344,39 +340,21 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
         const keyIndex = (startIndex + offset) % usableOCRKeys.length;
         const key = usableOCRKeys[keyIndex];
         if (isCooling(ocrKeyCooldownUntil, key) || permanentlyInvalidOCRKeys.has(key)) continue;
-
-        // Prefer the last successful model on the last successful key, but never
-        // let concurrent uploads occupy the same key/model pair at the same time.
-        const orderedModels = [...preferredModels].sort((a, b) =>
-          Number(b === dedicatedOCRActiveModel) - Number(a === dedicatedOCRActiveModel)
-        );
-        const keyModels = orderedModels.filter((model) =>
-          !isCooling(ocrModelCooldownUntil, model) &&
-          !isCooling(ocrKeyModelCooldownUntil, rotationPairKey(key, model)) &&
-          !dedicatedOCRInFlightPairs.has(rotationPairKey(key, model))
-        ).slice(0, MAX_MODELS_PER_KEY_PER_REQUEST);
+        const keyModels = selectModelsForKey(preferredModels, key, 'ocr');
 
         for (let modelIndex = 0; modelIndex < keyModels.length; modelIndex++) {
           const remainingMs = geminiDeadlineAt - Date.now();
           if (remainingMs < 10000) break ocrKeyLoop;
           const model = keyModels[modelIndex];
-          const pair = rotationPairKey(key, model);
-          // Reserve synchronously before the first await so another request in
-          // this instance cannot claim the same pair in the same event-loop turn.
-          if (dedicatedOCRInFlightPairs.has(pair)) continue;
-          dedicatedOCRInFlightPairs.add(pair);
           try {
             const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
             const result = await action(ai, key, model);
             if (Date.now() >= geminiDeadlineAt) throw Object.assign(new Error('انتهت مهلة محاولة OCR عبر Gemini.'), { status: 504, statusCode: 504 });
             dedicatedOCRActiveKey = key;
-            dedicatedOCRActiveModel = model;
             return result;
           } catch (error: any) {
             lastError = error;
             markRotationFailure(key, model, error, 'ocr');
-          } finally {
-            dedicatedOCRInFlightPairs.delete(pair);
           }
         }
       }
