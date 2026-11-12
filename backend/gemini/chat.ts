@@ -77,8 +77,8 @@ export default async function handler(req: any, res: any) {
 
     const latestUserMessage = lastMessage.content.trim();
 
-    // لا نعدّل النتيجة الأصلية إلا إذا سمّى المستخدم وجهتها صراحةً.
-    // أي تعديل غير محدد الوجهة يظل داخل المحادثة، ولا يغيّر المستند.
+    // الافتراضي في طلبات التعديل هو تعديل النتيجة القانونية الأساسية.
+    // لا نوجّه التعديل إلى الشات إلا إذا طلب المستخدم ذلك صراحةً.
     const normalizedMessage = latestUserMessage
       .replace(/[\u064B-\u065F\u0670]/g, '')
       .replace(/[إأآ]/g, 'ا')
@@ -93,8 +93,15 @@ export default async function handler(req: any, res: any) {
     const explicitlyTargetsChat =
       /(?:في|داخل|على)\s+(?:الشات|المحادثة|رسالة\s+الشات)|(?:الشات|المحادثة)\s+(?:فقط|نفسه)/i.test(normalizedMessage);
 
-    const isDocumentEditIntent =
-      hasEditIntent && explicitlyTargetsResult && !explicitlyTargetsChat;
+    // إذا جمع الطلب بين وجهتين متعارضتين، نسأل المستخدم بدلاً من التخمين.
+    if (hasEditIntent && explicitlyTargetsResult && explicitlyTargetsChat) {
+      return res.status(200).json({
+        result: 'للتأكد من تنفيذ التعديل في المكان الصحيح: هل تريد تعديل النتيجة القانونية الأساسية أم تعديل نص الشات فقط؟',
+        updatedResult: null
+      });
+    }
+
+    const isDocumentEditIntent = hasEditIntent && !explicitlyTargetsChat;
 
     let answer = '';
     let updatedResult: string | null = null;
@@ -151,8 +158,8 @@ export default async function handler(req: any, res: any) {
         typeof editData.newText !== 'string' ||
         !editData.oldText.length
       ) {
-        return res.status(422).json({
-          error: 'لم أتمكن من تحديد موضع التعديل بدقة. حدد الجملة أو الفقرة المطلوب تعديلها.',
+        return res.status(200).json({
+          result: 'أريد تنفيذ التعديل على النتيجة الأساسية، لكن لم أتمكن من تحديد موضعه بأمان. من فضلك حدد الجملة أو الفقرة المقصودة، أو أرسل النص الذي تريد استبداله.',
           updatedResult: null
         });
       }
@@ -164,8 +171,8 @@ export default async function handler(req: any, res: any) {
       const firstIndex = result.indexOf(oldText);
 
       if (firstIndex === -1) {
-        return res.status(422).json({
-          error: 'تعذر العثور على النص المطلوب تعديله داخل النتيجة الأصلية.',
+        return res.status(200).json({
+          result: 'لم أجد النص المطلوب داخل النتيجة الأساسية، ولم أغيّر الشات أو المستند. أرسل العبارة كما تظهر في النتيجة أو حدّد موضعها.',
           updatedResult: null
         });
       }
@@ -177,8 +184,8 @@ export default async function handler(req: any, res: any) {
       );
 
       if (secondIndex !== -1) {
-        return res.status(422).json({
-          error: 'النص المطلوب تعديله متكرر داخل المستند. يرجى تحديد الفقرة المقصودة بدقة.',
+        return res.status(200).json({
+          result: 'وجدت العبارة المطلوبة أكثر من مرة في النتيجة الأساسية. أي موضع تقصد؟ حدّد الفقرة أو عنوان الجزء المطلوب تعديله.',
           updatedResult: null
         });
       }
