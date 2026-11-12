@@ -29,8 +29,11 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ error: 'يرجى تقديم نص مذكرة الخصم.' });
     }
 
-    rateLimit(req, 'gemini-deconstruct', 8, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
+    const { session } = await enforceAiCooldown(req);
+    rateLimit(req, 'gemini-deconstruct', 8, 10 * 60 * 1000, {
+      identity: session.userId,
+      allowConfiguredAiExemption: true,
+    });
 
     limitBodyString(opponentBriefText, 200000, 'مذكرة الخصم');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
