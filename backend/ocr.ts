@@ -59,6 +59,7 @@ export default async function handler(req: any, res: any) {
     let batchPageTexts: Array<{ pageNumber: number; text: string }> = [];
     if (typeof rawImages === 'string' && rawImages) {
       try { batchImages = JSON.parse(rawImages); } catch { return res.status(400).json({ error: 'بيانات صور صفحات PDF غير صالحة.' }); }
+      limitBodyString(typeof rawPageTexts === 'string' ? rawPageTexts : '[]', 2 * 1024 * 1024, 'النصوص القابلة للتحديد في PDF');
       try { batchPageTexts = typeof rawPageTexts === 'string' ? JSON.parse(rawPageTexts) : []; } catch { return res.status(400).json({ error: 'النصوص القابلة للتحديد في PDF غير صالحة.' }); }
       if (!Array.isArray(batchImages) || !batchImages.length || batchImages.length > 100 || !Array.isArray(batchPageTexts)) {
         return res.status(400).json({ error: 'مجموعة صور PDF غير صالحة.' });
