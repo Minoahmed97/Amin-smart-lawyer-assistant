@@ -81,6 +81,19 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   const userId = user?.id || '';
   const userName = user?.name || user?.user_metadata?.full_name || user?.username || 'المستشار القانوني';
 
+  // Restore an existing Push subscription silently after login/reload.
+  // Never request notification permission automatically.
+  useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      typeof Notification === 'undefined' ||
+      Notification.permission !== 'granted' ||
+      !('serviceWorker' in navigator) ||
+      !('PushManager' in window)
+    ) return;
+    void enableCompletionPushNotifications();
+  }, [userId]);
+
   const [credits, setCredits] = useState<number>(() => Number(user?.credits || user?.trialOperationsRemaining || 0));
   const [vaultModelsCount, setVaultModelsCount] = useState<number>(0);
 
