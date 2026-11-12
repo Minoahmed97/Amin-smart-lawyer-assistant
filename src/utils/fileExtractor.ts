@@ -31,14 +31,81 @@ export function fileToBase64(file: File | Blob): Promise<string> {
  * handwriting, dots and fine pen strokes can disappear during lossy resizing.
  * The server accepts a 20 MB base64 payload, so keep the raw file below 14 MB.
  */
-export async function compressAndResizeImage(file: File): Promise<{ base64Data: string; mimeType: string }> {
-  if (!file.size || file.size > 14 * 1024 * 1024) {
-    throw new Error('حجم الصورة أكبر من الحد الآمن للإرسال. اختر نسخة أصغر من الملف دون تقليل دقة الكتابة يدوياً.');
-  }
-  return {
-    base64Data: await fileToBase64(file),
-    mimeType: resolveMimeType(file),
+export async function compressAndResizeImage( file: File, maxDimension = 1800, quality = 0.82, ): Promise<{ base64Data: string; mimeType: string }> {
+  const MAX_IMAGE_BYTES = 1024 * 1024;
+  const encodeCanvas = (canvas: HTMLCanvasElement, q: number) =>
+    new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', q));
+
+  const loadImage = async (): Promise<{ source: CanvasImageSource; width: number; height: number; close?: () => void }> => {
+    if (typeof createImageBitmap === 'function') {
+      const bitmap = await createImageBitmap(file);
+      return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
+    }
+    const sourceUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('تعذر فتح الصورة للضغط.'));
+        image.src = sourceUrl;
+      });
+      return { source: img, width: img.naturalWidth, height: img.naturalHeight };
+    } finally {
+      URL.revokeObjectURL(sourceUrl);
+    }
   };
+
+  if (typeof document === 'undefined') {
+    const base64Data = await fileToBase64(file);
+    return { base64Data, mimeType: resolveMimeType(file) };
+  }
+
+  try {
+    const image = await loadImage();
+    let maxSide = maxDimension;
+    let resultBlob: Blob | null = null;
+    try {
+      // Reduce dimensions progressively if compression alone cannot reach the target.
+      for (let dimensionPass = 0; dimensionPass < 6; dimensionPass++) {
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+        const width = Math.max(1, Math.round(image.width * scale));
+        const height = Math.max(1, Math.round(image.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('تعذر تجهيز الصورة للضغط.');
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.filter = 'grayscale(100%)';
+        ctx.drawImage(image.source, 0, 0, width, height);
+        ctx.filter = 'none';
+
+        for (const q of [quality, 0.78, 0.74, 0.70, 0.66, 0.62, 0.58]) {
+          const candidate = await encodeCanvas(canvas, q);
+          if (candidate && (!resultBlob || candidate.size < resultBlob.size)) resultBlob = candidate;
+          if (candidate && candidate.size <= MAX_IMAGE_BYTES) {
+            resultBlob = candidate;
+            break;
+          }
+        }
+        if (resultBlob && resultBlob.size <= MAX_IMAGE_BYTES) break;
+        maxSide = Math.max(900, Math.floor(maxSide * 0.85));
+      }
+    } finally {
+      image.close?.();
+    }
+
+    if (!resultBlob || resultBlob.size > MAX_IMAGE_BYTES) {
+      throw new Error('تعذر ضغط الصورة إلى أقل من 1MB مع الحفاظ على وضوحها.');
+    }
+    const base64Data = await fileToBase64(resultBlob);
+    return { base64Data, mimeType: 'image/jpeg' };
+  } catch (error) {
+    // Do not silently send the original oversized image: report a clear error instead.
+    console.warn('Image compression failed:', error);
+    throw new Error('تعذر تجهيز الصورة وإيصال حجمها إلى أقل من 1MB. جرّب صورة أوضح أو أصغر.');
+  }
 }
 
 export function resolveMimeType(file: File): string {
