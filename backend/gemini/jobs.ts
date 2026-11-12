@@ -99,24 +99,11 @@ async function sendCompletionPush(userId: string, jobId: string, taskType: strin
     const fileLabel = taskType === 'ocr' && fileName ? ` (${String(fileName).slice(0, 120)})` : '';
     const body = `${taskNames[taskType] || 'المهمة'}${fileLabel} ${status === 'completed' ? 'اكتملت؛ افتح التطبيق لعرض النتيجة.' : 'لم تكتمل؛ افتح التطبيق لمعرفة التفاصيل.'}`;
     await Promise.all((Array.isArray(subscriptions) ? subscriptions : []).map(async (row: any) => {
-      const notification = JSON.stringify({ title, body, tag: `amin-ai-${jobId}`, url: `/?jobId=${encodeURIComponent(jobId)}` });
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await webpush.sendNotification(row.subscription, notification, { TTL: 60 * 60 * 24 });
-          break;
-        } catch (error: any) {
-          const status = Number(error?.statusCode || error?.status);
-          if (status === 404 || status === 410) {
-            await supabase(`${PUSH_TABLE}?id=eq.${encodeURIComponent(row.id)}`, { method: 'DELETE' }).catch(() => undefined);
-            break;
-          }
-          // Retry only transient push-provider/network failures; do not hold job completion indefinitely.
-          const transient = !status || status === 408 || status === 429 || status >= 500;
-          if (!transient || attempt === 2) {
-            console.warn('Completion push delivery failed:', safeDiagnosticMessage(error?.message || error));
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      try {
+        await webpush.sendNotification(row.subscription, JSON.stringify({ title, body, tag: `amin-ai-${jobId}`, url: `/?jobId=${encodeURIComponent(jobId)}` }), { TTL: 60 * 60 * 24 });
+      } catch (error: any) {
+        if (error?.statusCode === 404 || error?.statusCode === 410) {
+          await supabase(`${PUSH_TABLE}?id=eq.${encodeURIComponent(row.id)}`, { method: 'DELETE' }).catch(() => undefined);
         }
       }
     }));
