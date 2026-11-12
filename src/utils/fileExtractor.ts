@@ -330,6 +330,102 @@ async function runQueuedOcrTask(
   }
 }
 
+async function extractTextFromPdfPageByPage(
+  file: File,
+  recoveryScope: string,
+): Promise<{ text: string; lastJobId?: string }> {
+  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const workerUrlModule: any = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+  pdfjs.GlobalWorkerOptions.workerSrc = workerUrlModule.default || workerUrlModule;
+  const pdfDocument = await pdfjs.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    useSystemFonts: true,
+    isEvalSupported: false,
+  }).promise;
+
+  const pageResults: string[] = new Array(pdfDocument.numPages).fill('');
+  let lastJobId: string | undefined;
+  const imageOperators = new Set([
+    pdfjs.OPS.paintImageXObject,
+    pdfjs.OPS.paintInlineImageXObject,
+    pdfjs.OPS.paintJpegXObject,
+    pdfjs.OPS.paintImageXObjectRepeat,
+  ].filter((value: any) => typeof value === 'number'));
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
+      const page = await pdfDocument.getPage(pageNumber);
+      try {
+        const textContent = await page.getTextContent();
+        const pageText = (textContent.items || [])
+          .map((item: any) => {
+            if (typeof item?.str !== 'string' || !item.str) return '';
+            return item.str + (item.hasEOL ? '\\n' : ' ');
+          })
+          .join('')
+          .replace(/[\\t ]+/g, ' ')
+          .replace(/ *\\n */g, '\\n')
+          .trim();
+
+        let containsImage = false;
+        try {
+          const operatorList = await page.getOperatorList();
+          containsImage = (operatorList.fnArray || []).some((operator: number) => imageOperators.has(operator));
+        } catch (error: any) {
+          containsImage = true;
+          console.warn(`تعذر فحص الصور داخل صفحة PDF رقم ${pageNumber}:`, error?.message || error);
+        }
+
+        if (!containsImage && pageText) {
+          pageResults[pageNumber - 1] = pageText;
+          continue;
+        }
+
+        const initialViewport = page.getViewport({ scale: 1.6 });
+        const longestSide = Math.max(initialViewport.width, initialViewport.height);
+        const scale = longestSide > 2400 ? 1.6 * (2400 / longestSide) : 1.6;
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error(`تعذر تجهيز صورة صفحة PDF رقم ${pageNumber}.`);
+        context.fillStyle = '#FFFFFF';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: context, viewport }).promise;
+
+        const blob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob((value) => value ? resolve(value) : reject(new Error('تعذر تحويل صفحة PDF إلى صورة.')), 'image/jpeg', 0.92);
+        });
+        canvas.width = 0;
+        canvas.height = 0;
+
+        const pageFile = new File(
+          [blob],
+          `${file.name.replace(/\\.pdf$/i, '')}-page-${pageNumber}.jpg`,
+          { type: 'image/jpeg' },
+        );
+        const compressed = await compressAndResizeImage(pageFile, 1800, 0.82);
+        const task = await runQueuedOcrTask(
+          compressed.base64Data,
+          compressed.mimeType,
+          pageFile.name,
+          recoveryScope,
+        );
+        pageResults[pageNumber - 1] = task.text;
+        lastJobId = task.jobId;
+      } finally {
+        page.cleanup?.();
+      }
+    }
+    const text = pageResults.map((value) => value.trim()).join('\\n\\n').trim();
+    if (!text) throw new Error(`تعذر استخراج نص من ملف PDF "${file.name}".`);
+    return { text, lastJobId };
+  } finally {
+    await pdfDocument.destroy?.();
+  }
+}
+
 export async function extractTextFromAnyFile(file: File, recoveryScope = 'general'): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
@@ -364,9 +460,14 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
       extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
-  // 4. مستندات بي دي إف والصور
+  // 4. PDF: extract selectable text locally and OCR only pages containing images.
+  else if (lowerName.endsWith('.pdf')) {
+    const pdfResult = await extractTextFromPdfPageByPage(file, recoveryScope);
+    extractedText = pdfResult.text;
+    backgroundJobId = pdfResult.lastJobId;
+  }
+  // 5. Images: keep the original compression and durable OCR job path unchanged.
   else if (
-    lowerName.endsWith('.pdf') ||
     lowerName.endsWith('.jpg') ||
     lowerName.endsWith('.jpeg') ||
     lowerName.endsWith('.png') ||
@@ -374,27 +475,13 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
     lowerName.endsWith('.bmp') ||
     file.type.startsWith('image/')
   ) {
-    const isImage = file.type.startsWith('image/') || /\.(jpe?g|png|webp|bmp)$/i.test(lowerName);
-    let base64Data = '';
-    let mimeType = resolveMimeType(file);
-    if (isImage) {
-      try {
-        const compressed = await compressAndResizeImage(file, 1800, 0.82);
-        base64Data = compressed.base64Data;
-        mimeType = compressed.mimeType;
-      } catch (error) {
-        // لا نرسل الصورة الأصلية عند فشل الضغط؛ حتى لا نتجاوز حد الحجم المتفق عليه.
-        throw error instanceof Error
-          ? error
-          : new Error('تعذر ضغط الصورة مع الحفاظ على وضوح الكتابة. جرّب صورة أوضح أو أصغر.');
-      }
-    } else {
-      base64Data = await fileToBase64(file);
-    }
-    // Route long-running PDFs/images through the existing durable server job queue.
-    // This keeps the current OCR handler and Gemini/Groq routing, while preserving
-    // the job id for recovery if the browser is backgrounded or the connection drops.
-    const savedTask = await runQueuedOcrTask(base64Data, mimeType, fileName, recoveryScope);
+    const compressed = await compressAndResizeImage(file, 1800, 0.82);
+    const savedTask = await runQueuedOcrTask(
+      compressed.base64Data,
+      compressed.mimeType,
+      fileName,
+      recoveryScope,
+    );
     extractedText = savedTask.text;
     backgroundJobId = savedTask.jobId;
   } else {
