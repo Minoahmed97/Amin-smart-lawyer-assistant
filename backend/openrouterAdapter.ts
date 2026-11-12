@@ -86,7 +86,7 @@ function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
 
 async function request(options: any, model: string, stream: boolean): Promise<OpenRouterRequest> {
   const apiKey = String(options?.providerApiKey || process.env.OPENROUTER_API_KEY || '').trim();
-  const baseUrl = String(options?.providerBaseUrl || 'https://openrouter.ai/api/v1').replace(/\\/+$/, '');
+  const baseUrl = String(options?.providerBaseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
   if (!apiKey) {
     const error: any = new Error('اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
     error.statusCode = 503;
