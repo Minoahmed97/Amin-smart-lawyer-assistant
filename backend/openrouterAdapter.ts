@@ -85,7 +85,8 @@ function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
 }
 
 async function request(options: any, model: string, stream: boolean): Promise<OpenRouterRequest> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  const apiKey = String(options?.providerApiKey || process.env.OPENROUTER_API_KEY || '').trim();
+  const baseUrl = String(options?.providerBaseUrl || 'https://openrouter.ai/api/v1').replace(/\\/+$/, '');
   if (!apiKey) {
     const error: any = new Error('اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
     error.statusCode = 503;
@@ -119,7 +120,7 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   resetTimeout();
   let response: Response;
   try {
-    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -160,13 +161,20 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   };
 }
 
-export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number) {
+export function createOpenRouterCompatibleClient(
+  defaultTimeoutMs = 120000,
+  requestDeadlineAt?: number,
+  providerBaseUrl?: string,
+  providerApiKey?: string,
+) {
   const applyDefaultTimeout = (options: any) => ({
     ...options,
     requestTimeoutMs: Number(options?.requestTimeoutMs) >= 1000
       ? options.requestTimeoutMs
       : defaultTimeoutMs,
     ...(Number.isFinite(requestDeadlineAt) ? { requestDeadlineAt } : {}),
+    ...(providerBaseUrl ? { providerBaseUrl } : {}),
+    ...(providerApiKey ? { providerApiKey } : {}),
   });
   return {
     models: {
