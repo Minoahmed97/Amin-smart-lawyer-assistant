@@ -14,6 +14,20 @@ function isBlockedFinishReason(reason: unknown): boolean {
   return ['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY', 'CONTENT_FILTER'].includes(normalized);
 }
 
+function logLegalSearchFailure(error: any, model: string, phase: string): void {
+  const message = String(error?.message || '')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[redacted]')
+    .replace(/((?:api[_-]?key|token|authorization)\s*[:=]\s*)[^\s,;]+/gi, '$1[redacted]')
+    .slice(0, 240);
+  console.warn('[counter-brief] Google Search request failed; drafting fallback will continue without search', {
+    model,
+    phase,
+    status: Number(error?.status || error?.statusCode || error?.response?.status) || null,
+    code: error?.code || error?.error?.status || null,
+    message: message || null,
+  });
+}
+
 function mergeContinuation(previous: string, next: string): string {
   if (!next) return '';
   if (!previous) return next;
@@ -78,6 +92,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
+            let searchFallbackUsed = false;
+            const searchDiagnostics = { queryCount: 0, sourceCount: 0, metadataSeen: false };
             const shouldUseLegalSearch = Boolean(key !== 'openrouter' && options.legalResearch && focusedResearchContext && !accumulatedText);
             const requestConfig: any = {
               systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
@@ -94,7 +110,14 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
             const forwardStream = async function* (activeStream: any) {
               for await (const chunk of activeStream) {
-                const candidateReason = chunk?.candidates?.[0]?.finishReason;
+                const candidate = chunk?.candidates?.[0];
+                const grounding = candidate?.groundingMetadata;
+                if (shouldUseLegalSearch && grounding) {
+                  searchDiagnostics.metadataSeen = true;
+                  searchDiagnostics.queryCount += Array.isArray(grounding.webSearchQueries) ? grounding.webSearchQueries.length : 0;
+                  searchDiagnostics.sourceCount += Array.isArray(grounding.groundingChunks) ? grounding.groundingChunks.length : 0;
+                }
+                const candidateReason = candidate?.finishReason;
                 if (candidateReason) finishReason = String(candidateReason).toUpperCase();
                 if (segmentCompleted) continue;
                 const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
@@ -122,17 +145,23 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               for await (const part of forwardStream(stream)) yield part;
             } catch (searchError: any) {
               if (!shouldUseLegalSearch || receivedText) throw searchError;
-              console.warn('[counter-brief] Google Search failed before first draft token; retrying generation without search', {
-                model,
-                status: Number(searchError?.status || searchError?.statusCode || searchError?.response?.status) || null,
-                code: searchError?.code || searchError?.error?.status || null,
-              });
+              searchFallbackUsed = true;
+              logLegalSearchFailure(searchError, model, 'stream-before-first-token');
               const fallbackConfig = { ...requestConfig };
               delete fallbackConfig.tools;
               const fallbackStream = await streamWithConfig(fallbackConfig);
               for await (const part of forwardStream(fallbackStream)) yield part;
             }
 
+            if (shouldUseLegalSearch) {
+              console.info('[counter-brief] Google Search grounding diagnostics', {
+                model,
+                fallbackUsed: searchFallbackUsed,
+                metadataSeen: searchDiagnostics.metadataSeen,
+                queryCount: searchDiagnostics.queryCount,
+                sourceCount: searchDiagnostics.sourceCount,
+              });
+            }
             if (!segmentCompleted && pendingMarkerTail) yield { text: pendingMarkerTail };
             if (!receivedText) {
               const emptyError: any = new Error(`لم يصل نص من النموذج (finishReason: ${finishReason || 'UNKNOWN'}).`);
@@ -246,17 +275,23 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           });
         } catch (searchError: any) {
           if (!shouldUseLegalSearch) throw searchError;
-          console.warn('[counter-brief] Google Search failed during drafting request; retrying generation without search', {
-            model,
-            status: Number(searchError?.status || searchError?.statusCode || searchError?.response?.status) || null,
-            code: searchError?.code || searchError?.error?.status || null,
-          });
+          logLegalSearchFailure(searchError, model, 'non-streaming');
           const fallbackConfig = { ...requestConfig };
           delete fallbackConfig.tools;
           response = await ai.models.generateContent({
             model,
             contents: segmentPrompt,
             config: fallbackConfig,
+          });
+        }
+        if (shouldUseLegalSearch) {
+          const grounding = response?.candidates?.[0]?.groundingMetadata;
+          console.info('[counter-brief] Google Search grounding diagnostics', {
+            model,
+            fallbackUsed: false,
+            metadataSeen: Boolean(grounding),
+            queryCount: Array.isArray(grounding?.webSearchQueries) ? grounding.webSearchQueries.length : 0,
+            sourceCount: Array.isArray(grounding?.groundingChunks) ? grounding.groundingChunks.length : 0,
           });
         }
         const rawText = typeof response.text === 'string' ? response.text : '';
