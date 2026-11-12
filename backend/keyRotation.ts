@@ -43,7 +43,7 @@ const KEY_QUOTA_COOLDOWN_MS = 60_000;
 const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
-const MAX_MODELS_PER_KEY_PER_REQUEST = 2;
+const MAX_MODELS_PER_KEY_PER_REQUEST = 3;
 
 function rotationPairKey(key: string, model: string): string {
   return `${key}:${model}`;
@@ -324,7 +324,8 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
   for (let round = 0; round < 2; round++) {
     const roundStart = overallStart + Math.floor(totalBudget * round / 2);
     const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-    const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
+    // Reserve most of each round for a full Gemini key/model rotation; Groq remains the fallback.
+    const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.88);
     if (round > 0) await new Promise((r) => setTimeout(r, 1000));
 
     if (keys.length > 0) {
@@ -347,7 +348,7 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
           if (remainingMs < 10000) break ocrKeyLoop;
           const model = keyModels[modelIndex];
           try {
-            const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
+            const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(25000, remainingMs)));
             const result = await action(ai, key, model);
             if (Date.now() >= geminiDeadlineAt) throw Object.assign(new Error('انتهت مهلة محاولة OCR عبر Gemini.'), { status: 504, statusCode: 504 });
             dedicatedOCRActiveKey = key;
