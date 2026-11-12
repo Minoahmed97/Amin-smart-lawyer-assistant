@@ -302,7 +302,7 @@ async function requestSavedJob<T extends Record<string, any>>(
   let lastReportedOcrStatus = '';
   let transientFailures = 0;
   const startedAt = Date.now();
-  const NO_PROGRESS_TIMEOUT_MS = 4 * 60 * 1000 + 30 * 1000;
+  const NO_PROGRESS_TIMEOUT_MS = type === 'ocr' ? 5 * 60 * 1000 + 10 * 1000 : 4 * 60 * 1000 + 30 * 1000;
   let lastProgressAt = Date.now();
   let lastUpdatedAt = '';
   while (Date.now() - startedAt < 1000 * 60 * 20) {
