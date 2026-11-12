@@ -78,7 +78,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            const shouldUseLegalSearch = Boolean(options.legalResearch && focusedResearchContext && !accumulatedText);
+            const shouldUseLegalSearch = Boolean(key !== 'openrouter' && options.legalResearch && focusedResearchContext && !accumulatedText);
             const requestConfig: any = {
               systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
               temperature: 0.15,
@@ -230,7 +230,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const shouldUseLegalSearch = Boolean(options.legalResearch && focusedResearchContext && !accumulatedText);
+        const shouldUseLegalSearch = Boolean(key !== 'openrouter' && options.legalResearch && focusedResearchContext && !accumulatedText);
         const requestConfig: any = {
           systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
           temperature: 0.15,
