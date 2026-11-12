@@ -137,10 +137,8 @@ export default async function handler(req: any, res: any) {
             const imageOperators = new Set([
               pdfjs.OPS.paintImageXObject,
               pdfjs.OPS.paintInlineImageXObject,
-              pdfjs.OPS.paintImageMaskXObject,
-              pdfjs.OPS.paintImageMaskXObjectGroup,
               pdfjs.OPS.paintJpegXObject,
-              pdfjs.OPS.paintSolidColorImageMask,
+              pdfjs.OPS.paintImageXObjectRepeat,
             ].filter((value: any) => typeof value === 'number'));
             if ((operatorList.fnArray || []).some((fn: number) => imageOperators.has(fn))) {
               hasEmbeddedImages = true;
