@@ -124,6 +124,7 @@ export default async function handler(req: any, res: any) {
     // same dedicated image-OCR key/model rotation used for ordinary photographs.
     if (lowerMime === 'application/pdf' || lowerName.endsWith('.pdf')) {
       let pdfDocument: any = null;
+      let pageImageOcrStarted = false;
       try {
         const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
         const pdfBytes = Buffer.from(compactBase64, 'base64');
@@ -207,6 +208,7 @@ export default async function handler(req: any, res: any) {
             );
           }
           const pagePrompt = `${ocrPrompt}\n\nهذا ملف PDF متعدد الصفحات حُولت صفحاته المصورة إلى صور مستقلة. أخرج نتيجة كل صورة في كتلة مستقلة بهذا الشكل الحرفي: [صفحة 3] مع استبدال الرقم 3 برقم الصفحة الفعلي، ثم النص المستخرج منها. لا تدمج صفحتين في كتلة واحدة، ولا تسقط صفحة، وحافظ على ترتيب أرقام الصفحات.`;
+          pageImageOcrStarted = true;
           const visualText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
             const response = await ai.models.generateContent({
               skipAdaptiveAnswerLength: true,
@@ -246,7 +248,8 @@ export default async function handler(req: any, res: any) {
           return res.json({ text: combinedPdfText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
         }
       } catch (pdfPageError: any) {
-        console.warn('Page-by-page PDF OCR could not complete; falling back to the original PDF OCR path:', pdfPageError?.message || pdfPageError);
+        if (pageImageOcrStarted) throw pdfPageError;
+        console.warn('PDF page rendering could not complete; falling back to the original PDF OCR path:', pdfPageError?.message || pdfPageError);
       } finally {
         try { await pdfDocument?.destroy?.(); } catch {}
       }
