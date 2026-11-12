@@ -117,6 +117,7 @@ export default async function handler(req: any, res: any) {
         }).promise;
         const pageTexts: string[] = [];
         let hasTextOnEveryPage = true;
+        let hasEmbeddedImages = false;
         for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
           const page = await pdf.getPage(pageNumber);
           const content = await page.getTextContent();
@@ -124,13 +125,34 @@ export default async function handler(req: any, res: any) {
             .map((item: any) => typeof item?.str === 'string' ? item.str : '')
             .filter(Boolean)
             .join(' ')
-            .replace(/[\t ]+/g, ' ')
+            .replace(/[\\t ]+/g, ' ')
             .trim();
           if (!pageText) hasTextOnEveryPage = false;
           pageTexts.push(pageText);
+
+          // Mixed pages can contain selectable text and scanned images together.
+          // Detect image-paint operators before allowing the text-only fast path.
+          try {
+            const operatorList = await page.getOperatorList();
+            const imageOperators = new Set([
+              pdfjs.OPS.paintImageXObject,
+              pdfjs.OPS.paintInlineImageXObject,
+              pdfjs.OPS.paintImageMaskXObject,
+              pdfjs.OPS.paintImageMaskXObjectGroup,
+              pdfjs.OPS.paintJpegXObject,
+              pdfjs.OPS.paintSolidColorImageMask,
+            ].filter((value: any) => typeof value === 'number'));
+            if ((operatorList.fnArray || []).some((fn: number) => imageOperators.has(fn))) {
+              hasEmbeddedImages = true;
+            }
+          } catch (operatorError: any) {
+            // Uncertain inspection must fall back to visual OCR, never skip image text.
+            hasEmbeddedImages = true;
+            console.warn('Could not inspect PDF image operators; using visual OCR:', operatorError?.message || operatorError);
+          }
         }
-        const selectableText = pageTexts.filter(Boolean).join('\n\n').trim();
-        if (hasTextOnEveryPage && selectableText.length > 30) {
+        const selectableText = pageTexts.filter(Boolean).join('\\n\\n').trim();
+        if (!hasEmbeddedImages && hasTextOnEveryPage && selectableText.length > 30) {
           const usage = await consumeOperation(req, 'ocr');
           return res.json({
             text: selectableText,
