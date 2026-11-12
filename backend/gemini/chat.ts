@@ -74,14 +74,24 @@ export default async function handler(req: any, res: any) {
 
     const latestUserMessage = lastMessage.content.trim();
 
-    // اكتشاف طلب تعديل النتيجة
+    // لا نعدّل النتيجة الأصلية إلا إذا سمّى المستخدم وجهتها صراحةً.
+    // أي تعديل غير محدد الوجهة يظل داخل المحادثة، ولا يغيّر المستند.
     const normalizedMessage = latestUserMessage
       .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/[إأآ]/g, 'ا')
       .trim();
 
+    const hasEditIntent =
+      /(?:^|\s)(?:عدل|عدلي|تعديل|تعديلات|تعدل|تعدلي|اعدل|غير|غيرلي|تغيير|بدل|بدلي|احذف|تحذف|امسح|تمسح|شيل|تشيل|اضف|اضافة|ضيف|تضيف|زود|تزود|استبدل|استبدال|صحح|تصحح|اعد صياغة|اعادة صياغة)(?=\s|$|[،,.!?؟:؛])/i.test(normalizedMessage);
+
+    const explicitlyTargetsResult =
+      /(?:النتيجة(?:\s+(?:الاصلية|الاساسية|المعروضة|الحالية))?|مربع\s+النتيجة|المستند\s+(?:الاصلي|الاساسي)|المذكرة\s+(?:الاصلية|المعروضة)|النص\s+الموجود\s+في\s+النتيجة)/i.test(normalizedMessage);
+
+    const explicitlyTargetsChat =
+      /(?:في|داخل|على)\s+(?:الشات|المحادثة|رسالة\s+الشات)|(?:الشات|المحادثة)\s+(?:فقط|نفسه)/i.test(normalizedMessage);
+
     const isDocumentEditIntent =
-      /^(?:(?:من فضلك|لو سمحت|عايزك|عايز|عاوز|ممكن|ياريت)\s+)*(?:عدل|عدلي|تعديل|تعديلات|تعدل|تعدلي|اعدل|أعدل|غير|غيرلي|تغير|تغيير|بدل|بدلي|تبدل|احذف|تحذف|امسح|تمسح|شيل|تشيل|اضف|أضف|إضافة|ضيف|تضيف|زود|تزود|استبدل|استبدال|صحح|تصحح)(?=\s|$|[،,.!?؟:؛])/i.test(normalizedMessage) &&
-      !/(?:اشرح|وضح|اعرض|وريني|اكتبلي في الشات|هاتلي في الشات)/i.test(normalizedMessage);
+      hasEditIntent && explicitlyTargetsResult && !explicitlyTargetsChat;
 
     let answer = '';
     let updatedResult: string | null = null;
