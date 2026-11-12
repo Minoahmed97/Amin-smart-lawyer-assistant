@@ -453,6 +453,10 @@ async function extractTextFromPdfPageByPage(
       }
     }
 
+    if (imagePages.length > 100) {
+      throw new Error('ملف PDF يحتوي على أكثر من 100 صفحة مصوّرة. قسّمه إلى أجزاء أصغر للحفاظ على إرسال جميع الصور في مهمة واحدة.');
+    }
+
     if (!imagePages.length) {
       const text = textPages.sort((a, b) => a.pageNumber - b.pageNumber).map((page) => page.text).join('\n\n').trim();
       if (!text) throw new Error(`تعذر استخراج نص من ملف PDF "${file.name}".`);
