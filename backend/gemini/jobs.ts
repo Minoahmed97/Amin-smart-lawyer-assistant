@@ -23,7 +23,7 @@ const JOB_TABLE = 'app_ai_generation_jobs';
 const PUSH_TABLE = 'app_push_subscriptions';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
-const JOB_STALE_TIMEOUT_MS = 4 * 60 * 1000 + 10 * 1000;
+const JOB_STALE_TIMEOUT_MS = 5 * 60 * 1000 + 20 * 1000;
 const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة الملف.';
 
 function safeDiagnosticMessage(value: unknown) {
