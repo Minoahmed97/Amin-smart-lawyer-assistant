@@ -441,12 +441,14 @@ export async function runSavedOcrBatchTask(
   fileName: string,
   storageScope: string,
   userId?: string,
+  requestedJobId?: string,
+  lifecycle?: SavedOcrTaskLifecycle,
 ): Promise<{ text: string; jobId: string }> {
-  const jobId = makeJobId();
+  const jobId = requestedJobId || makeJobId();
   const text = await requestSavedJob(
     'ocr',
     { images: JSON.stringify(images), pageTexts: JSON.stringify(pageTexts), mimeType: 'application/pdf', fileName, recoveryScope: sanitizeStoragePart(storageScope) },
-    undefined, userId, undefined, storageScope, { fileName, mimeType: 'application/pdf' }, jobId,
+    undefined, userId, undefined, storageScope, { fileName, mimeType: 'application/pdf' }, jobId, lifecycle,
   );
   return { text, jobId };
 }

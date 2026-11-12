@@ -1,7 +1,15 @@
 import mammoth from 'mammoth';
 import { getSessionToken } from '../services/authService.ts';
-import { runSavedOcrTask, runSavedOcrBatchTask } from '../services/aiService.ts';
+import { runSavedOcrTask, runSavedOcrBatchTask, type SavedOcrTaskLifecycle } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from './legalVaultService.ts';
+
+export interface ExtractTextOptions {
+  userId?: string;
+  jobId?: string;
+  signal?: AbortSignal;
+  onStage?: (stage: 'preparing' | 'processing') => void | Promise<void>;
+  onJobStatus?: SavedOcrTaskLifecycle['onStatus'];
+}
 
 export interface ExtractedFileResult {
   fileName: string;
@@ -308,6 +316,7 @@ async function runQueuedOcrTask(
   mimeType: string,
   fileName: string,
   recoveryScope: string,
+  options: ExtractTextOptions = {},
 ): Promise<{ text: string; jobId: string }> {
   let releaseQueue!: () => void;
   const previous = ocrUploadQueue;
@@ -317,12 +326,16 @@ async function runQueuedOcrTask(
     const minimumGapMs = 5000;
     const waitMs = Math.max(0, minimumGapMs - (Date.now() - lastOcrUploadFinishedAt));
     if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
+    await options.onStage?.('processing');
     return await runSavedOcrTask(
       base64Data,
       mimeType,
       fileName,
       recoveryScope,
-      getActiveLawyerUserId(),
+      options.userId || getActiveLawyerUserId(),
+      options.jobId,
+      { onStatus: options.onJobStatus, signal: options.signal },
     );
   } finally {
     lastOcrUploadFinishedAt = Date.now();
@@ -335,6 +348,7 @@ async function runQueuedOcrBatchTask(
   pageTexts: Array<{ pageNumber: number; text: string }>,
   fileName: string,
   recoveryScope: string,
+  options: ExtractTextOptions = {},
 ): Promise<{ text: string; jobId: string }> {
   let releaseQueue!: () => void;
   const previous = ocrUploadQueue;
@@ -344,7 +358,13 @@ async function runQueuedOcrBatchTask(
     const minimumGapMs = 5000;
     const waitMs = Math.max(0, minimumGapMs - (Date.now() - lastOcrUploadFinishedAt));
     if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
-    return await runSavedOcrBatchTask(images, pageTexts, fileName, recoveryScope, getActiveLawyerUserId());
+    if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
+    await options.onStage?.('processing');
+    return await runSavedOcrBatchTask(
+      images, pageTexts, fileName, recoveryScope,
+      options.userId || getActiveLawyerUserId(), options.jobId,
+      { onStatus: options.onJobStatus, signal: options.signal },
+    );
   } finally {
     lastOcrUploadFinishedAt = Date.now();
     releaseQueue();
@@ -354,6 +374,7 @@ async function runQueuedOcrBatchTask(
 async function extractTextFromPdfPageByPage(
   file: File,
   recoveryScope: string,
+  options: ExtractTextOptions = {},
 ): Promise<{ text: string; lastJobId?: string }> {
   const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const workerUrlModule: any = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
@@ -445,16 +466,18 @@ async function extractTextFromPdfPageByPage(
       throw new Error('حجم صور صفحات PDF بعد الضغط أكبر من الحد الآمن لطلب واحد. قسّم الملف إلى أجزاء أصغر ثم أعد المحاولة.');
     }
     // One durable OCR job carries every scanned page and emits one completion push.
-    const task = await runQueuedOcrBatchTask(imagePages, textPages, file.name, recoveryScope);
+    const task = await runQueuedOcrBatchTask(imagePages, textPages, file.name, recoveryScope, options);
     return { text: task.text, lastJobId: task.jobId };
   } finally {
     await pdfDocument.destroy?.();
   }
 }
 
-export async function extractTextFromAnyFile(file: File, recoveryScope = 'general'): Promise<ExtractedFileResult> {
+export async function extractTextFromAnyFile(file: File, recoveryScope = 'general', options: ExtractTextOptions = {}): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
+  await options.onStage?.('preparing');
+  if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
   let extractedText = '';
   let backgroundJobId: string | undefined;
 
@@ -488,7 +511,7 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
   }
   // 4. PDF: extract selectable text locally and OCR only pages containing images.
   else if (lowerName.endsWith('.pdf')) {
-    const pdfResult = await extractTextFromPdfPageByPage(file, recoveryScope);
+    const pdfResult = await extractTextFromPdfPageByPage(file, recoveryScope, options);
     extractedText = pdfResult.text;
     backgroundJobId = pdfResult.lastJobId;
   }
@@ -507,6 +530,7 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
       compressed.mimeType,
       fileName,
       recoveryScope,
+      options,
     );
     extractedText = savedTask.text;
     backgroundJobId = savedTask.jobId;
