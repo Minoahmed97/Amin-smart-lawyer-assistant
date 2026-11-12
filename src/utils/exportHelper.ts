@@ -101,10 +101,24 @@ function replaceDocxBodyXml(documentXml: string, content: string): string {
       break;
     }
   }
-  const createParagraph = (source: Element, rawLine: string) => {
+  const createParagraph = (source: Element, rawLine: string, isFirstContentLine = false) => {
     const p = xmlDoc.createElementNS(ns, 'w:p');
     const pPr = Array.from(source.children).find((el) => el.localName === 'pPr');
     if (pPr) p.appendChild(pPr.cloneNode(true));
+    if (isFirstContentLine) {
+      let paragraphProperties = p.getElementsByTagNameNS(ns, 'pPr')[0];
+      if (!paragraphProperties) {
+        paragraphProperties = xmlDoc.createElementNS(ns, 'w:pPr');
+        p.insertBefore(paragraphProperties, p.firstChild);
+      }
+      let spacing = paragraphProperties.getElementsByTagNameNS(ns, 'spacing')[0];
+      if (!spacing) {
+        spacing = xmlDoc.createElementNS(ns, 'w:spacing');
+        paragraphProperties.appendChild(spacing);
+      }
+      spacing.setAttributeNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:before', '0');
+      spacing.setAttributeNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:beforeLines', '0');
+    }
     const sourceRun = Array.from(source.getElementsByTagNameNS(ns, 'r')).find((r) => r.getElementsByTagNameNS(ns, 't').length > 0);
     const run = xmlDoc.createElementNS(ns, 'w:r');
     const rPr = sourceRun ? Array.from(sourceRun.children).find((el) => el.localName === 'rPr') : null;
@@ -119,7 +133,7 @@ function replaceDocxBodyXml(documentXml: string, content: string): string {
   const anchor = contentParagraphs[0];
   const parent = anchor.parentNode;
   if (!parent) throw new Error('تعذر تحديد موضع متن المستند في القالب.');
-  const newParagraphs = lines.map((line) => createParagraph((/^(الموضوع|مذكرة|الوقائع|الدفاع|الدفوع|أولاً|ثانياً|ثالثاً|رابعاً|الطلبات|بناءً عليه|لذلك|أسباب الطعن|أمام محكمة)/.test(line.trim()) ? headingSource : bodySource), line));
+  const newParagraphs = lines.map((line, index) => createParagraph((/^(الموضوع|مذكرة|الوقائع|الدفاع|الدفوع|أولاً|ثانياً|ثالثاً|رابعاً|الطلبات|بناءً عليه|لذلك|أسباب الطعن|أمام محكمة)/.test(line.trim()) ? headingSource : bodySource), line, index === 0));
   // Replace only the detected main-body paragraph range; don't clear w:body or rebuild the document.
   const last = contentParagraphs[contentParagraphs.length - 1];
   const next = last.nextSibling;
