@@ -214,7 +214,7 @@ function safePayload(input: any, taskType: string) {
       try { pageTexts = JSON.parse(payload.pageTexts || '[]'); } catch {
         const error: any = new Error('النصوص القابلة للتحديد في PDF غير صالحة.'); error.statusCode = 400; throw error;
       }
-      if (!Array.isArray(pageTexts) || pageTexts.length > 100) {
+      if (!Array.isArray(pageTexts)) {
         const error: any = new Error('قائمة صفحات النص في PDF غير صالحة.'); error.statusCode = 400; throw error;
       }
       for (const page of pageTexts) {
