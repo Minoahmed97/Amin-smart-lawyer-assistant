@@ -21,8 +21,11 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ error: 'يرجى تقديم نص المسودة المراد تدقيقها.' });
     }
 
-    rateLimit(req, 'gemini-refine', 8, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
+    const { session } = await enforceAiCooldown(req);
+    rateLimit(req, 'gemini-refine', 8, 10 * 60 * 1000, {
+      identity: session.userId,
+      allowConfiguredAiExemption: true,
+    });
 
     limitBodyString(draftText, 200000, 'المسودة');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
