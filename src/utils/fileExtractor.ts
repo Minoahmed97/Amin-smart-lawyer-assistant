@@ -361,11 +361,11 @@ async function extractTextFromPdfPageByPage(
         const pageText = (textContent.items || [])
           .map((item: any) => {
             if (typeof item?.str !== 'string' || !item.str) return '';
-            return item.str + (item.hasEOL ? '\\n' : ' ');
+            return item.str + (item.hasEOL ? '\n' : ' ');
           })
           .join('')
-          .replace(/[\\t ]+/g, ' ')
-          .replace(/ *\\n */g, '\\n')
+          .replace(/[\t ]+/g, ' ')
+          .replace(/ *\n */g, '\n')
           .trim();
 
         let containsImage = false;
@@ -413,7 +413,7 @@ async function extractTextFromPdfPageByPage(
 
         const pageFile = new File(
           [blob],
-          `${file.name.replace(/\\.pdf$/i, '')}-page-${pageNumber}.jpg`,
+          `${file.name.replace(/\.pdf$/i, '')}-page-${pageNumber}.jpg`,
           { type: 'image/jpeg' },
         );
         const compressed = await compressAndResizeImage(pageFile, 1800, 0.82);
@@ -429,7 +429,7 @@ async function extractTextFromPdfPageByPage(
         page.cleanup?.();
       }
     }
-    const text = pageResults.map((value) => value.trim()).join('\\n\\n').trim();
+    const text = pageResults.map((value) => value.trim()).join('\n\n').trim();
     if (!text) throw new Error(`تعذر استخراج نص من ملف PDF "${file.name}".`);
     return { text, lastJobId };
   } finally {
