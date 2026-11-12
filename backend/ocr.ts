@@ -103,6 +103,47 @@ export default async function handler(req: any, res: any) {
       throw new Error(`تعذر استخراج نص ملف وورد (${fileName || 'المحدد'}).`);
     }
 
+    // 2. Extract selectable text from text-based PDFs locally on the server.
+    // Scanned or mixed PDFs continue through the existing Gemini/Groq OCR path below.
+    const isPdf = lowerMime === 'application/pdf' || lowerName.endsWith('.pdf');
+    if (isPdf) {
+      try {
+        const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
+        const pdfBytes = Buffer.from(compactBase64, 'base64');
+        const pdf = await pdfjs.getDocument({
+          data: new Uint8Array(pdfBytes),
+          useSystemFonts: true,
+          isEvalSupported: false,
+        }).promise;
+        const pageTexts: string[] = [];
+        let hasTextOnEveryPage = true;
+        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+          const page = await pdf.getPage(pageNumber);
+          const content = await page.getTextContent();
+          const pageText = (content.items || [])
+            .map((item: any) => typeof item?.str === 'string' ? item.str : '')
+            .filter(Boolean)
+            .join(' ')
+            .replace(/[\\t ]+/g, ' ')
+            .trim();
+          if (!pageText) hasTextOnEveryPage = false;
+          pageTexts.push(pageText);
+        }
+        const selectableText = pageTexts.filter(Boolean).join('\\n\\n').trim();
+        if (hasTextOnEveryPage && selectableText.length > 30) {
+          const usage = await consumeOperation(req, 'ocr');
+          return res.json({
+            text: selectableText,
+            remainingCredits: usage.remainingCredits,
+            trialRemaining: usage.trialRemaining,
+          });
+        }
+      } catch (pdfTextError: any) {
+        // A parser/version/password issue must not disable OCR for this PDF.
+        console.warn('Selectable PDF text extraction unavailable; falling back to existing OCR:', pdfTextError?.message || pdfTextError);
+      }
+    }
+
     // 2. الصور تستخدم Gemini مباشرةً، بينما تحتفظ ملفات بي دي إف بمسار المزوّدين وتدوير المفاتيح الحالي.
     // The client compresses images to JPEG even when the original filename is
     // .png or .webp, so prefer the MIME type describing the uploaded bytes.
