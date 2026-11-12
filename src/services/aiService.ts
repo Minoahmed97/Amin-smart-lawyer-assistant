@@ -304,8 +304,7 @@ async function requestSavedJob<T extends Record<string, any>>(
   const startedAt = Date.now();
   const NO_PROGRESS_TIMEOUT_MS = type === 'ocr' ? 5 * 60 * 1000 + 10 * 1000 : 4 * 60 * 1000 + 30 * 1000;
   let lastProgressAt = Date.now();
-  let lastWorkerHeartbeatAt = Date.now();
-  let lastUpdatedAt = '';
+  let lastObservedStatus = '';
   while (Date.now() - startedAt < 1000 * 60 * 20) {
     await cancelIfAborted();
     try {
@@ -338,12 +337,12 @@ async function requestSavedJob<T extends Record<string, any>>(
         }
       }
       const currentText = String(data?.partialResult || data?.result || '');
-      const updatedAt = String(data?.updatedAt || '');
-      // Keep worker liveness separate from actual generated/extracted content.
-      // The backend heartbeat refreshes updatedAt; it must not masquerade as text progress.
-      if (updatedAt && updatedAt !== lastUpdatedAt) {
-        lastWorkerHeartbeatAt = Date.now();
-        lastUpdatedAt = updatedAt;
+      const currentJobStatus = String(data?.status || '');
+      // A real state transition or newly persisted text is progress. The backend
+      // heartbeat only refreshes updatedAt and must not keep a stalled OCR job alive.
+      if (currentJobStatus && currentJobStatus !== lastObservedStatus) {
+        lastProgressAt = Date.now();
+        lastObservedStatus = currentJobStatus;
       }
       if (currentText.length > lastText.length) {
         lastProgressAt = Date.now();
@@ -371,9 +370,7 @@ async function requestSavedJob<T extends Record<string, any>>(
         else clearJobReference();
         throw failure;
       }
-      const noProgressForTooLong = type === 'ocr'
-        ? Date.now() - lastWorkerHeartbeatAt >= NO_PROGRESS_TIMEOUT_MS
-        : Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS;
+      const noProgressForTooLong = Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS;
       if (noProgressForTooLong) {
         const failure: any = new Error('لم يصل أي تحديث للمهمة خلال 4 دقائق ونصف. توقفت متابعة الانتظار، واحتُفظ بمعرّفها لمحاولة استعادة حالتها دون بدء توليد جديد.');
         failure.noProgressTimeout = true;
