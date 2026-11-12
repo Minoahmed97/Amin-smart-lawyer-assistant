@@ -351,6 +351,7 @@ async function extractTextFromPdfPageByPage(
     pdfjs.OPS.paintJpegXObject,
     pdfjs.OPS.paintImageXObjectRepeat,
   ].filter((value: any) => typeof value === 'number'));
+  const imageMaskOperator = pdfjs.OPS.paintImageMaskXObject;
 
   try {
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
@@ -370,7 +371,17 @@ async function extractTextFromPdfPageByPage(
         let containsImage = false;
         try {
           const operatorList = await page.getOperatorList();
-          containsImage = (operatorList.fnArray || []).some((operator: number) => imageOperators.has(operator));
+          containsImage = (operatorList.fnArray || []).some((operator: number, index: number) => {
+            if (imageOperators.has(operator)) return true;
+            if (typeof imageMaskOperator !== 'number' || operator !== imageMaskOperator) return false;
+            // Ignore tiny glyph masks used by some PDF fonts, but detect sizeable
+            // monochrome scans that PDF.js represents as image-mask operators.
+            const args = operatorList.argsArray?.[index];
+            const image = Array.isArray(args) ? args[0] : args;
+            const width = Number(image?.width || image?.bitmap?.width || 0);
+            const height = Number(image?.height || image?.bitmap?.height || 0);
+            return width >= 64 && height >= 64 && width * height >= 10000;
+          });
         } catch (error: any) {
           containsImage = true;
           console.warn(`تعذر فحص الصور داخل صفحة PDF رقم ${pageNumber}:`, error?.message || error);
