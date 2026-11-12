@@ -124,12 +124,12 @@ export default async function handler(req: any, res: any) {
             .map((item: any) => typeof item?.str === 'string' ? item.str : '')
             .filter(Boolean)
             .join(' ')
-            .replace(/[\\t ]+/g, ' ')
+            .replace(/[\t ]+/g, ' ')
             .trim();
           if (!pageText) hasTextOnEveryPage = false;
           pageTexts.push(pageText);
         }
-        const selectableText = pageTexts.filter(Boolean).join('\\n\\n').trim();
+        const selectableText = pageTexts.filter(Boolean).join('\n\n').trim();
         if (hasTextOnEveryPage && selectableText.length > 30) {
           const usage = await consumeOperation(req, 'ocr');
           return res.json({
