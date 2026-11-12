@@ -126,39 +126,16 @@ export default async function handler(req: any, res: any) {
       let pdfDocument: any = null;
       try {
         const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
-        const canvasModule: any = await import('@napi-rs/canvas');
-        const createCanvas = canvasModule.createCanvas || canvasModule.default?.createCanvas;
-        if (typeof createCanvas !== 'function') throw new Error('تعذر تهيئة محرك تحويل صفحات PDF إلى صور.');
-
-        const canvasFactory = {
-          create(width: number, height: number) {
-            const canvas = createCanvas(Math.ceil(width), Math.ceil(height));
-            return { canvas, context: canvas.getContext('2d') };
-          },
-          reset(pair: any, width: number, height: number) {
-            pair.canvas.width = Math.ceil(width);
-            pair.canvas.height = Math.ceil(height);
-            pair.context = pair.canvas.getContext('2d');
-          },
-          destroy(pair: any) {
-            if (pair?.canvas) {
-              pair.canvas.width = 0;
-              pair.canvas.height = 0;
-            }
-            if (pair) {
-              pair.canvas = null;
-              pair.context = null;
-            }
-          },
-        };
-
         const pdfBytes = Buffer.from(compactBase64, 'base64');
         pdfDocument = await pdfjs.getDocument({
           data: new Uint8Array(pdfBytes),
           useSystemFonts: true,
           isEvalSupported: false,
-          canvasFactory,
         }).promise;
+        const canvasFactory = pdfDocument.canvasFactory;
+        if (!canvasFactory || typeof canvasFactory.create !== 'function') {
+          throw new Error('محرك تحويل صفحات PDF إلى صور غير متاح على الخادم.');
+        }
 
         const pageTexts: string[] = new Array(pdfDocument.numPages).fill('');
         const imagePages: Array<{ pageNumber: number; base64: string }> = [];
@@ -200,7 +177,6 @@ export default async function handler(req: any, res: any) {
               pair.context.fillStyle = '#FFFFFF';
               pair.context.fillRect(0, 0, viewport.width, viewport.height);
               await page.render({
-                canvas: pair.canvas,
                 canvasContext: pair.context,
                 viewport,
                 canvasFactory,
