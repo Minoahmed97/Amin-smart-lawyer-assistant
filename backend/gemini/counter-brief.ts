@@ -41,119 +41,17 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
 
-  // Search is deliberately separate from drafting: send only a compact case brief,
-  // never the full drafting prompt, lawyer vault, template, or generated document.
-  let groundedResearchContext = '';
+  // Legal research is part of the initial drafting request. If Google Search
+  // fails before any draft text is produced, retry the same generation without
+  // the search tool so research availability can never block the legal draft.
   const focusedResearchContext = typeof options.researchContext === 'string'
     ? options.researchContext.trim()
     : '';
-  if (options.legalResearch && focusedResearchContext) {
-    const researchDeadlineAt = Math.min(deadlineAt - 60_000, Date.now() + 25_000);
-    const researchPrompt = `مهمتك الآن هي البحث القانوني فقط، وليست صياغة مذكرة أو مستند. لا تعِد كتابة الوقائع ولا تبحث في المستند كله باعتباره كتلة واحدة.
+  const generationPrompt = options.legalResearch && focusedResearchContext
+    ? `${prompt}\n\n[بحث قانوني مدمج في طلب الصياغة — استخدم Google Search عند الحاجة]\nاستخرج من السياق التالي المسائل القانونية المحددة ذات الصلة بالقضية، وابحث عنها أثناء إعداد المستند. اعتمد على المصادر التي تظهر فعلياً في نتائج البحث فقط، واذكر بيانات المصدر والرابط فقط إذا أعادها البحث فعلاً. إذا لم تتوفر نتائج بحث موثقة، أكمل الصياغة من الأوراق المتاحة دون اختلاق مواد أو أحكام أو أرقام طعون أو روابط أو مصادر.\n${focusedResearchContext}`
+    : prompt;
 
-استخرج من الوقائع والدفوع والطلبات أدناه من 2 إلى 5 مسائل قانونية محددة وقابلة للتحقق. حوّل كل مسألة إلى سؤال بحث واضح، ثم نفّذ Google Search باستعلام مستقل ودقيق لكل سؤال. لا تكتفِ بعبارات عامة مثل "القانون المصري" أو "أحكام محكمة النقض"؛ يجب أن يتضمن كل استعلام المبدأ أو الإجراء أو العنصر القانوني المحدد، مع اسم القانون أو جهة القضاء المختصة متى أمكن.
-
-نطاق البحث: القانون المصري وحده، وبحسب جهة القضاء ونوع النزاع المذكورين في السياق. ابحث عن النص القانوني أو القاعدة أو المبدأ الذي يحسم المسألة المحددة، لا عن معلومات عامة لا ترتبط بها مباشرة.
-
-ترتيب مصادر البحث:
-1) النصوص التشريعية من مصدر حكومي/رسمي أو نسخة منشورة رسمياً.
-2) الأحكام والمبادئ من الموقع الرسمي للمحكمة أو الجهة القضائية المختصة، مثل محكمة النقض أو المحكمة الدستورية العليا أو مجلس الدولة/المحكمة الإدارية العليا، بحسب الاختصاص الفعلي.
-3) لا تلجأ إلى المواقع القانونية غير الرسمية إلا عند تعذر المصدر الأولي، وميّزها بوضوح كمصادر ثانوية ولا تعاملها كأنها مصدر رسمي.
-
-قواعد إلزامية:
-- ابحث فقط في المسائل التي يمكن استخلاصها من الوقائع والدفوع والطلبات الواردة أدناه.
-- لا تبحث عن أسماء الخصوم أو أرقام القضايا أو بياناتهم الشخصية.
-- لا تستخدم القوالب أو البصمة الأسلوبية أو خزانة المحامي؛ فهي ليست موضوعاً للبحث القانوني.
-- لا تنقل نص الوقائع كاملاً إلى استعلام البحث؛ اختصره إلى المصطلحات القانونية اللازمة لكل مسألة.
-- لا تعرض نتيجة لمجرد أنها تتناول القانون المصري عموماً؛ يجب بيان صلتها المباشرة بمسألة البحث.
-- لكل نتيجة، اذكر المسألة التي تجيب عنها، والقاعدة/النص أو المبدأ الذي يظهر في المصدر، واسم الجهة، وعنوان المصدر، والرابط، والتاريخ أو رقم الحكم/المادة فقط إذا كان ظاهراً فعلاً.
-- أعد بحد أقصى 6 مصادر، مرتبة من الأكثر اتصالاً بالمسائل إلى الأقل. إذا لم تجد مصدراً أولياً مناسباً، فقل ذلك صراحة ولا تستبدله بمصدر غير موثوق.
-- لا تختلق مادة قانونية أو حكماً أو رقم طعن أو تاريخاً أو رابطاً أو اقتباساً.
-
-سياق البحث القانوني المختصر:
-${focusedResearchContext}
-
-ابدأ باستخراج أسئلة البحث المحددة، ثم نفّذ البحث الفعلي عنها، وأظهر الاستعلامات التي استخدمتها والنتائج ذات الصلة فقط.`;
-    try {
-      const research = await executeWithKeyRotation(async (ai, key, model) => {
-        if (key === 'openrouter') throw Object.assign(new Error('Google Search متاح عبر Gemini فقط.'), { status: 502, statusCode: 502 });
-        let keyHash = 2166136261;
-        for (let i = 0; i < key.length; i++) {
-          keyHash = Math.imul(keyHash ^ key.charCodeAt(i), 16777619);
-        }
-        const keyTag = (keyHash >>> 0).toString(16).padStart(8, '0');
-        console.info('[counter-brief] Gemini legal search attempt', { model, keyTag });
-        let response: any;
-        try {
-          response = await ai.models.generateContent({
-            model, contents: researchPrompt,
-            config: {
-              systemInstruction: 'أنت باحث قانوني مصري. حدّد مسائل البحث من الوقائع والدفوع والطلبات، ثم استخدم Google Search للعثور على مصادر مصرية موثوقة ومتصلة مباشرة بهذه المسائل. لا تصغ مستنداً ولا تخترع مصدراً أو حكماً أو نصاً.',
-              temperature: 0.1,
-              maxOutputTokens: 6000,
-              tools: [{ googleSearch: {} }],
-            },
-          });
-        } catch (attemptError: any) {
-          const status = Number(attemptError?.status || attemptError?.statusCode || attemptError?.response?.status) || null;
-          const code = attemptError?.code || attemptError?.error?.status || attemptError?.error?.code || null;
-          let message = String(attemptError?.message || attemptError?.error?.message || 'Unknown Gemini search error').slice(0, 300);
-          if (key) message = message.split(key).join('[REDACTED]');
-          console.warn('[counter-brief] Gemini legal search attempt failed', {
-            model,
-            keyTag,
-            status,
-            code,
-            message,
-          });
-          throw attemptError;
-        }
-        const metadata = response?.candidates?.[0]?.groundingMetadata;
-        const queries = Array.isArray(metadata?.webSearchQueries)
-          ? metadata.webSearchQueries.filter((v: any) => typeof v === 'string' && v.trim())
-          : [];
-        const sources = (Array.isArray(metadata?.groundingChunks) ? metadata.groundingChunks : [])
-          .map((chunk: any) => chunk?.web)
-          .filter((web: any) => typeof web?.uri === 'string' && /^https?:\/\//i.test(web.uri))
-          .map((web: any) => ({
-            title: typeof web.title === 'string' && web.title.trim() ? web.title.trim() : web.uri,
-            uri: web.uri,
-          }));
-        const uniqueSources = Array.from(new Map(sources.map((source: any) => [source.uri, source])).values());
-        const researchText = typeof response?.text === 'string' ? response.text.trim() : '';
-        if (!queries.length || !uniqueSources.length || !researchText) {
-          const noGrounding: any = new Error('لم يُرجع بحث Gemini استعلامات بحث فعلية ومصادر ويب موثقة مرتبطة بالمسألة.');
-          noGrounding.status = 502;
-          noGrounding.statusCode = 502;
-          throw noGrounding;
-        }
-        console.info('[counter-brief] Gemini legal search result', {
-          model,
-          queries,
-          sourceCount: uniqueSources.length,
-          sources: uniqueSources,
-          hasGroundingData: true,
-        });
-        return { text: researchText, sources: uniqueSources, queries };
-      }, ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'], undefined, true, {
-        deadlineAt: researchDeadlineAt, providerAttempt: 'gemini-primary',
-      });
-      groundedResearchContext = `\n\n[نتيجة بحث قانوني موثقة عبر Google Search]\nالمسائل/الاستعلامات التي بحث عنها Gemini:\n${research.queries.map((query: string) => `- ${query}`).join('\n')}\nنتائج البحث ذات الصلة:\n${research.text.slice(0, 12000)}\nالمصادر التي أعادها البحث:\n${research.sources.map((source: any) => `- ${source.title}: ${source.uri}`).join('\n')}\n`;
-    } catch (searchError: any) {
-      console.warn('[counter-brief] Gemini legal search unavailable; continuing drafting without search', {
-        error: searchError instanceof Error ? searchError.message : String(searchError),
-      });
-    }
-  } else if (options.legalResearch) {
-    console.warn('[counter-brief] Gemini legal search skipped: focused research context is missing; continuing drafting without search');
-  }
-
-  const researchInstruction = options.legalResearch
-    ? groundedResearchContext
-      ? `\n${groundedResearchContext}\nلا تنسب أي قاعدة أو حكم أو مادة إلى هذه المصادر إلا إذا كان ذلك ظاهراً في نتيجة البحث. البحث لا يبرر إضافة وقائع أو طلبات جديدة.\n`
-      : '\n[تعذر الحصول على مصادر بحث قانوني موثقة في هذه المحاولة] أكمل الصياغة فوراً من واقع المستندات والبيانات المتاحة، ولا تختلق مواد أو أحكاماً أو أرقام طعون أو روابط أو مصادر. نبّه باقتضاب إلى أن التحقق من المصادر الحديثة لم يكتمل إذا كان ذلك مؤثراً.\n'
-    : '';
-  const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
+  const optimizedPrompt = `${generationPrompt} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   const makeContinuationPrompt = () => accumulatedText
     ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
@@ -180,15 +78,18 @@ ${focusedResearchContext}
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
-            const stream = await ai.models.generateContentStream({
+            const shouldUseLegalSearch = Boolean(options.legalResearch && focusedResearchContext && !accumulatedText);
+            const requestConfig: any = {
+              systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+              temperature: 0.15,
+              maxOutputTokens: 32768,
+              thinkingConfig: { thinkingLevel: 'low' },
+            };
+            if (shouldUseLegalSearch) requestConfig.tools = [{ googleSearch: {} }];
+            const streamWithConfig = (config: any) => ai.models.generateContentStream({
               model,
               contents: segmentPrompt,
-              config: {
-                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-                temperature: 0.15,
-                maxOutputTokens: 32768,
-                thinkingConfig: { thinkingLevel: 'low' },
-              },
+              config,
             });
 
             const forwardStream = async function* (activeStream: any) {
@@ -216,7 +117,21 @@ ${focusedResearchContext}
               }
             };
 
-            for await (const part of forwardStream(stream)) yield part;
+            try {
+              const stream = await streamWithConfig(requestConfig);
+              for await (const part of forwardStream(stream)) yield part;
+            } catch (searchError: any) {
+              if (!shouldUseLegalSearch || receivedText) throw searchError;
+              console.warn('[counter-brief] Google Search failed before first draft token; retrying generation without search', {
+                model,
+                status: Number(searchError?.status || searchError?.statusCode || searchError?.response?.status) || null,
+                code: searchError?.code || searchError?.error?.status || null,
+              });
+              const fallbackConfig = { ...requestConfig };
+              delete fallbackConfig.tools;
+              const fallbackStream = await streamWithConfig(fallbackConfig);
+              for await (const part of forwardStream(fallbackStream)) yield part;
+            }
 
             if (!segmentCompleted && pendingMarkerTail) yield { text: pendingMarkerTail };
             if (!receivedText) {
@@ -315,15 +230,35 @@ ${focusedResearchContext}
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const response: any = await ai.models.generateContent({
-          model,
-          contents: segmentPrompt,
-          config: {
-            systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-            temperature: 0.15,
-            maxOutputTokens: 32768,
-          },
-        });
+        const shouldUseLegalSearch = Boolean(options.legalResearch && focusedResearchContext && !accumulatedText);
+        const requestConfig: any = {
+          systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+          temperature: 0.15,
+          maxOutputTokens: 32768,
+        };
+        if (shouldUseLegalSearch) requestConfig.tools = [{ googleSearch: {} }];
+        let response: any;
+        try {
+          response = await ai.models.generateContent({
+            model,
+            contents: segmentPrompt,
+            config: requestConfig,
+          });
+        } catch (searchError: any) {
+          if (!shouldUseLegalSearch) throw searchError;
+          console.warn('[counter-brief] Google Search failed during drafting request; retrying generation without search', {
+            model,
+            status: Number(searchError?.status || searchError?.statusCode || searchError?.response?.status) || null,
+            code: searchError?.code || searchError?.error?.status || null,
+          });
+          const fallbackConfig = { ...requestConfig };
+          delete fallbackConfig.tools;
+          response = await ai.models.generateContent({
+            model,
+            contents: segmentPrompt,
+            config: fallbackConfig,
+          });
+        }
         const rawText = typeof response.text === 'string' ? response.text : '';
         const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
         if (!rawText.trim()) {
