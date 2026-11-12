@@ -62,8 +62,11 @@ export default async function handler(req: any, res: any) {
 
     limitBodyString(lastMessage.content, 10000, 'رسالة المحادثة');
 
-    rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
+    const { session } = await enforceAiCooldown(req);
+    rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000, {
+      identity: session.userId,
+      allowConfiguredAiExemption: true,
+    });
 
     const taskLabel =
       taskType === 'deconstruct'
@@ -74,14 +77,31 @@ export default async function handler(req: any, res: any) {
 
     const latestUserMessage = lastMessage.content.trim();
 
-    // اكتشاف طلب تعديل النتيجة
+    // الافتراضي في طلبات التعديل هو تعديل النتيجة القانونية الأساسية.
+    // لا نوجّه التعديل إلى الشات إلا إذا طلب المستخدم ذلك صراحةً.
     const normalizedMessage = latestUserMessage
       .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/[إأآ]/g, 'ا')
       .trim();
 
-    const isDocumentEditIntent =
-      /^(?:(?:من فضلك|لو سمحت|عايزك|عايز|عاوز|ممكن|ياريت)\s+)*(?:عدل|عدلي|تعديل|تعديلات|تعدل|تعدلي|اعدل|أعدل|غير|غيرلي|تغير|تغيير|بدل|بدلي|تبدل|احذف|تحذف|امسح|تمسح|شيل|تشيل|اضف|أضف|إضافة|ضيف|تضيف|زود|تزود|استبدل|استبدال|صحح|تصحح)(?=\s|$|[،,.!?؟:؛])/i.test(normalizedMessage) &&
-      !/(?:اشرح|وضح|اعرض|وريني|اكتبلي في الشات|هاتلي في الشات)/i.test(normalizedMessage);
+    const hasEditIntent =
+      /(?:^|\s)(?:عدل|عدلي|يعدل|يعدّل|تعديل|تعديلات|تعدل|تعدلي|اعدل|غير|غيرلي|تغيير|بدل|بدلي|احذف|تحذف|امسح|تمسح|شيل|تشيل|اضف|اضافة|ضيف|تضيف|زود|تزود|استبدل|استبدال|صحح|تصحح|اعد صياغة|اعادة صياغة)(?=\s|$|[،,.!?؟:؛])/i.test(normalizedMessage);
+
+    const explicitlyTargetsResult =
+      /(?:النتيجة(?:\s+(?:الاصلية|الاساسية|المعروضة|الحالية))?|مربع\s+النتيجة|المستند\s+(?:الاصلي|الاساسي)|المذكرة\s+(?:الاصلية|المعروضة)|النص\s+الموجود\s+في\s+النتيجة)/i.test(normalizedMessage);
+
+    const explicitlyTargetsChat =
+      /(?:في|داخل|على)\s+(?:الشات|المحادثة|رسالة\s+الشات)|(?:الشات|المحادثة)\s+(?:فقط|نفسه)/i.test(normalizedMessage);
+
+    // إذا جمع الطلب بين وجهتين متعارضتين، نسأل المستخدم بدلاً من التخمين.
+    if (hasEditIntent && explicitlyTargetsResult && explicitlyTargetsChat) {
+      return res.status(200).json({
+        result: 'للتأكد من تنفيذ التعديل في المكان الصحيح: هل تريد تعديل النتيجة القانونية الأساسية أم تعديل نص الشات فقط؟',
+        updatedResult: null
+      });
+    }
+
+    const isDocumentEditIntent = hasEditIntent && !explicitlyTargetsChat;
 
     let answer = '';
     let updatedResult: string | null = null;
@@ -138,8 +158,8 @@ export default async function handler(req: any, res: any) {
         typeof editData.newText !== 'string' ||
         !editData.oldText.length
       ) {
-        return res.status(422).json({
-          error: 'لم أتمكن من تحديد موضع التعديل بدقة. حدد الجملة أو الفقرة المطلوب تعديلها.',
+        return res.status(200).json({
+          result: 'أريد تنفيذ التعديل على النتيجة الأساسية، لكن لم أتمكن من تحديد موضعه بأمان. من فضلك حدد الجملة أو الفقرة المقصودة، أو أرسل النص الذي تريد استبداله.',
           updatedResult: null
         });
       }
@@ -151,8 +171,8 @@ export default async function handler(req: any, res: any) {
       const firstIndex = result.indexOf(oldText);
 
       if (firstIndex === -1) {
-        return res.status(422).json({
-          error: 'تعذر العثور على النص المطلوب تعديله داخل النتيجة الأصلية.',
+        return res.status(200).json({
+          result: 'لم أجد النص المطلوب داخل النتيجة الأساسية، ولم أغيّر الشات أو المستند. أرسل العبارة كما تظهر في النتيجة أو حدّد موضعها.',
           updatedResult: null
         });
       }
@@ -164,8 +184,8 @@ export default async function handler(req: any, res: any) {
       );
 
       if (secondIndex !== -1) {
-        return res.status(422).json({
-          error: 'النص المطلوب تعديله متكرر داخل المستند. يرجى تحديد الفقرة المقصودة بدقة.',
+        return res.status(200).json({
+          result: 'وجدت العبارة المطلوبة أكثر من مرة في النتيجة الأساسية. أي موضع تقصد؟ حدّد الفقرة أو عنوان الجزء المطلوب تعديله.',
           updatedResult: null
         });
       }
@@ -192,7 +212,19 @@ export default async function handler(req: any, res: any) {
 
       /* * المحادثة القانونية العادية: * الحفاظ على نفس الوظيفة السابقة. */
 
-      const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}). أجب على طلب أو سؤال المحامي التالي في الشات مباشرة. إذا طلب عرض المذكرة أو جزء منها في الشات، اعرض المطلوب في الشات. لا تقم بتعديل المستند الأساسي. [النتيجة الحالية للمستند للاطلاع والاستعانة بها] ${result} [طلب أو سؤال المحامي] ${latestUserMessage}`;
+      const prompt = `أنت أمين، مساعد قانوني مصري متخصص. هذه متابعة لمهمة (${taskLabel}).
+أجب داخل المحادثة عن طلب المحامي فقط، مع الاستفادة من النتيجة التالية كسياق مرجعي لا كنص مطلوب نسخه.
+قواعد إلزامية:
+1. لا تنقل النتيجة الأصلية كاملة أو أجزاء كبيرة منها إلى الشات من تلقاء نفسك.
+2. إذا كان الطلب سؤالاً قانونياً، أجب عن السؤال مباشرة دون إعادة عرض المستند.
+3. إذا طلب المحامي تعديلاً أو إعادة صياغة داخل الشات، قدم النص المعدل المطلوب في رد الشات فقط، ولا تغيّر النتيجة الأصلية.
+4. لا تعرض أو تنقل فقرة من النتيجة إلا إذا طلب المستخدم صراحةً عرضها أو نقلها؛ وعندها اعرض الجزء المحدد فقط.
+5. لا تعتبر مجرد ذكر النتيجة أو السؤال عنها إذناً بنسخها.
+6. لا تضف مقدمة طويلة ولا تعِد صياغة المستند كله إذا كان المطلوب نقطة محددة.
+[النتيجة الحالية - مرجع للاطلاع فقط]
+${result}
+[طلب المحامي]
+${latestUserMessage}`;
 
       const rawAnswer = await generateDeepLegalResponse(prompt);
 

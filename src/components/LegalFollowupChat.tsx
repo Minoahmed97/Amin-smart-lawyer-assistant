@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
+import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
 interface Props { taskType: 'deconstruct' | 'qualify' | 'draft'; userId?: string | null; originalContext: string; result: string; onResultChange?: (nextResult: string) => void }
@@ -353,7 +354,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
 
   if (!result.trim()) return null;
   return <section className="mt-5 rounded-2xl border border-emerald-700/60 bg-slate-950/70 p-4 space-y-3" dir="rtl">
-    <div><h3 className="font-bold text-emerald-300">مناقشة النتيجة مع أمين</h3><p className="text-xs text-slate-400 mt-1">اسأل عن أي نقطة أو اطلب تعديل النتيجة نفسها؛ عند طلب التعديل سيحدّث أمين النتيجة المعروضة والمحفوظة لتصبح هي النسخة المستخدمة في التصدير.</p></div>
+    <div><h3 className="font-bold text-emerald-300">مناقشة النتيجة مع أمين</h3><p className="text-xs text-slate-400 mt-1">اسأل عن أي نقطة أو اطلب تعديلاً داخل الشات. إذا أردت تغيير المستند الأصلي، اذكر صراحةً أنك تقصد النتيجة الأصلية؛ وسيحدّث أمين النتيجة المعروضة والمحفوظة.</p></div>
     {messages.length > 0 && <div ref={messagesContainerRef} className="space-y-3 max-h-96 overflow-y-auto" aria-live="polite">
       {messages.map((message, index) => {
         const messageKey = `${index}-${message.role}`;
@@ -371,7 +372,15 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
     </div>}
     {error && <p role="alert" className="text-sm text-rose-300">{error}</p>}
     <form onSubmit={send} className="flex flex-col sm:flex-row gap-2">
-      <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={2} maxLength={10000} placeholder="اسأل عن النتيجة أو اكتب التعديل المطلوب تنفيذه عليها..." className="flex-1 min-w-0 rounded-xl border border-slate-700 bg-slate-900 p-3 text-sm text-white outline-none focus:border-emerald-500" />
+      <div className="flex flex-col gap-2 flex-1 min-w-0">
+        <div className="flex items-center justify-start">
+          <VoiceDictateButton
+            title="إملاء سؤال أو طلب قانوني"
+            onTranscript={(text) => setDraft((current) => current ? `${current} ${text}` : text)}
+          />
+        </div>
+        <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={3} maxLength={10000} placeholder="اسأل سؤالاً، أو اطلب تعديلاً في الشات، أو حدد صراحةً تعديل النتيجة الأصلية..." className="w-full min-w-0 rounded-xl border border-slate-700 bg-slate-900 p-3 text-sm text-white outline-none focus:border-emerald-500" />
+      </div>
       <button type="submit" disabled={loading || !draft.trim()} className="rounded-xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-5 py-3 text-sm font-bold text-white">{loading ? 'جارٍ الرد...' : 'إرسال السؤال'}</button>
     </form>
   </section>;

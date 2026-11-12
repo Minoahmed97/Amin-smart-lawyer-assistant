@@ -21,8 +21,11 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ error: 'يرجى تقديم تفاصيل النزاع.' });
     }
 
-    rateLimit(req, 'gemini-qualify', 8, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
+    const { session } = await enforceAiCooldown(req);
+    rateLimit(req, 'gemini-qualify', 8, 10 * 60 * 1000, {
+      identity: session.userId,
+      allowConfiguredAiExemption: true,
+    });
 
     limitBodyString(disputeDetails, 150000, 'تفاصيل النزاع');
     limitBodyString(clientGoals, 10000, 'الهدف');

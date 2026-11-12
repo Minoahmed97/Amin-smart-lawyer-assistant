@@ -393,8 +393,11 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ error: 'يرجى كتابة وقائع الدعوى.' });
     }
 
-    rateLimit(req, 'gemini-counter-brief', 8, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
+    const { session } = await enforceAiCooldown(req);
+    rateLimit(req, 'gemini-counter-brief', 8, 10 * 60 * 1000, {
+      identity: session.userId,
+      allowConfiguredAiExemption: true,
+    });
 
     limitBodyString(facts, 200000, 'الوقائع');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');

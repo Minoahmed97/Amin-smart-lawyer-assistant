@@ -29,8 +29,12 @@ export function rateLimit(
   scope: string,
   limit: number,
   windowMs: number,
-  options: { identity?: string; failure?: boolean } = {},
+  options: { identity?: string; failure?: boolean; allowConfiguredAiExemption?: boolean } = {},
 ) {
+  const configuredExemptId = (process.env.AI_RATE_LIMIT_EXEMPT_USER_ID || '').trim();
+  const trustedIdentity = options.identity ? safeString(options.identity, 160) : '';
+  if (options.allowConfiguredAiExemption && configuredExemptId && trustedIdentity === configuredExemptId) return;
+
   const ip = getClientIp(req);
   const identity = options.identity ? safeString(options.identity, 160) : '';
   const key = crypto.createHash('sha256').update(`${scope}|${ip}|${identity}`).digest('hex');
