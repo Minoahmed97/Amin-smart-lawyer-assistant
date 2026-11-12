@@ -498,41 +498,40 @@ export async function executeWithKeyRotation<T>(
   );
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
-    const overallStart = Date.now();
-    const totalBudget = Math.max(0, deadlineAt - overallStart);
-    let lastProviderError: any = null;
+    const totalBudget = Math.max(0, deadlineAt - Date.now());
+    const openRouterReserveMs = Math.min(45_000, Math.max(30_000, Math.floor(totalBudget * 0.1)));
+    const geminiDeadlineAt = deadlineAt - openRouterReserveMs;
+    let geminiError: any = null;
 
-    for (let round = 0; round < 2; round++) {
-      const roundStart = overallStart + Math.floor(totalBudget * round / 2);
-      const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
-      if (deadlineAt - Date.now() < 10000) break;
-      try {
-        return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
-          ...executionOptions,
-          deadlineAt: geminiDeadlineAt,
-          providerAttempt: 'gemini-primary',
-        });
-      } catch (geminiError: any) {
-        lastProviderError = geminiError;
-      }
-      if (roundEnd - Date.now() < 10000) break;
-      try {
-        return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
-          ...executionOptions,
-          deadlineAt: roundEnd,
-          providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
-        });
-      } catch (openRouterError: any) {
-        lastProviderError = openRouterError;
-      }
+    // Complete the Gemini key/model rotation before allowing generation fallback.
+    try {
+      return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
+        ...executionOptions,
+        deadlineAt: geminiDeadlineAt,
+        providerAttempt: 'gemini-primary',
+      });
+    } catch (error: any) {
+      geminiError = error;
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
-    combined.status = 503;
-    combined.statusCode = 503;
-    combined.cause = lastProviderError;
-    throw combined;
+
+    if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
+
+    try {
+      return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
+        ...executionOptions,
+        deadlineAt,
+        providerAttempt: 'openrouter-fallback',
+        previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
+      });
+    } catch (openRouterError: any) {
+      const combined: any = new Error(
+        `تعذر تنفيذ الطلب بعد استنفاد محاولات Gemini وتجربة احتياطي OpenRouter. (Gemini: ${String(geminiError?.message || 'غير معروف')}؛ OpenRouter: ${String(openRouterError?.message || 'غير معروف')}).`,
+      );
+      combined.status = openRouterError?.status || openRouterError?.statusCode || geminiError?.status || geminiError?.statusCode || 503;
+      combined.statusCode = combined.status;
+      combined.cause = openRouterError;
+      throw combined;
+    }
   }
 
   if (!_forceGeminiFallback) {
@@ -641,51 +640,53 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   const timeoutError = () => Object.assign(new Error('انتهت المهلة المتاحة للتوليد.'), { status: 504, statusCode: 504 });
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
-    const overallStart = Date.now();
-    const totalBudget = Math.max(0, deadlineAt - overallStart);
-    let lastProviderError: any = null;
-    for (let round = 0; round < 2; round++) {
-      const roundStart = overallStart + Math.floor(totalBudget * round / 2);
-      const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
-      if (deadlineAt - Date.now() < 10000) break;
-      let anyProviderEmittedText = false;
-      try {
-        await executeWithKeyRotationStream(action, (chunk) => {
-          if (chunk) anyProviderEmittedText = true;
-          onChunk(chunk);
-        }, preferredModels, _ignoredClientFallbackKey, true, {
-          ...executionOptions,
-          deadlineAt: geminiDeadlineAt,
-          providerAttempt: 'gemini-primary',
-        });
-        return;
-      } catch (geminiError: any) {
-        lastProviderError = geminiError;
-        if (anyProviderEmittedText) throw geminiError;
-      }
-      if (roundEnd - Date.now() < 10000) break;
-      try {
-        await executeWithKeyRotationStream(action, (chunk) => {
-          if (chunk) anyProviderEmittedText = true;
-          onChunk(chunk);
-        }, preferredModels, _ignoredClientFallbackKey, false, {
-          ...executionOptions,
-          deadlineAt: roundEnd,
-          providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
-        });
-        return;
-      } catch (openRouterError: any) {
-        lastProviderError = openRouterError;
-        if (anyProviderEmittedText) throw openRouterError;
-      }
+    const totalBudget = Math.max(0, deadlineAt - Date.now());
+    const openRouterReserveMs = Math.min(45_000, Math.max(30_000, Math.floor(totalBudget * 0.1)));
+    const geminiDeadlineAt = deadlineAt - openRouterReserveMs;
+    let geminiError: any = null;
+    let geminiEmittedText = false;
+
+    // Complete the Gemini key/model rotation before allowing generation fallback.
+    try {
+      await executeWithKeyRotationStream(action, (chunk) => {
+        if (chunk) geminiEmittedText = true;
+        onChunk(chunk);
+      }, preferredModels, _ignoredClientFallbackKey, true, {
+        ...executionOptions,
+        deadlineAt: geminiDeadlineAt,
+        providerAttempt: 'gemini-primary',
+      });
+      return;
+    } catch (error: any) {
+      geminiError = error;
+      // Never restart the same document with another provider after text was shown.
+      if (geminiEmittedText) throw error;
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
-    combined.status = 503;
-    combined.statusCode = 503;
-    combined.cause = lastProviderError;
-    throw combined;
+
+    if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
+
+    let openRouterEmittedText = false;
+    try {
+      await executeWithKeyRotationStream(action, (chunk) => {
+        if (chunk) openRouterEmittedText = true;
+        onChunk(chunk);
+      }, preferredModels, _ignoredClientFallbackKey, false, {
+        ...executionOptions,
+        deadlineAt,
+        providerAttempt: 'openrouter-fallback',
+        previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
+      });
+      return;
+    } catch (openRouterError: any) {
+      if (openRouterEmittedText) throw openRouterError;
+      const combined: any = new Error(
+        `تعذر تنفيذ الطلب بعد استنفاد محاولات Gemini وتجربة احتياطي OpenRouter. (Gemini: ${String(geminiError?.message || 'غير معروف')}؛ OpenRouter: ${String(openRouterError?.message || 'غير معروف')}).`,
+      );
+      combined.status = openRouterError?.status || openRouterError?.statusCode || geminiError?.status || geminiError?.statusCode || 503;
+      combined.statusCode = combined.status;
+      combined.cause = openRouterError;
+      throw combined;
+    }
   }
 
   if (!_forceGeminiFallback && executionOptions?.providerAttempt === 'openrouter-fallback' && !executionOptions?.ocrMode) {
