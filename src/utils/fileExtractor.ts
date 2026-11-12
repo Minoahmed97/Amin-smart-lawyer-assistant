@@ -57,11 +57,11 @@ export async function compressAndResizeImage( file: File, maxDimension = 1800, q
 
   try {
     const image = await loadImage();
-    let maxSide = Math.max(1200, maxDimension);
+    let maxSide = maxDimension;
     let resultBlob: Blob | null = null;
     try {
-      // Preserve color and readable detail first; reduce dimensions only as a last resort.
-      for (let dimensionPass = 0; dimensionPass < 4; dimensionPass++) {
+      // Reduce dimensions progressively if compression alone cannot reach the target.
+      for (let dimensionPass = 0; dimensionPass < 6; dimensionPass++) {
         const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
         const width = Math.max(1, Math.round(image.width * scale));
         const height = Math.max(1, Math.round(image.height * scale));
@@ -72,9 +72,11 @@ export async function compressAndResizeImage( file: File, maxDimension = 1800, q
         if (!ctx) throw new Error('تعذر تجهيز الصورة للضغط.');
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, width, height);
+        ctx.filter = 'grayscale(100%)';
         ctx.drawImage(image.source, 0, 0, width, height);
+        ctx.filter = 'none';
 
-        for (const q of [Math.max(0.86, quality), 0.82, 0.78, 0.74, 0.70, 0.66]) {
+        for (const q of [quality, 0.78, 0.74, 0.70, 0.66, 0.62, 0.58]) {
           const candidate = await encodeCanvas(canvas, q);
           if (candidate && (!resultBlob || candidate.size < resultBlob.size)) resultBlob = candidate;
           if (candidate && candidate.size <= MAX_IMAGE_BYTES) {
@@ -83,23 +85,21 @@ export async function compressAndResizeImage( file: File, maxDimension = 1800, q
           }
         }
         if (resultBlob && resultBlob.size <= MAX_IMAGE_BYTES) break;
-        if (maxSide <= 1200) break;
-        maxSide = Math.max(1200, Math.floor(maxSide * 0.85));
+        maxSide = Math.max(900, Math.floor(maxSide * 0.85));
       }
     } finally {
       image.close?.();
     }
 
-    // The server accepts up to 20 MB of base64. Prefer a clear image over destructive
-    // downscaling merely to satisfy the former 1 MB client-side target.
-    if (!resultBlob || resultBlob.size > 14 * 1024 * 1024) {
-      throw new Error('حجم الصورة أكبر من الحد الآمن للإرسال بعد محاولات الضغط مع الحفاظ على وضوحها.');
+    if (!resultBlob || resultBlob.size > MAX_IMAGE_BYTES) {
+      throw new Error('تعذر ضغط الصورة إلى أقل من 1MB مع الحفاظ على وضوحها.');
     }
     const base64Data = await fileToBase64(resultBlob);
     return { base64Data, mimeType: 'image/jpeg' };
   } catch (error) {
+    // Do not silently send the original oversized image: report a clear error instead.
     console.warn('Image compression failed:', error);
-    throw new Error(error instanceof Error ? error.message : 'تعذر تجهيز الصورة مع الحفاظ على وضوح الكتابة. جرّب صورة أوضح أو أصغر.');
+    throw new Error('تعذر تجهيز الصورة وإيصال حجمها إلى أقل من 1MB. جرّب صورة أوضح أو أصغر.');
   }
 }
 
