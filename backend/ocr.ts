@@ -301,7 +301,7 @@ export default async function handler(req: any, res: any) {
           });
         }
         return text;
-      }, GEMINI_MODELS, 240000);
+      }, GEMINI_MODELS, 280000);
     } catch (geminiError: any) {
       // executeWithDedicatedOCRKeyRotation already performs two complete
       // Gemini-key/model -> Groq rounds. Do not trigger an extra third Groq call here.
