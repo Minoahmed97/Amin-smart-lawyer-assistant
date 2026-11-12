@@ -267,6 +267,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         };
         if (shouldUseLegalSearch) requestConfig.tools = [{ googleSearch: {} }];
         let response: any;
+        let searchFallbackUsed = false;
         try {
           response = await ai.models.generateContent({
             model,
@@ -275,6 +276,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           });
         } catch (searchError: any) {
           if (!shouldUseLegalSearch) throw searchError;
+          searchFallbackUsed = true;
           logLegalSearchFailure(searchError, model, 'non-streaming');
           const fallbackConfig = { ...requestConfig };
           delete fallbackConfig.tools;
@@ -288,7 +290,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           const grounding = response?.candidates?.[0]?.groundingMetadata;
           console.info('[counter-brief] Google Search grounding diagnostics', {
             model,
-            fallbackUsed: false,
+            fallbackUsed: searchFallbackUsed,
             metadataSeen: Boolean(grounding),
             queryCount: Array.isArray(grounding?.webSearchQueries) ? grounding.webSearchQueries.length : 0,
             sourceCount: Array.isArray(grounding?.groundingChunks) ? grounding.groundingChunks.length : 0,
