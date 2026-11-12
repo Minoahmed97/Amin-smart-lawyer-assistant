@@ -250,6 +250,8 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
 }
 
 let dedicatedOCRActiveKey = '';
+let dedicatedOCRActiveModel = '';
+const dedicatedOCRInFlightPairs = new Set<string>();
 
 export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): Promise<{ ready: boolean; keyCount: number; checkedKeys: number; message: string }> {
   let keys: string[];
@@ -341,21 +343,35 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
         const keyIndex = (startIndex + offset) % usableOCRKeys.length;
         const key = usableOCRKeys[keyIndex];
         if (isCooling(ocrKeyCooldownUntil, key) || permanentlyInvalidOCRKeys.has(key)) continue;
-        const keyModels = selectModelsForKey(preferredModels, key, 'ocr');
+        const selectedModels = selectModelsForKey(preferredModels, key, 'ocr');
+        if (key === dedicatedOCRActiveKey && dedicatedOCRActiveModel) {
+          const rememberedModelIndex = selectedModels.indexOf(dedicatedOCRActiveModel);
+          if (rememberedModelIndex > 0) {
+            selectedModels.splice(rememberedModelIndex, 1);
+            selectedModels.unshift(dedicatedOCRActiveModel);
+          }
+        }
+        const keyModels = selectedModels.filter((model) => !dedicatedOCRInFlightPairs.has(rotationPairKey(key, model)));
 
         for (let modelIndex = 0; modelIndex < keyModels.length; modelIndex++) {
           const remainingMs = geminiDeadlineAt - Date.now();
           if (remainingMs < 10000) break ocrKeyLoop;
           const model = keyModels[modelIndex];
+          const pair = rotationPairKey(key, model);
+          if (dedicatedOCRInFlightPairs.has(pair)) continue;
+          dedicatedOCRInFlightPairs.add(pair);
           try {
             const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(25000, remainingMs)));
             const result = await action(ai, key, model);
             if (Date.now() >= geminiDeadlineAt) throw Object.assign(new Error('انتهت مهلة محاولة OCR عبر Gemini.'), { status: 504, statusCode: 504 });
             dedicatedOCRActiveKey = key;
+            dedicatedOCRActiveModel = model;
             return result;
           } catch (error: any) {
             lastError = error;
             markRotationFailure(key, model, error, 'ocr');
+          } finally {
+            dedicatedOCRInFlightPairs.delete(pair);
           }
         }
       }
