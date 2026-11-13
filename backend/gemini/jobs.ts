@@ -708,7 +708,10 @@ export default async function handler(req: any, res: any) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
-            if (existing.status === 'queued') scheduleBackground(dispatchQueuedJob(existing.id));
+            if (existing.status === 'queued') {
+              try { await send('amin-ai-jobs', { jobId: existing.id }); }
+              catch { return res.status(503).json({ error: 'تعذر إعادة إدخال المهمة المحفوظة إلى طابور المعالجة.' }); }
+            }
             return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
           }
         }
