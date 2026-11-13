@@ -196,17 +196,6 @@ function safePayload(input: any, taskType: string) {
     const recoveryScope = String(payload.recoveryScope || 'general');
     payload.fileName = fileName;
     payload.recoveryScope = recoveryScope;
-    const batchId = String(input?._ocrBatchId || '').trim();
-    if (batchId) {
-      const batchOrder = Number(input?._ocrBatchOrder);
-      if (!/^[a-zA-Z0-9_-]{1,100}$/.test(batchId) || !Number.isInteger(batchOrder) || batchOrder < 0) {
-        const error: any = new Error('بيانات مجموعة الصور غير صالحة.');
-        error.statusCode = 400;
-        throw error;
-      }
-      payload._ocrBatchId = batchId;
-      payload._ocrBatchOrder = String(batchOrder).padStart(4, '0');
-    }
     return payload;
   }
 
@@ -395,22 +384,6 @@ async function dispatchQueuedJob(jobId: string) {
   }
 }
 
-async function dispatchNextOcrBatchJob(userId: string, batchId: string) {
-  const filter = `user_id=eq.${encodeURIComponent(userId)}&task_type=eq.ocr&payload->>_ocrBatchId=eq.${encodeURIComponent(batchId)}`;
-  const runningResponse = await supabase(`${JOB_TABLE}?select=id&${filter}&status=eq.running&limit=1`);
-  if (!runningResponse.ok) throw new Error('تعذر التحقق من حالة طابور الصور.');
-  const runningRows = await runningResponse.json();
-  if (Array.isArray(runningRows) && runningRows.length) return;
-
-  const queuedResponse = await supabase(
-    `${JOB_TABLE}?select=id&${filter}&status=eq.queued&order=payload->>_ocrBatchOrder.asc&limit=1`,
-  );
-  if (!queuedResponse.ok) throw new Error('تعذر قراءة الصورة التالية من طابور OCR.');
-  const queuedRows = await queuedResponse.json();
-  const nextJobId = Array.isArray(queuedRows) ? String(queuedRows[0]?.id || '') : '';
-  if (nextJobId) await dispatchQueuedJob(nextJobId);
-}
-
 async function handleWorkerRequest(req: any, res: any) {
   // ضبط الـ Header لضمان إرجاع JSON دائماً ومنع خطأ non-json
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -569,13 +542,6 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     }
   } finally {
     clearInterval(heartbeat);
-    if (taskType === 'ocr' && payload._ocrBatchId) {
-      try {
-        await dispatchNextOcrBatchJob(userId, String(payload._ocrBatchId));
-      } catch (batchError: any) {
-        console.error('OCR batch could not advance to the next image:', safeDiagnosticMessage(batchError?.message || batchError));
-      }
-    }
   }
 }
 
@@ -625,18 +591,8 @@ export default async function handler(req: any, res: any) {
           status: existing.status,
         });
       }
-      if (requestBody?.action === 'start-ocr-batch') {
-        const batchId = String(requestBody?.batchId || '').trim();
-        if (!/^[a-zA-Z0-9_-]{1,100}$/.test(batchId)) {
-          return res.status(400).json({ error: 'معرّف مجموعة الصور غير صالح.' });
-        }
-        await dispatchNextOcrBatchJob(session.userId, batchId);
-        return res.status(202).json({ started: true, batchId });
-      }
-
       const taskType = String(requestBody?.taskType || 'counter-brief');
       const payload = safePayload(requestBody?.payload || requestBody, taskType);
-      const isOcrBatchJob = taskType === 'ocr' && Boolean(payload._ocrBatchId);
       
       scheduleBackground((async () => {
         try {
@@ -670,14 +626,14 @@ export default async function handler(req: any, res: any) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
-            if (existing.status === 'queued' && !isOcrBatchJob) scheduleBackground(dispatchQueuedJob(existing.id));
+            if (existing.status === 'queued') scheduleBackground(dispatchQueuedJob(existing.id));
             return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
           }
         }
         return res.status(503).json({ error: 'تعذر حفظ مهمة الصياغة على الخادم.' });
       }
 
-      if (!isOcrBatchJob) scheduleBackground(dispatchQueuedJob(id));
+      scheduleBackground(dispatchQueuedJob(id));
       return res.status(202).json({ jobId: id, status: 'queued' });
     }
 
@@ -690,14 +646,14 @@ export default async function handler(req: any, res: any) {
       }
       const id = String(req?.query?.id || '').trim();
       if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
-      const jobPath = `${JOB_TABLE}?select=id,status,partial_result,result,error,created_at,updated_at,completed_at,batch_id:payload->>_ocrBatchId&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
+      const jobPath = `${JOB_TABLE}?select=id,status,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
       const result = await supabase(jobPath);
       if (!result.ok) return res.status(503).json({ error: 'تعذر استرجاع حالة المهمة.' });
       const rows = await result.json();
       let job = Array.isArray(rows) ? rows[0] : null;
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
 
-      if (job.status === 'queued' && !job.batch_id) scheduleBackground(dispatchQueuedJob(id));
+      if (job.status === 'queued') scheduleBackground(dispatchQueuedJob(id));
 
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
