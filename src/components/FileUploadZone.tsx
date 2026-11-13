@@ -358,26 +358,29 @@ if (mountedRef.current) {
   setErrorMsg(null);
 }
 
-// Phase 1: create and persist every server OCR job for this saved batch before
-// waiting for any result. The original blobs and ordering were already saved
-// atomically in IndexedDB by processFilesBatch.
+// Stage image jobs on the server without starting the queue yet.
+// PDFs deliberately keep their original client-driven extraction path.
+const stagedImageJobIds: string[] = [];
 for (const original of eligible) {
   if (!isCurrent()) return;
-  if (!isDirectOcrFile(original) || original.status === 'completed' ||
+  if (!isImageFile(original) || original.status === 'completed' ||
       (original.status === 'processing' && original.jobId) ||
       isFileTaskCancelled(effectiveUserId, recoveryScope, original.id)) continue;
 
   try {
     const sourceFile = restoreFileFromBatchItem(original);
+    const jobId = original.jobId || createFileOcrJobId();
     await updateRecord(original.id, {
       status: 'preparing',
       stageLabel: 'تجهيز وإدراج المهمة في الطابور الخلفي',
+      jobId,
       error: undefined,
     });
     const staged = await extractTextFromAnyFile(sourceFile, recoveryScope, {
       userId: effectiveUserId,
-      jobId: original.jobId || createFileOcrJobId(),
+      jobId,
       enqueueOnly: true,
+      deferQueue: true,
       onStage: async () => {
         await updateRecord(original.id, {
           status: 'preparing',
@@ -396,6 +399,7 @@ for (const original of eligible) {
     });
 
     if (staged.backgroundJobId) {
+      stagedImageJobIds.push(staged.backgroundJobId);
       await updateRecord(original.id, {
         status: 'processing',
         stageLabel: 'المهمة محفوظة بالخادم؛ في انتظار النتيجة',
@@ -426,6 +430,20 @@ for (const original of eligible) {
     if (mountedRef.current && activeContextRef.current === contextKey) {
       setWarnings((previous) => [...previous, `الملف ${original.fileName}: تعذر إدراجه في الطابور الخلفي؛ يمكنك إعادة محاولته.`]);
     }
+  }
+}
+
+// Link the successfully staged images in their original order and start only
+// the first one. The server starts each following image after the previous ends.
+if (stagedImageJobIds.length) {
+  const enqueueResponse = await fetch('/api/gemini/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'enqueue-ocr-batch', jobIds: stagedImageJobIds }),
+  });
+  const enqueueData = await enqueueResponse.json().catch(() => ({}));
+  if (!enqueueResponse.ok) {
+    throw new Error(enqueueData?.error || 'تعذر تشغيل طابور الصور المتتابع.');
   }
 }
 
