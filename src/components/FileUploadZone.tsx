@@ -11,7 +11,7 @@ RefreshCw,
 Clock3,
 Image as ImageIcon,
 } from 'lucide-react';
-import { checkServerOCRReadiness, extractTextFromAnyFile } from '../utils/fileExtractor.ts';
+import { extractTextFromAnyFile } from '../utils/fileExtractor.ts';
 import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 import {
@@ -350,34 +350,6 @@ const eligible = records.filter((item) =>
 (item.status === 'completed' && Boolean(item.extractedText) && !item.deliveredToWorkflow)),
 );
 if (!eligible.length || !isCurrent()) return;
-
-const needsReadinessCheck = eligible.some((item) =>  
-  item.status !== 'completed' && isDirectOcrFile(item) && !(item.status === 'processing' && item.jobId),  
-);  
-if (needsReadinessCheck) {  
-  // Persist a real preparation stage while the server checks the OCR pool;  
-  // the aggregate indicator must not remain at 0% during this phase.  
-  for (const item of eligible) {  
-    if (!isCurrent()) return;  
-    if (!isFileTaskCancelled(effectiveUserId, recoveryScope, item.id) && item.status !== 'completed' && isDirectOcrFile(item) && !(item.status === 'processing' && item.jobId)) {
-      try {
-        await updateRecord(item.id, { status: 'preparing', stageLabel: 'التحقق من جاهزية خدمة OCR' });
-      } catch (error: any) {
-        if (error?.name !== 'AbortError') throw error;
-      }
-    }  
-  }  
-  try {  
-    await checkServerOCRReadiness();  
-  } catch (error: any) {  
-    if (isCurrent() && mountedRef.current) {  
-      setErrorMsg(error?.message || 'مجموعة مفاتيح الصور والمستندات (OCR) غير جاهزة.');  
-      setIsProcessing(false);  
-      onProcessingChange?.(false);  
-    }  
-    return;  
-  }  
-}  
 
 if (!isCurrent()) return;
 if (mountedRef.current) {
