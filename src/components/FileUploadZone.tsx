@@ -12,7 +12,7 @@ Clock3,
 Image as ImageIcon,
 } from 'lucide-react';
 import { extractTextFromAnyFile } from '../utils/fileExtractor.ts';
-import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
+import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getRequestHeaders, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 import {
 createFileBatchId,
@@ -438,7 +438,7 @@ for (const original of eligible) {
 if (stagedImageJobIds.length) {
   const enqueueResponse = await fetch('/api/gemini/jobs', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getRequestHeaders(),
     body: JSON.stringify({ action: 'enqueue-ocr-batch', jobIds: stagedImageJobIds }),
   });
   const enqueueData = await enqueueResponse.json().catch(() => ({}));
