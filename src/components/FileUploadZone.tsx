@@ -448,25 +448,16 @@ if (stagedImageJobIds.length) {
 }
 
 if (!isCurrent()) return;
-const latestBeforeProcessing = await getFileBatchItems(effectiveUserId, recoveryScope).catch(() => []);
-const eligibleIds = new Set(eligible.map((item) => item.id));
-const orderedForProcessing = latestBeforeProcessing.filter((item) =>
-  eligibleIds.has(item.id) &&
-  !isFileTaskCancelled(effectiveUserId, recoveryScope, item.id) &&
-  (item.status === 'waiting' || item.status === 'preparing' || item.status === 'processing' ||
-   (item.status === 'completed' && Boolean(item.extractedText) && !item.deliveredToWorkflow))
-);
-
-for (let index = 0; index < orderedForProcessing.length; index += 1) {
-  const item = orderedForProcessing[index];
+for (let index = 0; index < eligible.length; index += 1) {
+  const item = eligible[index];
   if (!isCurrent()) return;
   await processStoredItem(item);
-  if (index < orderedForProcessing.length - 1 && isDirectOcrFile(item) && isDirectOcrFile(orderedForProcessing[index + 1])) {
+  if (index < eligible.length - 1 && isDirectOcrFile(item) && isDirectOcrFile(eligible[index + 1])) {
     await new Promise((resolve) => setTimeout(resolve, 2500));
   }
-}  
+}
 
-if (!isCurrent()) return;  
+if (!isCurrent()) return;
 const latest = await getFileBatchItems(effectiveUserId, recoveryScope).catch(() => []);  
 if (!isCurrent()) return;  
 setStoredItems(latest);  
