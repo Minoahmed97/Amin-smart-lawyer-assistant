@@ -1,4 +1,5 @@
 import { waitUntil } from '@vercel/functions';
+import { send } from '@vercel/queue';
 import crypto from 'node:crypto';
 import webpush from 'web-push';
 import { createSession, requireActiveSession, requireSession } from '../auth.ts';
@@ -371,6 +372,36 @@ function startClaimedJob(job: any) {
   scheduleBackground(processJob(jobId, userId, token, taskType, payload, workerReq));
 }
 
+/** Durable Vercel Queue consumer entry: claim and await the existing job pipeline. */
+export async function runDurableQueuedJob(jobId: string): Promise<void> {
+  const job = await loadQueueJob(jobId);
+  if (!job || job.status !== 'queued') return;
+  const claimed = await claimQueuedJob(jobId);
+  if (!claimed) return;
+  const userId = String(claimed.user_id || '');
+  const storedTaskType = String(claimed.task_type || '');
+  const payload = toPayload(claimed.payload);
+  const taskType = payload._actualTaskType === 'legal-chat' ? 'legal-chat' : storedTaskType;
+  delete payload._actualTaskType;
+  if (!userId || !TASK_HANDLERS[taskType]) {
+    await patchJob(jobId, userId, { status: 'failed', error: 'بيانات المهمة المحفوظة غير صالحة.', payload: {} });
+    return;
+  }
+  const token = createSession(userId, 'background-worker', 10 * 60 * 1000);
+  const workerReq = {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      'user-agent': 'Amin-AI-Durable-Queue-Worker',
+      'x-forwarded-for': `worker-${userId}`,
+    },
+    body: payload,
+    query: {},
+  };
+  await processJob(jobId, userId, token, taskType, payload, workerReq);
+}
+
 async function loadQueueJob(jobId: string) {
   const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status&id=eq.${encodeURIComponent(jobId)}&limit=1`);
   if (!response.ok) throw new Error(`تعذر قراءة المهمة من الطابور (${response.status}).`);
@@ -684,7 +715,19 @@ export default async function handler(req: any, res: any) {
         return res.status(503).json({ error: 'تعذر حفظ مهمة الصياغة على الخادم.' });
       }
 
-      scheduleBackground(dispatchQueuedJob(id));
+      // Publish only the durable job identifier; payloads remain in Supabase.
+      // The database claim makes at-least-once queue delivery safe.
+      try {
+        await send('amin-ai-jobs', { jobId: id });
+      } catch (queueError: any) {
+        await patchJob(id, session.userId, {
+          status: 'failed',
+          error: 'تعذر إدخال المهمة إلى طابور المعالجة الدائم. أعد المحاولة.',
+          payload: {},
+          completed_at: new Date().toISOString(),
+        });
+        throw new Error('تعذر تشغيل طابور المهام الخلفي على الخادم.');
+      }
       return res.status(202).json({ jobId: id, status: 'queued' });
     }
 
