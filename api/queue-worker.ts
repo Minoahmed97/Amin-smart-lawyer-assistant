@@ -1,6 +1,8 @@
 import { handleCallback } from '@vercel/queue';
 import { runDurableQueuedJob } from '../backend/gemini/jobs.ts';
 
+export const config = { api: { bodyParser: false } };
+
 const queueCallback = handleCallback(async (message: any) => {
   const jobId = String(message?.jobId || '').trim();
   if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
