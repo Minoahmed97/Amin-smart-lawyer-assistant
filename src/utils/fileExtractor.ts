@@ -9,6 +9,7 @@ export interface ExtractTextOptions {
   signal?: AbortSignal;
   onStage?: (stage: 'preparing' | 'processing') => void | Promise<void>;
   onJobStatus?: SavedOcrTaskLifecycle['onStatus'];
+  enqueueOnly?: boolean;
 }
 
 export interface ExtractedFileResult {
@@ -335,7 +336,7 @@ async function runQueuedOcrTask(
       recoveryScope,
       options.userId || getActiveLawyerUserId(),
       options.jobId,
-      { onStatus: options.onJobStatus, signal: options.signal },
+      { onStatus: options.onJobStatus, signal: options.signal, enqueueOnly: options.enqueueOnly },
     );
   } finally {
     lastOcrUploadFinishedAt = Date.now();
@@ -363,7 +364,7 @@ async function runQueuedOcrBatchTask(
     return await runSavedOcrBatchTask(
       images, pageTexts, fileName, recoveryScope,
       options.userId || getActiveLawyerUserId(), options.jobId,
-      { onStatus: options.onJobStatus, signal: options.signal },
+      { onStatus: options.onJobStatus, signal: options.signal, enqueueOnly: options.enqueueOnly },
     );
   } finally {
     lastOcrUploadFinishedAt = Date.now();
@@ -547,7 +548,7 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
   }
 
   const cleanText = extractedText.trim();
-  if (!cleanText) {
+  if (!cleanText && !(options.enqueueOnly && backgroundJobId)) {
     throw new Error(`تعذر استخراج نص من "${fileName}".`);
   }
 
