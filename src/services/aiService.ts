@@ -23,6 +23,20 @@ function getRequestHeaders(): Record<string, string> {
   return headers;
 }
 
+export async function fetchSavedAiJob(jobId: string): Promise<{
+  jobId: string; status: string; partialResult: string; result: string; error: string | null;
+}> {
+  if (!/^[0-9a-f-]{36}$/i.test(jobId)) throw new Error('معرّف المهمة غير صالح.');
+  const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
+    method: 'GET',
+    headers: { ...getRequestHeaders(), 'Cache-Control': 'no-store' },
+    cache: 'no-store',
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error || 'تعذر استرجاع نتيجة المهمة.');
+  return data;
+}
+
 export function cleanDirectResponse(rawText: string): string {
   if (!rawText) return '';
   let text = rawText.trim();
