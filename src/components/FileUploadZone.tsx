@@ -11,8 +11,8 @@ RefreshCw,
 Clock3,
 Image as ImageIcon,
 } from 'lucide-react';
-import { checkServerOCRReadiness, extractTextFromAnyFile } from '../utils/fileExtractor.ts';
-import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
+import { checkServerOCRReadiness, compressAndResizeImage, extractTextFromAnyFile } from '../utils/fileExtractor.ts';
+import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getSavedOcrJobs, queueSavedOcrBatchTask, resumeSavedOcrTask, startSavedOcrBatch } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 import {
 createFileBatchId,
@@ -385,6 +385,64 @@ if (mountedRef.current) {
   onProcessingChange?.(true);  
   setErrorMsg(null);  
 }  
+
+// Multi-image batches are uploaded to the durable server queue before the
+// first OCR job starts. The server then advances one image at a time, even
+// after this component or browser page is closed.
+const isFreshImageBatch = eligible.length > 1
+  && eligible.every((item) => isImageFile(item) && !item.jobId && (item.status === 'waiting' || item.status === 'preparing'));
+if (isFreshImageBatch) {
+  const batchId = eligible[0].batchId;
+  for (const item of eligible) {
+    if (!isCurrent()) return;
+    try {
+      const sourceFile = restoreFileFromBatchItem(item);
+      const compressed = await compressAndResizeImage(sourceFile, 1800, 0.82);
+      const jobId = createFileOcrJobId();
+      await updateRecord(item.id, {
+        status: 'preparing',
+        stageLabel: 'تجهيز الصورة وإدراجها في طابور OCR',
+        jobId,
+        error: undefined,
+      });
+      const savedJobId = await queueSavedOcrBatchTask(
+        compressed.base64Data,
+        compressed.mimeType,
+        item.fileName,
+        recoveryScope,
+        effectiveUserId,
+        batchId,
+        item.order,
+        jobId,
+      );
+      await updateRecord(item.id, {
+        status: 'processing',
+        stageLabel: 'تم حفظ الصورة في طابور المعالجة الخلفي',
+        jobId: savedJobId,
+        serverJobCreated: true,
+        error: undefined,
+      });
+    } catch (error: any) {
+      if (error?.name === 'AbortError') continue;
+      await updateRecord(item.id, {
+        status: 'failed',
+        stageLabel: 'فشل تجهيز الصورة للطابور',
+        error: String(error?.message || 'تعذر حفظ الصورة في طابور OCR.'),
+      }).catch(() => undefined);
+      if (mountedRef.current && activeContextRef.current === contextKey) {
+        setWarnings((previous) => [...previous, `الملف ${item.fileName}: ${error?.message || 'تعذر حفظ الصورة في طابور OCR.'}`]);
+      }
+    }
+  }
+
+  const queuedItems = await getFileBatchItems(effectiveUserId, recoveryScope).catch(() => []);
+  const queuedBatch = queuedItems.filter((item) => item.batchId === batchId && item.status === 'processing' && Boolean(item.jobId));
+  if (queuedBatch.length) {
+    await startSavedOcrBatch(batchId);
+    await processRecords(queuedBatch, isCurrent);
+  }
+  return;
+}
 
 for (let index = 0; index < eligible.length; index += 1) {  
   const item = eligible[index];  
