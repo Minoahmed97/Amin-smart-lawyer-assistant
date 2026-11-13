@@ -1,15 +1,50 @@
-import { QueueClient } from '@vercel/queue';
+import { handleCallback } from '@vercel/queue';
 import { runDurableQueuedJob } from '../backend/gemini/jobs.ts';
 
-const queue = new QueueClient();
-
-export default queue.handleNodeCallback(async (message: any) => {
+const queueCallback = handleCallback(async (message: any) => {
   const jobId = String(message?.jobId || '').trim();
   if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
     throw new Error('Invalid AI job identifier in durable queue message.');
   }
-
-  // Await the entire persisted-job pipeline. A normal return acknowledges the
-  // queue message; a thrown error lets Vercel retry the delivery.
   await runDurableQueuedJob(jobId);
 });
+
+// The project uses Vercel's Node.js Functions (api/*.ts). Adapt the incoming
+// Node request to the Web Request accepted by handleCallback.
+export default async function handler(req: any, res: any) {
+  try {
+    const headers = new Headers();
+    for (const [name, rawValue] of Object.entries(req.headers || {})) {
+      if (rawValue === undefined || rawValue === null) continue;
+      headers.set(name, Array.isArray(rawValue) ? rawValue.join(', ') : String(rawValue));
+    }
+
+    const host = String(req.headers?.host || 'localhost');
+    const requestUrl = new URL(String(req.url || '/api/queue-worker'), `https://${host}`);
+    const method = String(req.method || 'POST').toUpperCase();
+    const chunks: Uint8Array[] = [];
+    if (method !== 'GET' && method !== 'HEAD') {
+      for await (const chunk of req) {
+        chunks.push(chunk instanceof Uint8Array ? chunk : Buffer.from(chunk));
+      }
+    }
+    const body = chunks.length ? Buffer.concat(chunks) : undefined;
+    const webRequest = new Request(requestUrl, {
+      method,
+      headers,
+      ...(body ? { body } : {}),
+    });
+
+    const response = await queueCallback(webRequest);
+    res.statusCode = response.status;
+    response.headers.forEach((value, name) => res.setHeader(name, value));
+    res.end(await response.text());
+  } catch (error: any) {
+    console.error('Durable queue callback failed:', error?.message || error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'تعذر تشغيل عامل المهام الخلفي.' });
+    } else {
+      res.end();
+    }
+  }
+}
