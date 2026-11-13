@@ -18,7 +18,7 @@ import {
 } from '../utils/deviceFingerprint.ts';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { initAnalyticsTracking, stopAnalyticsTracking, recordAnalyticsEvent } from '../services/analyticsService.ts';
-import { enableCompletionPushNotifications } from '../services/aiService.ts';
+import { enableCompletionPushNotifications, fetchSavedAiJob } from '../services/aiService.ts';
 import { Scale, Shield, AlertOctagon, CreditCard, FolderArchive, AlertTriangle, Megaphone } from 'lucide-react';
 
 interface MainAppProps {
@@ -83,6 +83,41 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
 
   const [credits, setCredits] = useState<number>(() => Number(user?.credits || user?.trialOperationsRemaining || 0));
   const [vaultModelsCount, setVaultModelsCount] = useState<number>(0);
+  const [notificationJobResult, setNotificationJobResult] = useState<{ title: string; text: string; error?: boolean } | null>(null);
+
+  // A push notification opens the app with ?jobId=...; fetch and display the
+  // persisted server result without requiring the user to revisit the source view.
+  useEffect(() => {
+    const jobId = new URLSearchParams(window.location.search).get('jobId');
+    if (!jobId || !/^[0-9a-f-]{36}$/i.test(jobId)) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const check = async () => {
+      try {
+        const job = await fetchSavedAiJob(jobId);
+        if (!active) return;
+        if (job.status === 'completed') {
+          setNotificationJobResult({ title: 'اكتملت المهمة المطلوبة', text: job.result || job.partialResult || 'اكتملت المهمة دون نص معروض.' });
+          return;
+        }
+        if (job.status === 'failed') {
+          setNotificationJobResult({ title: 'تعذر إكمال المهمة', text: job.error || 'حدث خطأ أثناء تنفيذ المهمة.', error: true });
+          return;
+        }
+      } catch (error: any) {
+        if (attempts >= 4 && active) {
+          setNotificationJobResult({ title: 'تعذر استرجاع النتيجة', text: error?.message || 'يرجى إعادة المحاولة لاحقاً.', error: true });
+          return;
+        }
+      }
+      attempts += 1;
+      if (active) timer = setTimeout(check, 2500);
+    };
+    void check();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, []);
+
 
   // Shared form data for cross-tab workflows
   const [draftingData, setDraftingData] = useState<Partial<DraftingFormData>>({});
@@ -344,6 +379,18 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
           </>
         )}
       </main>
+
+      {notificationJobResult && (
+        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="نتيجة المهمة">
+          <div className={`w-full max-w-4xl max-h-[85vh] overflow-hidden rounded-2xl border shadow-2xl ${theme === 'warm-light' ? 'bg-white border-amber-300 text-slate-900' : 'bg-slate-900 border-amber-500/50 text-white'}`}>
+            <div className="flex items-center justify-between gap-3 p-4 border-b border-current/10">
+              <h2 className="font-bold text-lg">{notificationJobResult.title}</h2>
+              <button onClick={() => setNotificationJobResult(null)} className="rounded-lg px-3 py-1.5 border border-current/20 font-bold">إغلاق</button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[70vh] whitespace-pre-wrap leading-8 text-sm" dir="rtl">{notificationJobResult.text}</div>
+          </div>
+        </div>
+      )}
 
       {/* Legal Disclaimer & Footer */}
       <footer
