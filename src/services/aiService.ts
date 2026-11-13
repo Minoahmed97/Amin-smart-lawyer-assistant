@@ -411,59 +411,6 @@ export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: 
   return requestSavedJob(type, {}, onChunk, userId, jobId);
 }
 
-export async function queueSavedOcrBatchTask(
-  base64Data: string,
-  mimeType: string,
-  fileName: string,
-  storageScope: string,
-  userId: string,
-  batchId: string,
-  batchOrder: number,
-  requestedJobId: string,
-): Promise<string> {
-  const jobId = requestedJobId || makeJobId();
-  const safeBatchId = String(batchId || '').trim();
-  if (!safeBatchId || safeBatchId.length > 100 || !Number.isInteger(batchOrder) || batchOrder < 0) {
-    throw new Error('بيانات مجموعة الصور غير صالحة.');
-  }
-  const response = await fetch('/api/gemini/jobs', {
-    method: 'POST',
-    headers: getRequestHeaders(),
-    body: JSON.stringify({
-      taskType: 'ocr',
-      jobId,
-      payload: {
-        base64Data,
-        mimeType,
-        fileName,
-        recoveryScope: sanitizeStoragePart(storageScope),
-        _ocrBatchId: safeBatchId,
-        _ocrBatchOrder: String(batchOrder).padStart(4, '0'),
-      },
-    }),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.error || `تعذر حفظ الصورة في طابور OCR (${response.status}).`);
-  upsertSavedOcrJob(storageScope, userId, {
-    jobId,
-    fileName,
-    mimeType,
-    status: 'pending',
-    createdAt: new Date().toISOString(),
-  });
-  return String(data?.jobId || jobId);
-}
-
-export async function startSavedOcrBatch(batchId: string): Promise<void> {
-  const response = await fetch('/api/gemini/jobs', {
-    method: 'POST',
-    headers: getRequestHeaders(),
-    body: JSON.stringify({ action: 'start-ocr-batch', batchId }),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.error || `تعذر بدء طابور الصور (${response.status}).`);
-}
-
 export async function runSavedOcrTask(
   base64Data: string,
   mimeType: string,
