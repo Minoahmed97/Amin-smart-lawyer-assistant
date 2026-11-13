@@ -387,18 +387,38 @@ function getWorkerBaseUrl() {
 const queuedDispatches = new Map<string, Promise<void>>();
 const queuedDispatchLastAttempt = new Map<string, number>();
 
-async function dispatchQueuedJob(jobId: string): Promise<void> {
-  const active = queuedDispatches.get(jobId);
-  if (active) return active;
-  const lastAttempt = queuedDispatchLastAttempt.get(jobId) || 0;
-  if (Date.now() - lastAttempt < 15000) return;
-  queuedDispatchLastAttempt.set(jobId, Date.now());
-  const task = dispatchQueuedJobOnce(jobId).finally(() => {
-    queuedDispatches.delete(jobId);
-    if (queuedDispatchLastAttempt.size > 500) queuedDispatchLastAttempt.clear();
-  });
-  queuedDispatches.set(jobId, task);
-  return task;
+async function dispatchQueuedJob(jobId: string) {
+  try {
+    const baseUrl = getWorkerBaseUrl();
+    if (baseUrl) {
+      // إرسال الطلب بشكل صريح لمسار الـ API المخصص للـ worker لتفادي العودة بصفحة HTML (non-json)
+      const workerUrl = `${baseUrl}/api/gemini/jobs?action=worker&id=${encodeURIComponent(jobId)}`;
+      const workerToken = internalWorkerToken();
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const response = await fetch(workerUrl, {
+            method: 'GET',
+            headers: { 'x-amin-job-worker': workerToken, 'cache-control': 'no-store' },
+            signal: AbortSignal.timeout(8000),
+          });
+          const body = await response.json().catch(() => null);
+          const acknowledged = response.ok && body?.jobId === jobId;
+          if (acknowledged) return;
+        } catch {
+          // محاولة أخرى
+        }
+      }
+    }
+  } catch (error: any) {
+    console.warn('Dispatch fallback triggered:', safeDiagnosticMessage(error?.message));
+  }
+
+  try {
+    const claimed = await claimQueuedJob(jobId);
+    if (claimed) startClaimedJob(claimed);
+  } catch (error: any) {
+    console.error('Queue dispatch failed:', safeDiagnosticMessage(error?.message));
+  }
 }
 
 async function dispatchQueuedJobOnce(jobId: string) {
