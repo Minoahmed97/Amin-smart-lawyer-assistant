@@ -379,20 +379,101 @@ if (needsReadinessCheck) {
   }  
 }  
 
-if (!isCurrent()) return;  
-if (mountedRef.current) {  
-  setIsProcessing(true);  
-  onProcessingChange?.(true);  
-  setErrorMsg(null);  
-}  
+if (!isCurrent()) return;
+if (mountedRef.current) {
+  setIsProcessing(true);
+  onProcessingChange?.(true);
+  setErrorMsg(null);
+}
 
-for (let index = 0; index < eligible.length; index += 1) {  
-  const item = eligible[index];  
-  if (!isCurrent()) return;  
-  await processStoredItem(item);  
-  if (index < eligible.length - 1 && isDirectOcrFile(item) && isDirectOcrFile(eligible[index + 1])) {  
-    await new Promise((resolve) => setTimeout(resolve, 2500));  
-  }  
+// Phase 1: create and persist every server OCR job for this saved batch before
+// waiting for any result. The original blobs and ordering were already saved
+// atomically in IndexedDB by processFilesBatch.
+for (const original of eligible) {
+  if (!isCurrent()) return;
+  if (!isDirectOcrFile(original) || original.status === 'completed' ||
+      (original.status === 'processing' && original.jobId) ||
+      isFileTaskCancelled(effectiveUserId, recoveryScope, original.id)) continue;
+
+  try {
+    const sourceFile = restoreFileFromBatchItem(original);
+    await updateRecord(original.id, {
+      status: 'preparing',
+      stageLabel: 'تجهيز وإدراج المهمة في الطابور الخلفي',
+      error: undefined,
+    });
+    const staged = await extractTextFromAnyFile(sourceFile, recoveryScope, {
+      userId: effectiveUserId,
+      jobId: original.jobId || createFileOcrJobId(),
+      enqueueOnly: true,
+      onStage: async () => {
+        await updateRecord(original.id, {
+          status: 'preparing',
+          stageLabel: 'تجهيز الملف وإرساله إلى الطابور الخلفي',
+        });
+      },
+      onJobStatus: async (status) => {
+        if (status === 'queued' || status === 'processing') {
+          await updateRecord(original.id, {
+            status: 'processing',
+            stageLabel: 'تم حفظ مهمة الملف على الخادم',
+            serverJobCreated: true,
+          });
+        }
+      },
+    });
+
+    if (staged.backgroundJobId) {
+      await updateRecord(original.id, {
+        status: 'processing',
+        stageLabel: 'المهمة محفوظة بالخادم؛ في انتظار النتيجة',
+        jobId: staged.backgroundJobId,
+        serverJobCreated: true,
+        error: undefined,
+      });
+    } else if (staged.text?.trim()) {
+      const completed = await updateRecord(original.id, {
+        status: 'completed',
+        stageLabel: 'اكتمل استخراج النص',
+        extractedText: staged.text,
+        error: undefined,
+      });
+      if (mountedRef.current && activeContextRef.current === contextKey) {
+        await deliverCompletedText(completed, staged.text, sourceFile, contextKey);
+      }
+    } else {
+      throw new Error('لم تُنشأ مهمة OCR ولم يُستخرج نص من الملف.');
+    }
+  } catch (error: any) {
+    if (error?.name === 'AbortError') return;
+    await updateRecord(original.id, {
+      status: 'failed',
+      stageLabel: 'تعذر إدراج الملف في طابور OCR',
+      error: String(error?.message || 'تعذر إدراج الملف في طابور OCR.'),
+    }).catch(() => undefined);
+    if (mountedRef.current && activeContextRef.current === contextKey) {
+      setWarnings((previous) => [...previous, `الملف ${original.fileName}: تعذر إدراجه في الطابور الخلفي؛ يمكنك إعادة محاولته.`]);
+    }
+  }
+}
+
+if (!isCurrent()) return;
+const latestBeforeProcessing = await getFileBatchItems(effectiveUserId, recoveryScope).catch(() => []);
+const eligibleIds = new Set(eligible.map((item) => item.id));
+const orderedForProcessing = latestBeforeProcessing.filter((item) =>
+  eligibleIds.has(item.id) &&
+  !isFileTaskCancelled(effectiveUserId, recoveryScope, item.id) &&
+  (item.status === 'waiting' || item.status === 'preparing' || item.status === 'processing' ||
+   (item.status === 'completed' && Boolean(item.extractedText) && !item.deliveredToWorkflow))
+);
+
+for (let index = 0; index < orderedForProcessing.length; index += 1) {
+  const item = orderedForProcessing[index];
+  if (!isCurrent()) return;
+  await processStoredItem(item);
+  if (index < orderedForProcessing.length - 1 && isDirectOcrFile(item) && isDirectOcrFile(orderedForProcessing[index + 1])) {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+  }
 }  
 
 if (!isCurrent()) return;  
