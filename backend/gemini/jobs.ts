@@ -23,7 +23,7 @@ const JOB_TABLE = 'app_ai_generation_jobs';
 const PUSH_TABLE = 'app_push_subscriptions';
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
-const JOB_STALE_TIMEOUT_MS = 4 * 60 * 1000 + 10 * 1000;
+const JOB_STALE_TIMEOUT_MS = 5 * 60 * 1000 + 20 * 1000;
 const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة الملف.';
 
 function safeDiagnosticMessage(value: unknown) {
@@ -174,28 +174,62 @@ function safePayload(input: any, taskType: string) {
   }
 
   if (taskType === 'ocr') {
-    payload.base64Data = validateBase64Payload(payload.base64Data, 20 * 1024 * 1024);
     limitBodyString(payload.fileName, 255, 'اسم الملف');
     const fileName = String(payload.fileName || '').trim();
     const mimeType = String(payload.mimeType || '').toLowerCase();
-    const allowedMimeTypes = [
-      'application/pdf', 'application/msword',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'image/jpeg', 'image/png', 'image/webp', 'image/bmp',
-    ];
+    const allowedMimeTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png', 'image/webp', 'image/bmp'];
     if (!fileName || !/\.(pdf|doc|docx|jpe?g|png|webp|bmp)$/i.test(fileName)) {
-      const error: any = new Error('اسم الملف أو صيغته غير مدعومين.');
-      error.statusCode = 400;
-      throw error;
+      const error: any = new Error('اسم الملف أو صيغته غير مدعومين.'); error.statusCode = 400; throw error;
     }
     if (mimeType && !allowedMimeTypes.includes(mimeType)) {
-      const error: any = new Error('نوع الملف غير مدعوم.');
-      error.statusCode = 400;
-      throw error;
+      const error: any = new Error('نوع الملف غير مدعوم.'); error.statusCode = 400; throw error;
     }
-    const recoveryScope = String(payload.recoveryScope || 'general');
+    if (payload.images) {
+      limitBodyString(payload.images, 28 * 1024 * 1024, 'صور صفحات PDF');
+      let images: any;
+      try { images = JSON.parse(payload.images); } catch {
+        const error: any = new Error('بيانات صور صفحات PDF غير صالحة.'); error.statusCode = 400; throw error;
+      }
+      if (!Array.isArray(images) || images.length < 1 || images.length > 100 || mimeType !== 'application/pdf' || !fileName.toLowerCase().endsWith('.pdf')) {
+        const error: any = new Error('مجموعة صور صفحات PDF غير صالحة.'); error.statusCode = 400; throw error;
+      }
+      let totalBytes = 0;
+      const normalizedImages = images.map((image: any) => {
+        const pageNumber = Number(image?.pageNumber);
+        const imageMime = String(image?.mimeType || '').toLowerCase();
+        if (!Number.isInteger(pageNumber) || pageNumber < 1 || !['image/jpeg', 'image/png', 'image/webp', 'image/bmp'].includes(imageMime)) {
+          const error: any = new Error('بيانات إحدى صور صفحات PDF غير صالحة.'); error.statusCode = 400; throw error;
+        }
+        const base64 = validateBase64Payload(image?.base64Data, 20 * 1024 * 1024);
+        const bytes = Math.floor(base64.length * 3 / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+        totalBytes += bytes;
+        if (totalBytes > 20 * 1024 * 1024) {
+          const error: any = new Error('حجم صور صفحات PDF بعد الضغط أكبر من الحد الآمن لطلب واحد. قسّم الملف إلى أجزاء أصغر.'); error.statusCode = 413; throw error;
+        }
+        return { pageNumber, mimeType: imageMime, base64Data: base64 };
+      }).sort((a: any, b: any) => a.pageNumber - b.pageNumber);
+      payload.images = JSON.stringify(normalizedImages);
+      limitBodyString(payload.pageTexts || '[]', 2 * 1024 * 1024, 'النصوص القابلة للتحديد في PDF');
+      let pageTexts: any;
+      try { pageTexts = JSON.parse(payload.pageTexts || '[]'); } catch {
+        const error: any = new Error('النصوص القابلة للتحديد في PDF غير صالحة.'); error.statusCode = 400; throw error;
+      }
+      if (!Array.isArray(pageTexts)) {
+        const error: any = new Error('قائمة صفحات النص في PDF غير صالحة.'); error.statusCode = 400; throw error;
+      }
+      for (const page of pageTexts) {
+        if (!Number.isInteger(Number(page?.pageNumber)) || Number(page.pageNumber) < 1 || typeof page?.text !== 'string') {
+          const error: any = new Error('بيانات صفحة نصية داخل PDF غير صالحة.'); error.statusCode = 400; throw error;
+        }
+        limitBodyString(page.text, 100000, 'نص صفحة PDF');
+      }
+      payload.pageTexts = JSON.stringify(pageTexts.sort((a: any, b: any) => Number(a.pageNumber) - Number(b.pageNumber)));
+      delete payload.base64Data;
+    } else {
+      payload.base64Data = validateBase64Payload(payload.base64Data, 20 * 1024 * 1024);
+    }
     payload.fileName = fileName;
-    payload.recoveryScope = recoveryScope;
+    payload.recoveryScope = String(payload.recoveryScope || 'general');
     return payload;
   }
 
@@ -350,7 +384,24 @@ function getWorkerBaseUrl() {
   return `https://${host.replace(/^https?:\/\//i, '').replace(/\/$/, '')}`;
 }
 
-async function dispatchQueuedJob(jobId: string) {
+const queuedDispatches = new Map<string, Promise<void>>();
+const queuedDispatchLastAttempt = new Map<string, number>();
+
+async function dispatchQueuedJob(jobId: string): Promise<void> {
+  const active = queuedDispatches.get(jobId);
+  if (active) return active;
+  const lastAttempt = queuedDispatchLastAttempt.get(jobId) || 0;
+  if (Date.now() - lastAttempt < 15000) return;
+  queuedDispatchLastAttempt.set(jobId, Date.now());
+  const task = dispatchQueuedJobOnce(jobId).finally(() => {
+    queuedDispatches.delete(jobId);
+    if (queuedDispatchLastAttempt.size > 500) queuedDispatchLastAttempt.clear();
+  });
+  queuedDispatches.set(jobId, task);
+  return task;
+}
+
+async function dispatchQueuedJobOnce(jobId: string) {
   try {
     const baseUrl = getWorkerBaseUrl();
     if (baseUrl) {
