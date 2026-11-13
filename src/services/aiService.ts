@@ -14,7 +14,7 @@ async function throttleRequests(): Promise<void> {
   lastRequestTimestamp = Date.now();
 }
 
-function getRequestHeaders(): Record<string, string> {
+export function getRequestHeaders(): Record<string, string> {
   // Gemini credentials stay exclusively on the central server.
   // The AI endpoints require the user's existing central session token.
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
