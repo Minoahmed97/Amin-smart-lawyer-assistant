@@ -269,7 +269,7 @@ const task = (async () => {
         if (!mountedRef.current || activeContextRef.current !== taskContextKey) return;  
         // The browser may have refreshed after persisting the job ID but before  
         // the server accepted the POST. Re-send the same ID; the API is idempotent.  
-        await checkServerOCRReadiness();  
+
         extracted = await extractTextFromAnyFile(sourceFile, recoveryScope, {  
           userId: effectiveUserId,  
           jobId,  
