@@ -46,7 +46,8 @@
         {
           "type": "queue/v2beta",
           "topic": "amin-ai-jobs",
-          "retryAfterSeconds": 45
+          "retryAfterSeconds": 45,
+          "maxConcurrency": 1
         }
       ]
     }
