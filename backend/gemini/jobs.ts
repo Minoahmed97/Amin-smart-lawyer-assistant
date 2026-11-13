@@ -645,6 +645,27 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     }
   } finally {
     clearInterval(heartbeat);
+    // Image OCR batches carry the next job ID in the persisted payload.
+    // Advance the chain from the server, even if the browser has closed.
+    if (taskType === 'ocr' && /^[0-9a-f-]{36}$/i.test(String(payload.nextJobId || ''))) {
+      try {
+        const finished = await loadQueueJob(jobId);
+        if (finished && ['completed', 'failed'].includes(String(finished.status))) {
+          let queued = false;
+          for (let attempt = 0; attempt < 4 && !queued; attempt += 1) {
+            try {
+              await send('amin-ai-jobs', { jobId: String(payload.nextJobId) });
+              queued = true;
+            } catch (queueError: any) {
+              if (attempt === 3) throw queueError;
+              await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+            }
+          }
+        }
+      } catch (advanceError: any) {
+        console.error('Could not advance the sequential OCR image queue:', safeDiagnosticMessage(advanceError?.message || advanceError));
+      }
+    }
   }
 }
 
@@ -662,6 +683,50 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ subscribed: true });
       }
       const { session } = await requireActiveSession(req);
+      if (requestBody?.action === 'enqueue-ocr-batch') {
+        const rawIds = Array.isArray(requestBody?.jobIds) ? requestBody.jobIds : [];
+        const jobIds = rawIds.map((value: unknown) => String(value || '').trim());
+        if (!jobIds.length || jobIds.length > 100 || jobIds.some((id: string) => !/^[0-9a-f-]{36}$/i.test(id)) || new Set(jobIds).size !== jobIds.length) {
+          return res.status(400).json({ error: 'قائمة مهام الصور غير صالحة.' });
+        }
+
+        const jobs: any[] = [];
+        for (const id of jobIds) {
+          const job = await loadQueueJob(id);
+          if (!job || job.user_id !== session.userId || job.task_type !== 'ocr') {
+            return res.status(404).json({ error: 'تعذر العثور على إحدى مهام الصور المحفوظة.' });
+          }
+          if (!['queued', 'running', 'completed'].includes(String(job.status))) {
+            return res.status(409).json({ error: 'إحدى مهام الصور ليست جاهزة للتشغيل.' });
+          }
+          jobs.push(job);
+        }
+
+        // Store the next image ID inside the durable job payload. The worker
+        // will enqueue it only after this image reaches a terminal state.
+        for (let index = 0; index < jobs.length; index += 1) {
+          if (jobs[index].status !== 'queued') continue;
+          const payload = toPayload(jobs[index].payload);
+          const nextJobId = jobIds[index + 1];
+          if (nextJobId) payload.nextJobId = nextJobId;
+          else delete payload.nextJobId;
+          const updated = await supabase(
+            `${JOB_TABLE}?id=eq.${encodeURIComponent(jobIds[index])}&user_id=eq.${encodeURIComponent(session.userId)}&task_type=eq.ocr&status=eq.queued`,
+            {
+              method: 'PATCH',
+              headers: { Prefer: 'return=minimal' },
+              body: JSON.stringify({ payload, updated_at: new Date().toISOString() }),
+            },
+          );
+          if (!updated.ok) throw new Error('تعذر ربط مهام الصور بالتتابع على الخادم.');
+        }
+
+        const first = jobs[0];
+        if (first.status === 'queued') {
+          await send('amin-ai-jobs', { jobId: first.id });
+        }
+        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: first.id });
+      }
       if (requestBody?.action === 'cancel-ocr') {
         const jobId = String(requestBody?.jobId || '').trim();
         if (!/^[0-9a-f-]{36}$/i.test(jobId)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
@@ -729,7 +794,7 @@ export default async function handler(req: any, res: any) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
-            if (existing.status === 'queued') {
+            if (existing.status === 'queued' && requestBody?.deferQueue !== true) {
               try { await send('amin-ai-jobs', { jobId: existing.id }); }
               catch { return res.status(503).json({ error: 'تعذر إعادة إدخال المهمة المحفوظة إلى طابور المعالجة.' }); }
             }
@@ -742,7 +807,9 @@ export default async function handler(req: any, res: any) {
       // Publish only the durable job identifier; payloads remain in Supabase.
       // The database claim makes at-least-once queue delivery safe.
       try {
-        await send('amin-ai-jobs', { jobId: id });
+        if (requestBody?.deferQueue !== true) {
+          await send('amin-ai-jobs', { jobId: id });
+        }
       } catch (queueError: any) {
         await patchJob(id, session.userId, {
           status: 'failed',
