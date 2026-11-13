@@ -771,7 +771,8 @@ export default async function handler(req: any, res: any) {
       let job = Array.isArray(rows) ? rows[0] : null;
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
 
-      if (job.status === 'queued') scheduleBackground(dispatchQueuedJob(id));
+      // Queued jobs are consumed only by the durable Vercel Queue worker.
+      // Do not let the legacy waitUntil dispatcher race and claim them first.
 
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
