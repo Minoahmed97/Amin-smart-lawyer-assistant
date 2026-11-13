@@ -73,6 +73,8 @@ export interface SavedOcrTaskLifecycle {
   onStatus?: (status: 'queued' | 'processing' | 'completed' | 'failed') => void | Promise<void>;
   signal?: AbortSignal;
   enqueueOnly?: boolean;
+  deferQueue?: boolean;
+  nextJobId?: string;
 }
 
 function sanitizeStoragePart(value: string): string {
@@ -287,7 +289,15 @@ async function requestSavedJob<T extends Record<string, any>>(
       const createResponse = await fetch('/api/gemini/jobs', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ taskType: type, payload, jobId }),
+        body: JSON.stringify({
+          taskType: type,
+          payload: {
+            ...payload,
+            ...(type === 'ocr' && lifecycle?.nextJobId ? { nextJobId: lifecycle.nextJobId } : {}),
+          },
+          jobId,
+          deferQueue: type === 'ocr' && lifecycle?.deferQueue === true,
+        }),
       });
       receivedHttpResponse = true;
       if (!createResponse.ok) {
