@@ -74,7 +74,6 @@ export interface SavedOcrTaskLifecycle {
   signal?: AbortSignal;
   enqueueOnly?: boolean;
   deferQueue?: boolean;
-  nextJobId?: string;
 }
 
 function sanitizeStoragePart(value: string): string {
@@ -291,10 +290,7 @@ async function requestSavedJob<T extends Record<string, any>>(
         headers,
         body: JSON.stringify({
           taskType: type,
-          payload: {
-            ...payload,
-            ...(type === 'ocr' && lifecycle?.nextJobId ? { nextJobId: lifecycle.nextJobId } : {}),
-          },
+          payload,
           jobId,
           deferQueue: type === 'ocr' && lifecycle?.deferQueue === true,
         }),
