@@ -293,16 +293,8 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
   throw new Error(`تعذر استخراج نص وورد القديم (${file.name}).`);
 }
 
-export interface ExtractTextOptions {
-  userId?: string;
-  jobId?: string;
-  signal?: AbortSignal;
-  onStage?: (stage: 'preparing' | 'processing') => void | Promise<void>;
-  onJobStatus?: (status: 'queued' | 'processing' | 'completed' | 'failed') => void | Promise<void>;
-}
-
 /** * أداة الاستخراج الشاملة والسريعة: * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. * 4. الملفات النصية (.txt): قراءة فورية للنص. */
-export async function extractTextFromAnyFile(file: File, recoveryScope = 'general', options: ExtractTextOptions = {}): Promise<ExtractedFileResult> {
+export async function extractTextFromAnyFile(file: File, recoveryScope = 'general'): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
   let extractedText = '';
@@ -366,18 +358,12 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
     // Route long-running PDFs/images through the existing durable server job queue.
     // This keeps the current OCR handler and Gemini/Groq routing, while preserving
     // the job id for recovery if the browser is backgrounded or the connection drops.
-    await options.onStage?.('preparing');
     const savedTask = await runSavedOcrTask(
       base64Data,
       mimeType,
       fileName,
       recoveryScope,
-      options.userId || getActiveLawyerUserId(),
-      options.jobId,
-      {
-        signal: options.signal,
-        onStatus: options.onJobStatus,
-      },
+      getActiveLawyerUserId(),
     );
     extractedText = savedTask.text;
     backgroundJobId = savedTask.jobId;
