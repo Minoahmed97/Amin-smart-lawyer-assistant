@@ -72,6 +72,7 @@ export interface SavedOcrJob {
 export interface SavedOcrTaskLifecycle {
   onStatus?: (status: 'queued' | 'processing' | 'completed' | 'failed') => void | Promise<void>;
   signal?: AbortSignal;
+  enqueueOnly?: boolean;
 }
 
 function sanitizeStoragePart(value: string): string {
@@ -312,6 +313,10 @@ async function requestSavedJob<T extends Record<string, any>>(
   }
 
   await cancelIfAborted();
+  // Batch uploads first persist every server-side OCR job ID, then resume and
+  // collect results in a separate pass. This avoids waiting on file 1 before
+  // file 2..N have even been submitted.
+  if (type === 'ocr' && lifecycle?.enqueueOnly) return '';
   let lastText = '';
   let lastReportedOcrStatus = '';
   let transientFailures = 0;
