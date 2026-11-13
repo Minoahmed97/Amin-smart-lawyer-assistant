@@ -374,8 +374,29 @@ function startClaimedJob(job: any) {
 
 /** Durable Vercel Queue consumer entry: claim and await the existing job pipeline. */
 export async function runDurableQueuedJob(jobId: string): Promise<void> {
-  const job = await loadQueueJob(jobId);
-  if (!job || job.status !== 'queued') return;
+  let job = await loadQueueJob(jobId);
+  if (!job) return;
+
+  // Recover a job whose previous function invocation was terminated by its
+  // platform execution limit. A live worker refreshes updated_at every 30s,
+  // so only a genuinely stale running record is eligible for reclamation.
+  if (job.status === 'running') {
+    const updatedAt = Date.parse(String(job.updated_at || ''));
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt < JOB_STALE_TIMEOUT_MS) return;
+    const requeued = await supabase(
+      `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&status=eq.running&updated_at=lt.${encodeURIComponent(new Date(Date.now() - JOB_STALE_TIMEOUT_MS).toISOString())}`,
+      {
+        method: 'PATCH',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ status: 'queued', error: null, updated_at: new Date().toISOString() }),
+      },
+    );
+    if (!requeued.ok) throw new Error(`تعذر استعادة المهمة المتوقفة (${requeued.status}).`);
+    const rows = await requeued.json();
+    if (!Array.isArray(rows) || !rows.length) return;
+    job = rows[0];
+  }
+  if (job.status !== 'queued') return;
   const claimed = await claimQueuedJob(jobId);
   if (!claimed) return;
   const userId = String(claimed.user_id || '');
@@ -403,7 +424,7 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
 }
 
 async function loadQueueJob(jobId: string) {
-  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status&id=eq.${encodeURIComponent(jobId)}&limit=1`);
+  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status,updated_at&id=eq.${encodeURIComponent(jobId)}&limit=1`);
   if (!response.ok) throw new Error(`تعذر قراءة المهمة من الطابور (${response.status}).`);
   const rows = await response.json();
   return Array.isArray(rows) ? rows[0] || null : null;
@@ -754,13 +775,27 @@ export default async function handler(req: any, res: any) {
 
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
-        const staleError = 'توقفت المعالجة بعد عدم وصول أي تحديث.';
+        // Do not convert an interrupted background task into a terminal failure.
+        // Return it to the durable queue so the same stored payload can resume.
         try {
-          await patchJob(id, session.userId, { status: 'failed', error: staleError, partial_result: job.partial_result || '', payload: {} });
+          const requeued = await supabase(
+            `${JOB_TABLE}?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&status=eq.running&updated_at=lt.${encodeURIComponent(new Date(Date.now() - JOB_STALE_TIMEOUT_MS).toISOString())}`,
+            {
+              method: 'PATCH',
+              headers: { Prefer: 'return=representation' },
+              body: JSON.stringify({ status: 'queued', error: null, updated_at: new Date().toISOString() }),
+            },
+          );
+          const changedRows = requeued.ok ? await requeued.json() : [];
+          if (Array.isArray(changedRows) && changedRows.length) {
+            await send('amin-ai-jobs', { jobId: id });
+          }
           const refreshed = await supabase(jobPath);
           const refreshedRows = await refreshed.json();
           job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
-        } catch {}
+        } catch (recoveryError: any) {
+          console.warn('Stale AI job recovery deferred:', safeDiagnosticMessage(recoveryError?.message || recoveryError));
+        }
       }
       return res.status(200).json({
         jobId: job.id,
