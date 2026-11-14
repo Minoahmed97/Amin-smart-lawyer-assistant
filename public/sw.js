@@ -98,11 +98,15 @@ self.addEventListener("push", (event) => {
           ? data.url
           : "/",
     },
-    // Keep each completed operation visible instead of replacing the previous one.
+    // Reuse the job tag to deduplicate delivery without replaying an alert.
     tag: typeof data.tag === "string" && data.tag
       ? data.tag
       : `amin-ai-${Date.now()}`,
-    renotify: true,
+    renotify: false,
+    // Do not request a silent notification. Android/browser sound is still
+    // governed by the user's notification-channel and device sound settings.
+    silent: false,
+    vibrate: [200, 100, 200],
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

@@ -364,8 +364,15 @@ const stagedImageJobIds: string[] = [];
 for (const original of eligible) {
   if (!isCurrent()) return;
   if (!isImageFile(original) || original.status === 'completed' ||
-      (original.status === 'processing' && original.jobId) ||
       isFileTaskCancelled(effectiveUserId, recoveryScope, original.id)) continue;
+
+  // A refresh may happen after the server saved this image job but before
+  // the whole batch was linked and dispatched. Reuse its durable ID so the
+  // restored batch can include every previously staged image.
+  if (original.status === 'processing' && original.jobId) {
+    stagedImageJobIds.push(original.jobId);
+    continue;
+  }
 
   try {
     const sourceFile = restoreFileFromBatchItem(original);

@@ -90,6 +90,18 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   useEffect(() => {
     const jobId = new URLSearchParams(window.location.search).get('jobId');
     if (!jobId || !/^[0-9a-f-]{36}$/i.test(jobId)) return;
+    const clearJobIdFromUrl = () => {
+      try {
+        const currentUrl = new URL(window.location.href);
+        if (currentUrl.searchParams.get('jobId') !== jobId) return;
+        currentUrl.searchParams.delete('jobId');
+        window.history.replaceState(
+          window.history.state,
+          '',
+          `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`,
+        );
+      } catch {}
+    };
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
@@ -98,15 +110,18 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         const job = await fetchSavedAiJob(jobId);
         if (!active) return;
         if (job.status === 'completed') {
+          clearJobIdFromUrl();
           setNotificationJobResult({ title: 'اكتملت المهمة المطلوبة', text: job.result || job.partialResult || 'اكتملت المهمة دون نص معروض.' });
           return;
         }
         if (job.status === 'failed') {
+          clearJobIdFromUrl();
           setNotificationJobResult({ title: 'تعذر إكمال المهمة', text: job.error || 'حدث خطأ أثناء تنفيذ المهمة.', error: true });
           return;
         }
       } catch (error: any) {
         if (attempts >= 4 && active) {
+          clearJobIdFromUrl();
           setNotificationJobResult({ title: 'تعذر استرجاع النتيجة', text: error?.message || 'يرجى إعادة المحاولة لاحقاً.', error: true });
           return;
         }

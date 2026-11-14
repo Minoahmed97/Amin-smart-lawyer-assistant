@@ -728,53 +728,14 @@ export default async function handler(req: any, res: any) {
           if (!updated.ok) throw new Error('تعذر ربط مهام الصور بالتتابع على الخادم.');
         }
 
-        const first = jobs[0];
-        if (first.status === 'queued') {
-          await send('amin-ai-jobs', { jobId: first.id });
-        }
-        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: first.id });
-      }
-      if (requestBody?.action === 'enqueue-ocr-batch') {
-        const rawIds = Array.isArray(requestBody?.jobIds) ? requestBody.jobIds : [];
-        const jobIds = rawIds.map((value: unknown) => String(value || '').trim());
-        if (!jobIds.length || jobIds.length > 100 || jobIds.some((id: string) => !/^[0-9a-f-]{36}$/i.test(id)) || new Set(jobIds).size !== jobIds.length) {
-          return res.status(400).json({ error: 'قائمة مهام الصور غير صالحة.' });
-        }
-
-        const jobs: any[] = [];
-        for (const id of jobIds) {
-          const job = await loadQueueJob(id);
-          if (!job || job.user_id !== session.userId || job.task_type !== 'ocr') {
-            return res.status(404).json({ error: 'تعذر العثور على إحدى مهام الصور المحفوظة.' });
-          }
-          if (!['queued', 'running', 'completed'].includes(String(job.status))) {
-            return res.status(409).json({ error: 'إحدى مهام الصور ليست جاهزة للتشغيل.' });
-          }
-          jobs.push(job);
-        }
-
-        // Persist the next image ID in each job. The worker advances this chain
-        // only after the current image reaches a terminal state.
-        for (let index = 0; index < jobs.length; index += 1) {
-          if (jobs[index].status !== 'queued') continue;
-          const payload = toPayload(jobs[index].payload);
-          const nextJobId = jobIds[index + 1];
-          if (nextJobId) payload.nextJobId = nextJobId;
-          else delete payload.nextJobId;
-          const updated = await supabase(
-            `${JOB_TABLE}?id=eq.${encodeURIComponent(jobIds[index])}&user_id=eq.${encodeURIComponent(session.userId)}&task_type=eq.ocr&status=eq.queued`,
-            {
-              method: 'PATCH',
-              headers: { Prefer: 'return=minimal' },
-              body: JSON.stringify({ payload, updated_at: new Date().toISOString() }),
-            },
-          );
-          if (!updated.ok) throw new Error('تعذر ربط مهام الصور بالتتابع على الخادم.');
-        }
-
-        const first = jobs[0];
-        if (first.status === 'queued') {
-          await send('amin-ai-jobs', { jobId: first.id });
+        // Resume at the first queued item only when every earlier item
+        // is already terminal. Never start a later image beside a running one.
+        const firstRunnableIndex = jobs.findIndex((job, index) =>
+          job.status === 'queued' &&
+          jobs.slice(0, index).every((previous) => ['completed', 'failed'].includes(String(previous.status)))
+        );
+        if (firstRunnableIndex >= 0) {
+          await send('amin-ai-jobs', { jobId: jobs[firstRunnableIndex].id });
         }
         return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: first.id });
       }
