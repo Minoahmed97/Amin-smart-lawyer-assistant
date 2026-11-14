@@ -387,6 +387,7 @@ for (const original of eligible) {
       userId: effectiveUserId,
       jobId,
       enqueueOnly: true,
+      deferQueue: true,
       onStage: async () => {
         await updateRecord(original.id, {
           status: 'preparing',

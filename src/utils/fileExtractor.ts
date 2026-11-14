@@ -10,6 +10,7 @@ export interface ExtractTextOptions {
   onStage?: (stage: 'preparing' | 'processing') => void | Promise<void>;
   onJobStatus?: SavedOcrTaskLifecycle['onStatus'];
   enqueueOnly?: boolean;
+  deferQueue?: boolean;
 }
 
 export interface ExtractedFileResult {
@@ -336,7 +337,7 @@ async function runQueuedOcrTask(
       recoveryScope,
       options.userId || getActiveLawyerUserId(),
       options.jobId,
-      { onStatus: options.onJobStatus, signal: options.signal, enqueueOnly: options.enqueueOnly },
+      { onStatus: options.onJobStatus, signal: options.signal, enqueueOnly: options.enqueueOnly, deferQueue: options.deferQueue },
     );
   } finally {
     lastOcrUploadFinishedAt = Date.now();
@@ -364,7 +365,7 @@ async function runQueuedOcrBatchTask(
     return await runSavedOcrBatchTask(
       images, pageTexts, fileName, recoveryScope,
       options.userId || getActiveLawyerUserId(), options.jobId,
-      { onStatus: options.onJobStatus, signal: options.signal, enqueueOnly: options.enqueueOnly },
+      { onStatus: options.onJobStatus, signal: options.signal, enqueueOnly: options.enqueueOnly, deferQueue: options.deferQueue },
     );
   } finally {
     lastOcrUploadFinishedAt = Date.now();

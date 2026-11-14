@@ -735,7 +735,14 @@ export default async function handler(req: any, res: any) {
           jobs.slice(0, index).every((previous) => ['completed', 'failed'].includes(String(previous.status)))
         );
         if (firstRunnableIndex >= 0) {
-          await send('amin-ai-jobs', { jobId: jobs[firstRunnableIndex].id });
+          const firstJob = jobs[firstRunnableIndex];
+          if (isPdfOcrPayload(firstJob.task_type, toPayload(firstJob.payload))) {
+            // Preserve the original PDF worker path, but dispatch only after the
+            // complete batch has been staged and linked in order.
+            scheduleBackground(dispatchQueuedJob(firstJob.id));
+          } else {
+            await send('amin-ai-jobs', { jobId: firstJob.id });
+          }
         }
         return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: firstRunnableIndex >= 0 ? jobs[firstRunnableIndex].id : jobs[0].id });
       }
@@ -807,9 +814,9 @@ export default async function handler(req: any, res: any) {
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
             if (existing.status === 'queued') {
-              if (isPdfOcrPayload(taskType, payload)) {
+              if (isPdfOcrPayload(taskType, payload) && requestBody?.deferQueue !== true) {
                 scheduleBackground(dispatchQueuedJob(existing.id));
-              } else if (requestBody?.deferQueue !== true) {
+              } else if (!isPdfOcrPayload(taskType, payload) && requestBody?.deferQueue !== true) {
                 try { await send('amin-ai-jobs', { jobId: existing.id }); }
                 catch { return res.status(503).json({ error: 'تعذر إعادة إدخال المهمة المحفوظة إلى طابور المعالجة.' }); }
               }
@@ -824,8 +831,9 @@ export default async function handler(req: any, res: any) {
       // The database claim makes at-least-once queue delivery safe.
       try {
         if (isPdfOcrPayload(taskType, payload)) {
-          // Restore the original Mino-ocr PDF worker dispatch path.
-          scheduleBackground(dispatchQueuedJob(id));
+          // Preserve the original PDF worker dispatch path, while allowing a
+          // batch upload to defer dispatch until every file has been staged.
+          if (requestBody?.deferQueue !== true) scheduleBackground(dispatchQueuedJob(id));
         } else if (requestBody?.deferQueue !== true) {
           await send('amin-ai-jobs', { jobId: id });
         }
