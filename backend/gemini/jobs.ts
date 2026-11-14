@@ -737,7 +737,7 @@ export default async function handler(req: any, res: any) {
         if (firstRunnableIndex >= 0) {
           await send('amin-ai-jobs', { jobId: jobs[firstRunnableIndex].id });
         }
-        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: first.id });
+        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: firstRunnableIndex >= 0 ? jobs[firstRunnableIndex].id : jobs[0].id });
       }
       if (requestBody?.action === 'cancel-ocr') {
         const jobId = String(requestBody?.jobId || '').trim();
