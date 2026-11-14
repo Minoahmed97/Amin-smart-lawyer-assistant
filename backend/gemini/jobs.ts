@@ -327,6 +327,13 @@ function isInternalWorkerRequest(req: any) {
   }
 }
 
+function isPdfOcrPayload(taskType: string, payload: Record<string, string>) {
+  return taskType === 'ocr' && (
+    String(payload.mimeType || '').toLowerCase() === 'application/pdf' ||
+    typeof payload.images === 'string'
+  );
+}
+
 function scheduleBackground(task: Promise<unknown>) {
   try {
     waitUntil(task);
@@ -838,9 +845,13 @@ export default async function handler(req: any, res: any) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
-            if (existing.status === 'queued' && requestBody?.deferQueue !== true) {
-              try { await send('amin-ai-jobs', { jobId: existing.id }); }
-              catch { return res.status(503).json({ error: 'تعذر إعادة إدخال المهمة المحفوظة إلى طابور المعالجة.' }); }
+            if (existing.status === 'queued') {
+              if (isPdfOcrPayload(taskType, payload)) {
+                scheduleBackground(dispatchQueuedJob(existing.id));
+              } else if (requestBody?.deferQueue !== true) {
+                try { await send('amin-ai-jobs', { jobId: existing.id }); }
+                catch { return res.status(503).json({ error: 'تعذر إعادة إدخال المهمة المحفوظة إلى طابور المعالجة.' }); }
+              }
             }
             return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
           }
@@ -851,7 +862,10 @@ export default async function handler(req: any, res: any) {
       // Publish only the durable job identifier; payloads remain in Supabase.
       // The database claim makes at-least-once queue delivery safe.
       try {
-        if (requestBody?.deferQueue !== true) {
+        if (isPdfOcrPayload(taskType, payload)) {
+          // Restore the original Mino-ocr PDF worker dispatch path.
+          scheduleBackground(dispatchQueuedJob(id));
+        } else if (requestBody?.deferQueue !== true) {
           await send('amin-ai-jobs', { jobId: id });
         }
       } catch (queueError: any) {
@@ -875,15 +889,15 @@ export default async function handler(req: any, res: any) {
       }
       const id = String(req?.query?.id || '').trim();
       if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
-      const jobPath = `${JOB_TABLE}?select=id,status,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
+      const jobPath = `${JOB_TABLE}?select=id,status,payload,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
       const result = await supabase(jobPath);
       if (!result.ok) return res.status(503).json({ error: 'تعذر استرجاع حالة المهمة.' });
       const rows = await result.json();
       let job = Array.isArray(rows) ? rows[0] : null;
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
 
-      // Queued jobs are consumed only by the durable Vercel Queue worker.
-      // Do not let the legacy waitUntil dispatcher race and claim them first.
+      // PDF OCR keeps the original Mino-ocr dispatcher; image OCR uses Vercel Queues.
+      const isPdfJob = isPdfOcrPayload('ocr', toPayload(job.payload));
 
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
@@ -900,7 +914,8 @@ export default async function handler(req: any, res: any) {
           );
           const changedRows = requeued.ok ? await requeued.json() : [];
           if (Array.isArray(changedRows) && changedRows.length) {
-            await send('amin-ai-jobs', { jobId: id });
+            if (isPdfJob) scheduleBackground(dispatchQueuedJob(id));
+            else await send('amin-ai-jobs', { jobId: id });
           }
           const refreshed = await supabase(jobPath);
           const refreshedRows = await refreshed.json();
