@@ -358,19 +358,19 @@ if (mountedRef.current) {
   setErrorMsg(null);
 }
 
-// Stage image jobs on the server without starting the queue yet.
-// PDFs deliberately keep their original client-driven extraction path.
-const stagedImageJobIds: string[] = [];
+// Stage every server-OCR-supported document before processing starts.
+// PDF parsing remains page-by-page: selectable text stays local and only scanned pages enter OCR.
+const stagedOcrJobIds: string[] = [];
 for (const original of eligible) {
   if (!isCurrent()) return;
-  if (!isImageFile(original) || original.status === 'completed' ||
+  if (!isServerOcrFile(original) || original.status === 'completed' ||
       isFileTaskCancelled(effectiveUserId, recoveryScope, original.id)) continue;
 
   // A refresh may happen after the server saved this image job but before
   // the whole batch was linked and dispatched. Reuse its durable ID so the
   // restored batch can include every previously staged image.
   if (original.status === 'processing' && original.jobId) {
-    stagedImageJobIds.push(original.jobId);
+    stagedOcrJobIds.push(original.jobId);
     continue;
   }
 
@@ -387,7 +387,6 @@ for (const original of eligible) {
       userId: effectiveUserId,
       jobId,
       enqueueOnly: true,
-      deferQueue: true,
       onStage: async () => {
         await updateRecord(original.id, {
           status: 'preparing',
@@ -406,7 +405,7 @@ for (const original of eligible) {
     });
 
     if (staged.backgroundJobId) {
-      stagedImageJobIds.push(staged.backgroundJobId);
+      stagedOcrJobIds.push(staged.backgroundJobId);
       await updateRecord(original.id, {
         status: 'processing',
         stageLabel: 'المهمة محفوظة بالخادم؛ في انتظار النتيجة',
@@ -440,13 +439,13 @@ for (const original of eligible) {
   }
 }
 
-// Link the successfully staged images in their original order and start only
-// the first one. The server starts each following image after the previous ends.
-if (stagedImageJobIds.length) {
+// Link all successfully staged OCR jobs in their original order.
+// The server processes them sequentially after the complete batch is staged.
+if (stagedOcrJobIds.length) {
   const enqueueResponse = await fetch('/api/gemini/jobs', {
     method: 'POST',
     headers: getRequestHeaders(),
-    body: JSON.stringify({ action: 'enqueue-ocr-batch', jobIds: stagedImageJobIds }),
+    body: JSON.stringify({ action: 'enqueue-ocr-batch', jobIds: stagedOcrJobIds }),
   });
   const enqueueData = await enqueueResponse.json().catch(() => ({}));
   if (!enqueueResponse.ok) {
@@ -465,7 +464,7 @@ for (let index = 0; index < eligible.length; index += 1) {
   // A failed staging attempt must remain failed; do not silently submit it again.
   if (item.status === 'failed') continue;
   // An image must have its already-persisted server job ID before we resume it.
-  if (isImageFile(item) && item.status !== 'completed' && !item.jobId) {
+  if (isServerOcrFile(item) && item.status !== 'completed' && !item.jobId) {
     setWarnings((previous) => [...previous, `الملف ${item.fileName}: لم يُحفظ معرّف مهمة OCR؛ تم إيقاف إعادة الإرسال التلقائي لمنع تكرار الطلب.`]);
     continue;
   }
