@@ -728,55 +728,23 @@ export default async function handler(req: any, res: any) {
           if (!updated.ok) throw new Error('تعذر ربط مهام الصور بالتتابع على الخادم.');
         }
 
-        const first = jobs[0];
-        if (first.status === 'queued') {
-          await send('amin-ai-jobs', { jobId: first.id });
-        }
-        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: first.id });
-      }
-      if (requestBody?.action === 'enqueue-ocr-batch') {
-        const rawIds = Array.isArray(requestBody?.jobIds) ? requestBody.jobIds : [];
-        const jobIds = rawIds.map((value: unknown) => String(value || '').trim());
-        if (!jobIds.length || jobIds.length > 100 || jobIds.some((id: string) => !/^[0-9a-f-]{36}$/i.test(id)) || new Set(jobIds).size !== jobIds.length) {
-          return res.status(400).json({ error: 'قائمة مهام الصور غير صالحة.' });
-        }
-
-        const jobs: any[] = [];
-        for (const id of jobIds) {
-          const job = await loadQueueJob(id);
-          if (!job || job.user_id !== session.userId || job.task_type !== 'ocr') {
-            return res.status(404).json({ error: 'تعذر العثور على إحدى مهام الصور المحفوظة.' });
+        // Resume at the first queued item only when every earlier item
+        // is already terminal. Never start a later image beside a running one.
+        const firstRunnableIndex = jobs.findIndex((job, index) =>
+          job.status === 'queued' &&
+          jobs.slice(0, index).every((previous) => ['completed', 'failed'].includes(String(previous.status)))
+        );
+        if (firstRunnableIndex >= 0) {
+          const firstJob = jobs[firstRunnableIndex];
+          if (isPdfOcrPayload(firstJob.task_type, toPayload(firstJob.payload))) {
+            // Preserve the original PDF worker path, but dispatch only after the
+            // complete batch has been staged and linked in order.
+            scheduleBackground(dispatchQueuedJob(firstJob.id));
+          } else {
+            await send('amin-ai-jobs', { jobId: firstJob.id });
           }
-          if (!['queued', 'running', 'completed'].includes(String(job.status))) {
-            return res.status(409).json({ error: 'إحدى مهام الصور ليست جاهزة للتشغيل.' });
-          }
-          jobs.push(job);
         }
-
-        // Persist the next image ID in each job. The worker advances this chain
-        // only after the current image reaches a terminal state.
-        for (let index = 0; index < jobs.length; index += 1) {
-          if (jobs[index].status !== 'queued') continue;
-          const payload = toPayload(jobs[index].payload);
-          const nextJobId = jobIds[index + 1];
-          if (nextJobId) payload.nextJobId = nextJobId;
-          else delete payload.nextJobId;
-          const updated = await supabase(
-            `${JOB_TABLE}?id=eq.${encodeURIComponent(jobIds[index])}&user_id=eq.${encodeURIComponent(session.userId)}&task_type=eq.ocr&status=eq.queued`,
-            {
-              method: 'PATCH',
-              headers: { Prefer: 'return=minimal' },
-              body: JSON.stringify({ payload, updated_at: new Date().toISOString() }),
-            },
-          );
-          if (!updated.ok) throw new Error('تعذر ربط مهام الصور بالتتابع على الخادم.');
-        }
-
-        const first = jobs[0];
-        if (first.status === 'queued') {
-          await send('amin-ai-jobs', { jobId: first.id });
-        }
-        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: first.id });
+        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: firstRunnableIndex >= 0 ? jobs[firstRunnableIndex].id : jobs[0].id });
       }
       if (requestBody?.action === 'cancel-ocr') {
         const jobId = String(requestBody?.jobId || '').trim();
@@ -846,9 +814,9 @@ export default async function handler(req: any, res: any) {
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
             if (existing.status === 'queued') {
-              if (isPdfOcrPayload(taskType, payload)) {
+              if (isPdfOcrPayload(taskType, payload) && requestBody?.deferQueue !== true) {
                 scheduleBackground(dispatchQueuedJob(existing.id));
-              } else if (requestBody?.deferQueue !== true) {
+              } else if (!isPdfOcrPayload(taskType, payload) && requestBody?.deferQueue !== true) {
                 try { await send('amin-ai-jobs', { jobId: existing.id }); }
                 catch { return res.status(503).json({ error: 'تعذر إعادة إدخال المهمة المحفوظة إلى طابور المعالجة.' }); }
               }
@@ -863,8 +831,9 @@ export default async function handler(req: any, res: any) {
       // The database claim makes at-least-once queue delivery safe.
       try {
         if (isPdfOcrPayload(taskType, payload)) {
-          // Restore the original Mino-ocr PDF worker dispatch path.
-          scheduleBackground(dispatchQueuedJob(id));
+          // Preserve the original PDF worker dispatch path, while allowing a
+          // batch upload to defer dispatch until every file has been staged.
+          if (requestBody?.deferQueue !== true) scheduleBackground(dispatchQueuedJob(id));
         } else if (requestBody?.deferQueue !== true) {
           await send('amin-ai-jobs', { jobId: id });
         }
