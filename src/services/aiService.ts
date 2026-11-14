@@ -14,13 +14,27 @@ async function throttleRequests(): Promise<void> {
   lastRequestTimestamp = Date.now();
 }
 
-function getRequestHeaders(): Record<string, string> {
+export function getRequestHeaders(): Record<string, string> {
   // Gemini credentials stay exclusively on the central server.
   // The AI endpoints require the user's existing central session token.
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const sessionToken = getSessionToken();
   if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
   return headers;
+}
+
+export async function fetchSavedAiJob(jobId: string): Promise<{
+  jobId: string; status: string; partialResult: string; result: string; error: string | null;
+}> {
+  if (!/^[0-9a-f-]{36}$/i.test(jobId)) throw new Error('معرّف المهمة غير صالح.');
+  const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
+    method: 'GET',
+    headers: { ...getRequestHeaders(), 'Cache-Control': 'no-store' },
+    cache: 'no-store',
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error || 'تعذر استرجاع نتيجة المهمة.');
+  return data;
 }
 
 export function cleanDirectResponse(rawText: string): string {
@@ -58,6 +72,8 @@ export interface SavedOcrJob {
 export interface SavedOcrTaskLifecycle {
   onStatus?: (status: 'queued' | 'processing' | 'completed' | 'failed') => void | Promise<void>;
   signal?: AbortSignal;
+  enqueueOnly?: boolean;
+  deferQueue?: boolean;
 }
 
 function sanitizeStoragePart(value: string): string {
@@ -272,7 +288,12 @@ async function requestSavedJob<T extends Record<string, any>>(
       const createResponse = await fetch('/api/gemini/jobs', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ taskType: type, payload, jobId }),
+        body: JSON.stringify({
+          taskType: type,
+          payload,
+          jobId,
+          deferQueue: type === 'ocr' && lifecycle?.deferQueue === true,
+        }),
       });
       receivedHttpResponse = true;
       if (!createResponse.ok) {
@@ -298,13 +319,17 @@ async function requestSavedJob<T extends Record<string, any>>(
   }
 
   await cancelIfAborted();
+  // Batch uploads first persist every server-side OCR job ID, then resume and
+  // collect results in a separate pass. This avoids waiting on file 1 before
+  // file 2..N have even been submitted.
+  if (type === 'ocr' && lifecycle?.enqueueOnly) return '';
   let lastText = '';
   let lastReportedOcrStatus = '';
   let transientFailures = 0;
   const startedAt = Date.now();
-  const NO_PROGRESS_TIMEOUT_MS = 4 * 60 * 1000 + 30 * 1000;
+  const NO_PROGRESS_TIMEOUT_MS = type === 'ocr' ? 5 * 60 * 1000 + 10 * 1000 : 4 * 60 * 1000 + 30 * 1000;
   let lastProgressAt = Date.now();
-  let lastUpdatedAt = '';
+  let lastObservedStatus = '';
   while (Date.now() - startedAt < 1000 * 60 * 20) {
     await cancelIfAborted();
     try {
@@ -337,11 +362,16 @@ async function requestSavedJob<T extends Record<string, any>>(
         }
       }
       const currentText = String(data?.partialResult || data?.result || '');
-      const updatedAt = String(data?.updatedAt || '');
-      if ((currentText.length > lastText.length) || (updatedAt && updatedAt !== lastUpdatedAt)) {
+      const currentJobStatus = String(data?.status || '');
+      // A real state transition or newly persisted text is progress. The backend
+      // heartbeat only refreshes updatedAt and must not keep a stalled OCR job alive.
+      if (currentJobStatus && currentJobStatus !== lastObservedStatus) {
+        lastProgressAt = Date.now();
+        lastObservedStatus = currentJobStatus;
+      }
+      if (currentText.length > lastText.length) {
         lastProgressAt = Date.now();
       }
-      if (updatedAt) lastUpdatedAt = updatedAt;
       if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
@@ -365,7 +395,8 @@ async function requestSavedJob<T extends Record<string, any>>(
         else clearJobReference();
         throw failure;
       }
-      if (Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS) {
+      const noProgressForTooLong = Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS;
+      if (noProgressForTooLong) {
         const failure: any = new Error('لم يصل أي تحديث للمهمة خلال 4 دقائق ونصف. توقفت متابعة الانتظار، واحتُفظ بمعرّفها لمحاولة استعادة حالتها دون بدء توليد جديد.');
         failure.noProgressTimeout = true;
         failure.savedJobPending = type === 'ocr';
@@ -431,6 +462,24 @@ export async function runSavedOcrTask(
     { fileName, mimeType },
     jobId,
     lifecycle,
+  );
+  return { text, jobId };
+}
+
+export async function runSavedOcrBatchTask(
+  images: Array<{ pageNumber: number; base64Data: string; mimeType: string }>,
+  pageTexts: Array<{ pageNumber: number; text: string }>,
+  fileName: string,
+  storageScope: string,
+  userId?: string,
+  requestedJobId?: string,
+  lifecycle?: SavedOcrTaskLifecycle,
+): Promise<{ text: string; jobId: string }> {
+  const jobId = requestedJobId || makeJobId();
+  const text = await requestSavedJob(
+    'ocr',
+    { images: JSON.stringify(images), pageTexts: JSON.stringify(pageTexts), mimeType: 'application/pdf', fileName, recoveryScope: sanitizeStoragePart(storageScope) },
+    undefined, userId, undefined, storageScope, { fileName, mimeType: 'application/pdf' }, jobId, lifecycle,
   );
   return { text, jobId };
 }

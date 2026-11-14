@@ -11,8 +11,8 @@ RefreshCw,
 Clock3,
 Image as ImageIcon,
 } from 'lucide-react';
-import { checkServerOCRReadiness, extractTextFromAnyFile } from '../utils/fileExtractor.ts';
-import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
+import { extractTextFromAnyFile } from '../utils/fileExtractor.ts';
+import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getRequestHeaders, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 import {
 createFileBatchId,
@@ -269,7 +269,7 @@ const task = (async () => {
         if (!mountedRef.current || activeContextRef.current !== taskContextKey) return;  
         // The browser may have refreshed after persisting the job ID but before  
         // the server accepted the POST. Re-send the same ID; the API is idempotent.  
-        await checkServerOCRReadiness();  
+
         extracted = await extractTextFromAnyFile(sourceFile, recoveryScope, {  
           userId: effectiveUserId,  
           jobId,  
@@ -351,51 +351,113 @@ const eligible = records.filter((item) =>
 );
 if (!eligible.length || !isCurrent()) return;
 
-const needsReadinessCheck = eligible.some((item) =>  
-  item.status !== 'completed' && isDirectOcrFile(item) && !(item.status === 'processing' && item.jobId),  
-);  
-if (needsReadinessCheck) {  
-  // Persist a real preparation stage while the server checks the OCR pool;  
-  // the aggregate indicator must not remain at 0% during this phase.  
-  for (const item of eligible) {  
-    if (!isCurrent()) return;  
-    if (!isFileTaskCancelled(effectiveUserId, recoveryScope, item.id) && item.status !== 'completed' && isDirectOcrFile(item) && !(item.status === 'processing' && item.jobId)) {
-      try {
-        await updateRecord(item.id, { status: 'preparing', stageLabel: 'التحقق من جاهزية خدمة OCR' });
-      } catch (error: any) {
-        if (error?.name !== 'AbortError') throw error;
+if (!isCurrent()) return;
+if (mountedRef.current) {
+  setIsProcessing(true);
+  onProcessingChange?.(true);
+  setErrorMsg(null);
+}
+
+// Stage image jobs on the server without starting the queue yet.
+// PDFs deliberately keep their original client-driven extraction path.
+const stagedImageJobIds: string[] = [];
+for (const original of eligible) {
+  if (!isCurrent()) return;
+  if (!isImageFile(original) || original.status === 'completed' ||
+      (original.status === 'processing' && original.jobId) ||
+      isFileTaskCancelled(effectiveUserId, recoveryScope, original.id)) continue;
+
+  try {
+    const sourceFile = restoreFileFromBatchItem(original);
+    const jobId = original.jobId || createFileOcrJobId();
+    await updateRecord(original.id, {
+      status: 'preparing',
+      stageLabel: 'تجهيز وإدراج المهمة في الطابور الخلفي',
+      jobId,
+      error: undefined,
+    });
+    const staged = await extractTextFromAnyFile(sourceFile, recoveryScope, {
+      userId: effectiveUserId,
+      jobId,
+      enqueueOnly: true,
+      deferQueue: true,
+      onStage: async () => {
+        await updateRecord(original.id, {
+          status: 'preparing',
+          stageLabel: 'تجهيز الملف وإرساله إلى الطابور الخلفي',
+        });
+      },
+      onJobStatus: async (status) => {
+        if (status === 'queued' || status === 'processing') {
+          await updateRecord(original.id, {
+            status: 'processing',
+            stageLabel: 'تم حفظ مهمة الملف على الخادم',
+            serverJobCreated: true,
+          });
+        }
+      },
+    });
+
+    if (staged.backgroundJobId) {
+      stagedImageJobIds.push(staged.backgroundJobId);
+      await updateRecord(original.id, {
+        status: 'processing',
+        stageLabel: 'المهمة محفوظة بالخادم؛ في انتظار النتيجة',
+        jobId: staged.backgroundJobId,
+        serverJobCreated: true,
+        error: undefined,
+      });
+    } else if (staged.text?.trim()) {
+      const completed = await updateRecord(original.id, {
+        status: 'completed',
+        stageLabel: 'اكتمل استخراج النص',
+        extractedText: staged.text,
+        error: undefined,
+      });
+      if (mountedRef.current && activeContextRef.current === contextKey) {
+        await deliverCompletedText(completed, staged.text, sourceFile, contextKey);
       }
-    }  
-  }  
-  try {  
-    await checkServerOCRReadiness();  
-  } catch (error: any) {  
-    if (isCurrent() && mountedRef.current) {  
-      setErrorMsg(error?.message || 'مجموعة مفاتيح الصور والمستندات (OCR) غير جاهزة.');  
-      setIsProcessing(false);  
-      onProcessingChange?.(false);  
-    }  
-    return;  
-  }  
-}  
+    } else {
+      throw new Error('لم تُنشأ مهمة OCR ولم يُستخرج نص من الملف.');
+    }
+  } catch (error: any) {
+    if (error?.name === 'AbortError') return;
+    await updateRecord(original.id, {
+      status: 'failed',
+      stageLabel: 'تعذر إدراج الملف في طابور OCR',
+      error: String(error?.message || 'تعذر إدراج الملف في طابور OCR.'),
+    }).catch(() => undefined);
+    if (mountedRef.current && activeContextRef.current === contextKey) {
+      setWarnings((previous) => [...previous, `الملف ${original.fileName}: تعذر إدراجه في الطابور الخلفي؛ يمكنك إعادة محاولته.`]);
+    }
+  }
+}
 
-if (!isCurrent()) return;  
-if (mountedRef.current) {  
-  setIsProcessing(true);  
-  onProcessingChange?.(true);  
-  setErrorMsg(null);  
-}  
+// Link the successfully staged images in their original order and start only
+// the first one. The server starts each following image after the previous ends.
+if (stagedImageJobIds.length) {
+  const enqueueResponse = await fetch('/api/gemini/jobs', {
+    method: 'POST',
+    headers: getRequestHeaders(),
+    body: JSON.stringify({ action: 'enqueue-ocr-batch', jobIds: stagedImageJobIds }),
+  });
+  const enqueueData = await enqueueResponse.json().catch(() => ({}));
+  if (!enqueueResponse.ok) {
+    throw new Error(enqueueData?.error || 'تعذر تشغيل طابور الصور المتتابع.');
+  }
+}
 
-for (let index = 0; index < eligible.length; index += 1) {  
-  const item = eligible[index];  
-  if (!isCurrent()) return;  
-  await processStoredItem(item);  
-  if (index < eligible.length - 1 && isDirectOcrFile(item) && isDirectOcrFile(eligible[index + 1])) {  
-    await new Promise((resolve) => setTimeout(resolve, 2500));  
-  }  
-}  
+if (!isCurrent()) return;
+for (let index = 0; index < eligible.length; index += 1) {
+  const item = eligible[index];
+  if (!isCurrent()) return;
+  await processStoredItem(item);
+  if (index < eligible.length - 1 && isDirectOcrFile(item) && isDirectOcrFile(eligible[index + 1])) {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+  }
+}
 
-if (!isCurrent()) return;  
+if (!isCurrent()) return;
 const latest = await getFileBatchItems(effectiveUserId, recoveryScope).catch(() => []);  
 if (!isCurrent()) return;  
 setStoredItems(latest);  

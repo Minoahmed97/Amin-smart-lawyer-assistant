@@ -53,8 +53,40 @@ export default async function handler(req: any, res: any) {
         body = JSON.parse(body);
       } catch {}
     }
-    const { base64Data, mimeType, fileName } = body || {};
-    const compactBase64 = validateBase64Payload(base64Data, 20 * 1024 * 1024);
+    const { base64Data, mimeType, fileName, images: rawImages, pageTexts: rawPageTexts } = body || {};
+    let compactBase64 = '';
+    let batchImages: Array<{ pageNumber: number; mimeType: string; base64Data: string }> = [];
+    let batchPageTexts: Array<{ pageNumber: number; text: string }> = [];
+    if (typeof rawImages === 'string' && rawImages) {
+      try { batchImages = JSON.parse(rawImages); } catch { return res.status(400).json({ error: 'بيانات صور صفحات PDF غير صالحة.' }); }
+      limitBodyString(typeof rawPageTexts === 'string' ? rawPageTexts : '[]', 2 * 1024 * 1024, 'النصوص القابلة للتحديد في PDF');
+      try { batchPageTexts = typeof rawPageTexts === 'string' ? JSON.parse(rawPageTexts) : []; } catch { return res.status(400).json({ error: 'النصوص القابلة للتحديد في PDF غير صالحة.' }); }
+      if (!Array.isArray(batchImages) || !batchImages.length || batchImages.length > 100 || !Array.isArray(batchPageTexts)) {
+        return res.status(400).json({ error: 'مجموعة صور PDF غير صالحة.' });
+      }
+      let totalBytes = 0;
+      batchImages = batchImages.map((image: any) => {
+        const pageNumber = Number(image?.pageNumber);
+        const imageMime = String(image?.mimeType || '').toLowerCase();
+        if (!Number.isInteger(pageNumber) || pageNumber < 1 || !['image/jpeg', 'image/png', 'image/webp', 'image/bmp'].includes(imageMime)) {
+          throw Object.assign(new Error('بيانات إحدى صور صفحات PDF غير صالحة.'), { statusCode: 400 });
+        }
+        const data = validateBase64Payload(image?.base64Data, 20 * 1024 * 1024);
+        const bytes = Math.floor(data.length * 3 / 4) - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
+        totalBytes += bytes;
+        if (totalBytes > 20 * 1024 * 1024) throw Object.assign(new Error('حجم صور PDF بعد الضغط أكبر من الحد المسموح.'), { statusCode: 413 });
+        return { pageNumber, mimeType: imageMime, base64Data: data };
+      }).sort((a: any, b: any) => a.pageNumber - b.pageNumber);
+      batchPageTexts = batchPageTexts.map((page: any) => {
+        if (!Number.isInteger(Number(page?.pageNumber)) || Number(page.pageNumber) < 1 || typeof page?.text !== 'string') {
+          throw Object.assign(new Error('بيانات صفحة نصية داخل PDF غير صالحة.'), { statusCode: 400 });
+        }
+        limitBodyString(page.text, 100000, 'نص صفحة PDF');
+        return { pageNumber: Number(page.pageNumber), text: page.text };
+      }).sort((a: any, b: any) => a.pageNumber - b.pageNumber);
+    } else {
+      compactBase64 = validateBase64Payload(base64Data, 20 * 1024 * 1024);
+    }
     limitBodyString(fileName, 255, 'اسم الملف');
     const lowerMime = String(mimeType || '').toLowerCase();
     const lowerName = String(fileName || '').toLowerCase();
@@ -117,7 +149,13 @@ export default async function handler(req: any, res: any) {
       safeGeminiMime = 'image/bmp';
     }
 
-    const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر والجداول والعناوين قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل، ولا تطبع الأرقام أو تغيّر صيغتها. - تعليمات خاصة بالخط اليدوي: افحص شكل الحروف واتصالها والنقاط والمسافات والكلمات المحيطة، خصوصاً في محاضر الشرطة المصرية وتحقيقات النيابة. استخدم سياق الجملة القانونية وموضوع المحضر لترجيح قراءة بين احتمالات تدعمها العلامات المرئية في الصورة فقط؛ لا تستكمل عبارة متوقعة لمجرد شيوعها، ولا تجعل السياق بديلاً عن الحروف غير الظاهرة. - لا تصحح الإملاء أو النحو، ولا تعِد الصياغة، ولا تستبدل التعبير الأصلي بصياغة قانونية مألوفة. - إذا بقيت كلمة غير مؤكدة بعد فحص الصورة والسياق، فاكتب حرفياً [كلمة غير واضحة] مكانها، ولا تخمّنها ولا تخترع أي كلمة. حافظ على الكلمات المقروءة قبلها وبعدها ولا تستبدل الجملة كلها بعلامة واحدة إذا كانت بعض كلماتها واضحة. - لا تضف وقائع أو أسماء أو أرقاماً أو تواريخ أو مواد قانونية أو أحكاماً غير ظاهرة في المستند. - إذا وجدت توقيعاً أو ختماً لا يمكن قراءة محتواه، فاذكر وجوده بإيجاز من دون نسبة اسم أو مضمون إليه. - أخرج النص المستخرج فقط دون مقدمة أو تعليق أو تحليل، ولا تدّعِ دقة مطلقة.`;
+    const pageTextContext = batchPageTexts.length
+      ? `\n\nنصوص الصفحات القابلة للتحديد التي استخرجها النظام مباشرة (أدرجها كما هي في مواضعها ولا تُعد صياغتها):\n${batchPageTexts.map((page) => `[الصفحة ${page.pageNumber}]\n${page.text}`).join('\n\n')}`
+      : '';
+    const batchInstruction = batchImages.length
+      ? `\n\nهذه مهمة PDF متعددة الصفحات في طلب OCR واحد. أُرفقت صور الصفحات التي تحتوي صوراً أو مسحاً ضوئياً، وكل صورة مسبوقة برقم صفحتها. أخرج المستند كاملاً مرة واحدة بترتيب أرقام الصفحات تصاعدياً. اكتب عنواناً واضحاً لكل صفحة بصيغة [الصفحة رقم N]. أدرج نص الصفحات القابلة للتحديد أعلاه في مواضعه كما هو، واستخرج النص من الصور المرفقة حرفياً. لا تدمج نص صفحة في صفحة أخرى ولا تسقط أي صفحة.${pageTextContext}`
+      : '';
+    const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر والجداول والعناوين قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل، ولا تطبع الأرقام أو تغيّر صيغتها. - تعليمات خاصة بالخط اليدوي: افحص شكل الحروف واتصالها والنقاط والمسافات والكلمات المحيطة، خصوصاً في محاضر الشرطة المصرية وتحقيقات النيابة. استخدم سياق الجملة القانونية وموضوع المحضر لترجيح قراءة بين احتمالات تدعمها العلامات المرئية في الصورة فقط؛ لا تستكمل عبارة متوقعة لمجرد شيوعها، ولا تجعل السياق بديلاً عن الحروف غير الظاهرة. - لا تصحح الإملاء أو النحو، ولا تعِد الصياغة، ولا تستبدل التعبير الأصلي بصياغة قانونية مألوفة. - إذا بقيت كلمة غير مؤكدة بعد فحص الصورة والسياق، فاكتب حرفياً [كلمة غير واضحة] مكانها، ولا تخمّنها ولا تخترع أي كلمة. حافظ على الكلمات المقروءة قبلها وبعدها ولا تستبدل الجملة كلها بعلامة واحدة إذا كانت بعض كلماتها واضحة. - لا تضف وقائع أو أسماء أو أرقاماً أو تواريخ أو مواد قانونية أو أحكاماً غير ظاهرة في المستند. - إذا وجدت توقيعاً أو ختماً لا يمكن قراءة محتواه، فاذكر وجوده بإيجاز من دون نسبة اسم أو مضمون إليه. - أخرج النص المستخرج فقط دون مقدمة أو تعليق أو تحليل، ولا تدّعِ دقة مطلقة.${batchInstruction}`;
     let extractedText = '';
     try {
       extractedText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
@@ -129,7 +167,12 @@ export default async function handler(req: any, res: any) {
               role: 'user',
               parts: [
                 { text: ocrPrompt },
-                { inlineData: { mimeType: safeGeminiMime, data: compactBase64 } },
+                ...(batchImages.length
+                  ? batchImages.flatMap((image) => [
+                      { text: `الصورة التالية تخص الصفحة رقم ${image.pageNumber} من المستند.` },
+                      { inlineData: { mimeType: image.mimeType, data: image.base64Data } },
+                    ])
+                  : [{ inlineData: { mimeType: safeGeminiMime, data: compactBase64 } }]),
               ],
             },
           ],
