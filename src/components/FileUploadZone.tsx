@@ -454,12 +454,26 @@ if (stagedImageJobIds.length) {
   }
 }
 
+const latestStagedRecords = await getFileBatchItems(effectiveUserId, recoveryScope);
+const latestStagedById = new Map(latestStagedRecords.map((record) => [record.id, record]));
+
 if (!isCurrent()) return;
 for (let index = 0; index < eligible.length; index += 1) {
-  const item = eligible[index];
-  if (!isCurrent()) return;
+  // Use the latest IndexedDB record, not the stale pre-staging snapshot.
+  const item = latestStagedById.get(eligible[index].id);
+  if (!item || !isCurrent()) return;
+  // A failed staging attempt must remain failed; do not silently submit it again.
+  if (item.status === 'failed') continue;
+  // An image must have its already-persisted server job ID before we resume it.
+  if (isImageFile(item) && item.status !== 'completed' && !item.jobId) {
+    setWarnings((previous) => [...previous, `الملف ${item.fileName}: لم يُحفظ معرّف مهمة OCR؛ تم إيقاف إعادة الإرسال التلقائي لمنع تكرار الطلب.`]);
+    continue;
+  }
   await processStoredItem(item);
-  if (index < eligible.length - 1 && isDirectOcrFile(item) && isDirectOcrFile(eligible[index + 1])) {
+  const nextItem = index < eligible.length - 1
+    ? latestStagedById.get(eligible[index + 1].id) || eligible[index + 1]
+    : undefined;
+  if (nextItem && isDirectOcrFile(item) && isDirectOcrFile(nextItem)) {
     await new Promise((resolve) => setTimeout(resolve, 2500));
   }
 }
