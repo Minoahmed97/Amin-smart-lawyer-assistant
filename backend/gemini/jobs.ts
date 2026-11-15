@@ -708,13 +708,13 @@ export default async function handler(req: any, res: any) {
         // Read the complete batch in one database request. Sequential per-ID reads
         // can race with slow database responses and make a valid staged batch look incomplete.
         let rows = await loadQueueJobs(jobIds);
-        let jobsById = new Map(rows.map((job: any) => [String(job.id), job]));
+        let jobsById = new Map<string, any>(rows.map((job: any) => [String(job.id), job] as [string, any]));
         // Allow a short consistency window for a just-inserted OCR row before
         // declaring its ID missing. The client has already received the insert acknowledgement.
         for (let attempt = 0; attempt < 2 && jobIds.some((id) => !jobsById.has(id)); attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
           rows = await loadQueueJobs(jobIds);
-          jobsById = new Map(rows.map((job: any) => [String(job.id), job]));
+          jobsById = new Map<string, any>(rows.map((job: any) => [String(job.id), job] as [string, any]));
         }
 
         const jobs: any[] = [];
