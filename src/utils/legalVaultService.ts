@@ -124,6 +124,7 @@ function canonicalDocumentType(value: string): string {
   // Check the more specific types first. A vault item may have broad metadata
   // (e.g. "إعلان / إنذار") but a title that identifies it as إعادة إعلان.
   if (text.includes('اعادة') && text.includes('اعلان')) return 'اعادة اعلان';
+  if (text.includes('اعلان') && (text.includes('صيغه تنفيذيه') || text.includes('بالصيغه التنفيذيه') || text.includes('تنفيذيه'))) return 'اعلان صيغه تنفيذيه';
   if (text.includes('انذار')) return 'انذار';
   if ((text.includes('صحيفة') || text.includes('عريضة')) && (text.includes('دعوى') || text.includes('افتتاح'))) return 'صحيفة دعوى';
   if (text.includes('تفنيد') || (!text.includes('مذكرة') && text.includes('رد') && text.includes('مستند'))) return 'تفنيد مستندات';
@@ -165,6 +166,16 @@ function modelMatchesRequestedType(model: LawModelItem, requestedType: string): 
     return Math.max(best, overlap / requestedTokens.size);
   }, 0);
   return bestOverlap >= 0.5;
+}
+
+function modelHasExactRequestedType(model: LawModelItem, requestedType: string): boolean {
+  const requested = canonicalDocumentType(requestedType);
+  if (!requested) return false;
+
+  // Exact type priority is based only on explicit model metadata, never on
+  // the old document body or its case facts.
+  return [model.judicialWorkType, model.title, model.category]
+    .some((value) => Boolean(String(value || '').trim()) && canonicalDocumentType(String(value)) === requested);
 }
 
 type LawVaultSearchCriteria = {
@@ -263,7 +274,15 @@ function rankVaultModels(models: LawModelItem[], criteria: LawVaultSearchCriteri
     // case subject, court, or judicial-work type.
     score += Math.max(1, Math.min(5, Number(model.weight) || 3));
     return { model, score, index, modelDocFamily, modelLegalFamily };
-  }).sort((a, b) => b.score - a.score || a.index - b.index);
+  }).sort((a, b) => {
+    // A genuinely matching document type takes priority over general topic
+    // similarity. If neither model is an exact type match, preserve the
+    // existing weighted ranking unchanged.
+    const aExactType = modelHasExactRequestedType(a.model, requestedType);
+    const bExactType = modelHasExactRequestedType(b.model, requestedType);
+    if (aExactType !== bExactType) return aExactType ? -1 : 1;
+    return b.score - a.score || a.index - b.index;
+  });
 }
 
 export function findSimilarModels(criteria: LawVaultSearchCriteria, userId?: string): LawModelItem[] {
