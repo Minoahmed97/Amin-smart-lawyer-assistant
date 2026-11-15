@@ -325,7 +325,9 @@ async function runQueuedOcrTask(
   ocrUploadQueue = new Promise<void>((resolve) => { releaseQueue = resolve; });
   await previous.catch(() => undefined);
   try {
-    const minimumGapMs = 5000;
+    // Deferred jobs only need to be persisted before the batch is linked;
+    // the worker enforces provider pacing during actual OCR execution.
+    const minimumGapMs = options.deferQueue === true ? 0 : 5000;
     const waitMs = Math.max(0, minimumGapMs - (Date.now() - lastOcrUploadFinishedAt));
     if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
     if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
@@ -357,7 +359,9 @@ async function runQueuedOcrBatchTask(
   ocrUploadQueue = new Promise<void>((resolve) => { releaseQueue = resolve; });
   await previous.catch(() => undefined);
   try {
-    const minimumGapMs = 5000;
+    // Deferred jobs only need to be persisted before the batch is linked;
+    // the worker enforces provider pacing during actual OCR execution.
+    const minimumGapMs = options.deferQueue === true ? 0 : 5000;
     const waitMs = Math.max(0, minimumGapMs - (Date.now() - lastOcrUploadFinishedAt));
     if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
     if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
