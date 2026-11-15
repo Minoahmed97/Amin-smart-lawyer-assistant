@@ -437,6 +437,14 @@ async function loadQueueJob(jobId: string) {
   return Array.isArray(rows) ? rows[0] || null : null;
 }
 
+async function loadQueueJobs(jobIds: string[]) {
+  const idFilter = encodeURIComponent(`(${jobIds.join(',')})`);
+  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status,updated_at&id=in.${idFilter}`);
+  if (!response.ok) throw new Error(`تعذر قراءة دفعة مهام OCR من قاعدة البيانات (${response.status}).`);
+  const rows = await response.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
 function getWorkerBaseUrl() {
   const host = String(process.env.VERCEL_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL || '').trim();
   if (!host) return '';
@@ -697,14 +705,36 @@ export default async function handler(req: any, res: any) {
           return res.status(400).json({ error: 'قائمة مهام الصور غير صالحة.' });
         }
 
+        // Read the complete batch in one database request. Sequential per-ID reads
+        // can race with slow database responses and make a valid staged batch look incomplete.
+        let rows = await loadQueueJobs(jobIds);
+        let jobsById = new Map(rows.map((job: any) => [String(job.id), job]));
+        // Allow a short consistency window for a just-inserted OCR row before
+        // declaring its ID missing. The client has already received the insert acknowledgement.
+        for (let attempt = 0; attempt < 2 && jobIds.some((id) => !jobsById.has(id)); attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+          rows = await loadQueueJobs(jobIds);
+          jobsById = new Map(rows.map((job: any) => [String(job.id), job]));
+        }
+
         const jobs: any[] = [];
-        for (const id of jobIds) {
-          const job = await loadQueueJob(id);
-          if (!job || job.user_id !== session.userId || job.task_type !== 'ocr') {
-            return res.status(404).json({ error: 'تعذر العثور على إحدى مهام الصور المحفوظة.' });
+        for (let index = 0; index < jobIds.length; index += 1) {
+          const id = jobIds[index];
+          const job: any = jobsById.get(id);
+          if (!job) {
+            return res.status(404).json({
+              error: `تعذر العثور على مهمة الصورة رقم ${index + 1} من ${jobIds.length} في قاعدة البيانات. لم يبدأ تشغيل الدفعة.`,
+              missingJobIndex: index,
+            });
+          }
+          if (job.user_id !== session.userId || job.task_type !== 'ocr') {
+            return res.status(404).json({
+              error: `مهمة الصورة رقم ${index + 1} لا تخص هذا الحساب أو ليست مهمة OCR.`,
+              invalidJobIndex: index,
+            });
           }
           if (!['queued', 'running', 'completed'].includes(String(job.status))) {
-            return res.status(409).json({ error: 'إحدى مهام الصور ليست جاهزة للتشغيل.' });
+            return res.status(409).json({ error: `مهمة الصورة رقم ${index + 1} ليست جاهزة للتشغيل.` });
           }
           jobs.push(job);
         }
@@ -741,7 +771,18 @@ export default async function handler(req: any, res: any) {
             // complete batch has been staged and linked in order.
             scheduleBackground(dispatchQueuedJob(firstJob.id));
           } else {
-            await send('amin-ai-jobs', { jobId: firstJob.id });
+            // Durable queue delivery is at-least-once; retry transient send failures.
+            // The worker's atomic queued->running claim makes duplicate messages safe.
+            let sent = false;
+            for (let attempt = 0; attempt < 3 && !sent; attempt += 1) {
+              try {
+                await send('amin-ai-jobs', { jobId: firstJob.id });
+                sent = true;
+              } catch (queueError) {
+                if (attempt === 2) throw queueError;
+                await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+              }
+            }
           }
         }
         return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: firstRunnableIndex >= 0 ? jobs[firstRunnableIndex].id : jobs[0].id });
