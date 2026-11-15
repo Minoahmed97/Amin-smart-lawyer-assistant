@@ -344,7 +344,11 @@ try {
 
 };
 
-const processRecords = async (records: StoredFileBatchItem[], isCurrent: () => boolean = () => mountedRef.current && activeContextRef.current === contextKey) => {
+const processRecords = async (
+  records: StoredFileBatchItem[],
+  isCurrent: () => boolean = () => mountedRef.current && activeContextRef.current === contextKey,
+  waitForOcrResults = true,
+) => {
 const eligible = records.filter((item) =>
 !isFileTaskCancelled(effectiveUserId, recoveryScope, item.id) && (item.status === 'waiting' || item.status === 'preparing' || item.status === 'processing' ||
 (item.status === 'completed' && Boolean(item.extractedText) && !item.deliveredToWorkflow)),
@@ -469,6 +473,10 @@ for (let index = 0; index < eligible.length; index += 1) {
     setWarnings((previous) => [...previous, `الملف ${item.fileName}: لم يُحفظ معرّف مهمة OCR؛ تم إيقاف إعادة الإرسال التلقائي لمنع تكرار الطلب.`]);
     continue;
   }
+  // During a fresh upload, return as soon as the server has accepted the
+  // durable OCR jobs. Poll and deliver their results only when the user
+  // explicitly resumes the pending list or reopens the workspace.
+  if (!waitForOcrResults && isServerOcrFile(item) && item.status !== 'completed') continue;
   await processStoredItem(item);
   const nextItem = index < eligible.length - 1
     ? latestStagedById.get(eligible[index + 1].id) || eligible[index + 1]
@@ -628,7 +636,11 @@ try {
   if (mountedRef.current) {  
     setStoredItems((previous) => [...previous, ...newItems].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.batchId.localeCompare(b.batchId) || a.order - b.order));  
   }  
-  await processRecords(newItems);  
+  await processRecords(
+    newItems,
+    () => mountedRef.current && activeContextRef.current === contextKey,
+    false,
+  );  
 } catch (error: any) {  
   if (mountedRef.current) {  
     setIsProcessing(false);  
