@@ -438,11 +438,11 @@ async function loadQueueJob(jobId: string) {
 }
 
 async function loadQueueJobs(jobIds: string[]) {
-  const idFilter = encodeURIComponent(`(${jobIds.join(',')})`);
-  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status,updated_at&id=in.${idFilter}`);
-  if (!response.ok) throw new Error(`تعذر قراءة دفعة مهام OCR من قاعدة البيانات (${response.status}).`);
-  const rows = await response.json();
-  return Array.isArray(rows) ? rows : [];
+  // Query each UUID directly instead of relying on PostgREST's encoded IN
+  // filter. This avoids gateways/proxies interpreting encoded commas or
+  // parentheses differently and silently omitting one valid row.
+  const rows = await Promise.all(jobIds.map((jobId) => loadQueueJob(jobId)));
+  return rows.filter(Boolean);
 }
 
 function getWorkerBaseUrl() {
