@@ -288,6 +288,7 @@ async function requestSavedJob<T extends Record<string, any>>(
       const createResponse = await fetch('/api/gemini/jobs', {
         method: 'POST',
         headers,
+        signal: AbortSignal.timeout(30_000),
         body: JSON.stringify({
           taskType: type,
           payload,
@@ -337,7 +338,9 @@ async function requestSavedJob<T extends Record<string, any>>(
         method: 'GET',
         headers,
         cache: 'no-store',
-        ...(type === 'ocr' && lifecycle?.signal ? { signal: lifecycle.signal } : {}),
+        signal: type === 'ocr' && lifecycle?.signal
+          ? AbortSignal.any([lifecycle.signal, AbortSignal.timeout(20_000)])
+          : AbortSignal.timeout(20_000),
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
