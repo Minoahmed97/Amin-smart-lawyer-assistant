@@ -27,7 +27,8 @@
     "vite": "^8.3.0",
     "@vercel/functions": "^2.2.13",
     "web-push": "^3.6.7",
-    "pdfjs-dist": "5.4.394"
+    "pdfjs-dist": "5.4.394",
+    "@vercel/queue": "0.1.4"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
