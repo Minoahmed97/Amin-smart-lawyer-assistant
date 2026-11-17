@@ -98,9 +98,12 @@ export async function requireActiveSession(req: any) {
   if (!res.ok) throw new Error('تعذر التحقق من حالة الحساب.');
   const user = (await res.json())?.[0];
   if (!user || user.account_status !== 'active') { const err: any = new Error('الحساب غير نشط أو موقوف.'); err.statusCode = 403; throw err; }
+  // The verified owner of this personal deployment has unlimited platform usage.
+  // Keep the active-account check above, but do not gate this account by credits or trial.
+  const isPersonalOwner = session.userId === getPersonalOwnerUserId();
   const trialRemaining = Math.max(0, Number(user.trial_operations_total || 0) - Number(user.trial_operations_used || 0));
   const trialValid = user.trial_expires_at && Date.now() < Date.parse(user.trial_expires_at) && trialRemaining > 0;
-  if (Number(user.credits || 0) <= 0 && !trialValid) {
+  if (!isPersonalOwner && Number(user.credits || 0) <= 0 && !trialValid) {
     const err: any = new Error('انتهى رصيد/تجربة الحساب.');
     err.statusCode = 402;
     throw err;
@@ -153,7 +156,7 @@ async function consumePersistentRateLimit(scope: string, identity: string, limit
 
 function isAiRateLimitExempt(session: { userId: string }): boolean {
   const exemptId = (process.env.AI_RATE_LIMIT_EXEMPT_USER_ID || '').trim();
-  return Boolean(exemptId && session.userId === exemptId);
+  return session.userId === getPersonalOwnerUserId() || Boolean(exemptId && session.userId === exemptId);
 }
 
 /**
@@ -376,6 +379,17 @@ export async function getCurrentAccount(req: any) {
 export async function consumeOperation(req: any, serviceName: string) {
   const session = requireSession(req);
   if (!serviceName || String(serviceName).length > 120) throw new Error('اسم الخدمة غير صالح.');
+
+  // Personal deployment owner: successful operation without consuming credits/trial.
+  if (session.userId === getPersonalOwnerUserId()) {
+    return {
+      success: true,
+      remainingCredits: 0,
+      trialRemaining: 0,
+      message: `تم تنفيذ خدمة ${serviceName} دون خصم رصيد للحساب الشخصي.`,
+    };
+  }
+
   const res = await supabase('rpc/consume_platform_operation', {
     method: 'POST',
     body: JSON.stringify({ p_user_id: session.userId }),
