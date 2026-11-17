@@ -28,6 +28,15 @@ export const GEMINI_MODELS = [
   'gemini-3.5-flash',
 ];
 
+function safeDiagnosticMessage(error: any): string {
+  return String(error?.message || error || 'Unknown error')
+    .replace(/Bearer\\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/sk-or-v1-[A-Za-z0-9]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/gsk_[A-Za-z0-9]{20,}/g, '[REDACTED_API_KEY]')
+    .slice(0, 600);
+}
+
 let activeKeyIndex = 0;
 const permanentlyInvalidKeys = new Set<string>();
 const permanentlyInvalidOCRKeys = new Set<string>();
@@ -756,6 +765,9 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
+  let lastGeminiError: any = null;
+  let lastFailedModel = '';
+  let lastFailedKeyIndex = 0;
   for (let cycle = 0; cycle < 1; cycle++) {
     const startIdx = reserveStartIndex(keys.length, 'general');
     for (let offset = 0; offset < keys.length; offset++) {
@@ -779,7 +791,17 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           activeKeyIndex = currentKeyIndex;
           return;
         } catch (err: any) {
+          lastGeminiError = err;
+          lastFailedModel = keyModels[m];
+          lastFailedKeyIndex = currentKeyIndex + 1;
           markRotationFailure(currentKey, keyModels[m], err, 'general');
+          console.warn('[Gemini stream attempt failed]', {
+            provider: 'Gemini',
+            model: keyModels[m],
+            keyIndex: currentKeyIndex + 1,
+            status: Number(err?.status || err?.statusCode || err?.response?.status) || null,
+            message: safeDiagnosticMessage(err),
+          });
           if (emittedAnyChunk) {
             activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
             throw err;
@@ -798,7 +820,17 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       avoidPairs: undefined,
     });
   }
-  throw new Error('فشلت جميع محاولات تدوير البث.');
+  const failureStatus = Number(lastGeminiError?.status || lastGeminiError?.statusCode || lastGeminiError?.response?.status) || 503;
+  const diagnostic = lastGeminiError
+    ? `آخر محاولة: Gemini model ${lastFailedModel || 'غير معروف'}، المفتاح رقم ${lastFailedKeyIndex || 'غير معروف'}، HTTP ${failureStatus}: ${safeDiagnosticMessage(lastGeminiError)}`
+    : 'لم تُنفذ محاولة Gemini؛ لا توجد أزواج مفتاح/نموذج متاحة أو انتهت المهلة قبل بدء المحاولة.';
+  const finalError: any = new Error(`فشلت جميع محاولات تدوير بث Gemini. ${diagnostic}`);
+  finalError.status = failureStatus;
+  finalError.statusCode = failureStatus;
+  finalError.provider = 'Gemini';
+  finalError.model = lastFailedModel || undefined;
+  finalError.cause = lastGeminiError;
+  throw finalError;
 }
 
 export default function handler(req: any, res: any) {
