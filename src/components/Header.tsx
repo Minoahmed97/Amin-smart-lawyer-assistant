@@ -115,13 +115,15 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* User Credits Badge & Quick Action */}
         <div className="flex items-center gap-2">
-          <div
-            id="userCreditsBadge"
-            className="px-2.5 sm:px-3 py-1 rounded-full bg-gradient-to-r from-amber-600/30 to-amber-700/40 border border-[#b45309] text-amber-200 font-bold text-xs shadow-inner flex items-center gap-1.5 font-mono"
-          >
-            <CreditCard className="w-3.5 h-3.5 text-amber-400" />
-            <span>رصيدك: {credits} محاولة</span>
-          </div>
+          {userName?.trim().toLowerCase() !== 'amin 1997' && (
+            <div
+              id="userCreditsBadge"
+              className="px-2.5 sm:px-3 py-1 rounded-full bg-gradient-to-r from-amber-600/30 to-amber-700/40 border border-[#b45309] text-amber-200 font-bold text-xs shadow-inner flex items-center gap-1.5 font-mono"
+            >
+              <CreditCard className="w-3.5 h-3.5 text-amber-400" />
+              <span>رصيدك: {credits} محاولة</span>
+            </div>
+          )}
 
           <div className="flex items-center gap-2 mr-1">
             <button
