@@ -27,7 +27,6 @@ interface HeaderProps {
   activeTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community';
   setActiveTab: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community') => void;
   onOpenAdmin?: () => void;
-  onOpenSubscribe?: () => void;
   credits: number;
   userName?: string;
   vaultModelsCount?: number;
@@ -241,9 +240,6 @@ export const Header: React.FC<HeaderProps> = ({
                       </button>
                       <button onClick={() => { setActiveTab('qualify'); closeMenu(); }} className="header-menu-item" role="menuitem">
                         <Compass className="w-4 h-4 text-emerald-300" /><span>تكييف النزاع</span>
-                      </button>
-                      <button onClick={() => { setActiveTab('packages'); closeMenu(); }} className="header-menu-item" role="menuitem">
-                        <CreditCard className="w-4 h-4 text-emerald-400" /><span>الباقات والشحن</span>
                       </button>
                       <button onClick={() => { setActiveTab('community'); closeMenu(); }} className="header-menu-item" role="menuitem">
                         <Megaphone className="w-4 h-4 text-amber-300" /><span>مجتمع المنظومة</span>
