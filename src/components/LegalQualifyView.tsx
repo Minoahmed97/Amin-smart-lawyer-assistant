@@ -1,7 +1,6 @@
 import { getCurrentAccount } from '../services/authService.ts';
 import React, { useState, useEffect, useRef } from 'react';
 import { qualifyLegalCase, resumeSavedAiTask } from '../services/aiService.ts';
-import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
@@ -150,12 +149,6 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
       return;
     }
 
-    const availableCredits = getCurrentStoredCredits();
-    if (availableCredits <= 0) {
-      if (onOpenSubscribe) onOpenSubscribe();
-      return;
-    }
-
     const operationId = ++resultOperationRef.current;
     setIsLoading(true);
     setQualifyError('');
@@ -167,10 +160,6 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
       if (result && operationId === resultOperationRef.current) {
         setQualificationResult(result);
         persistentStorage.setItem('judicial_qualify_result', result);
-        try {
-          const account = await getCurrentAccount();
-          if (onCreditsUpdated) onCreditsUpdated(account.credits);
-        } catch {}
       }
     } catch (err: any) {
       if (operationId !== resultOperationRef.current) return;
