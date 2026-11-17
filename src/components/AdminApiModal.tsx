@@ -65,7 +65,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [passwordError, setPasswordError] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'packages' | 'codes' | 'keyStatus' | 'stats' | 'supabase' | 'broadcast' | 'accounts'>('keyStatus');
+  const [activeTab, setActiveTab] = useState<'packages' | 'codes' | 'keyStatus' | 'stats' | 'supabase' | 'broadcast'>('keyStatus');
 
   // Broadcast announcement states
   const [broadcastTitle, setBroadcastTitle] = useState<string>('تحديث قضائي عام 2026');
@@ -939,19 +939,6 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
 
                 <button
                   type="button"
-                  onClick={() => { setActiveTab('accounts'); loadAccounts(); }}
-                  className={`flex items-center justify-center gap-1.5 sm:gap-2 px-2 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer border ${
-                    activeTab === 'accounts'
-                      ? 'bg-gradient-to-r from-cyan-600 to-blue-700 text-white border-cyan-400 shadow-md'
-                      : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-white border-slate-700/80'
-                  }`}
-                >
-                  <Users className="w-4 h-4 flex-shrink-0 text-cyan-300" />
-                  <span className="truncate">الحسابات</span>
-                </button>
-
-                <button
-                  type="button"
                   onClick={() => setActiveTab('stats')}
                   className={`flex items-center justify-center gap-1.5 sm:gap-2 px-2 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer border ${
                     activeTab === 'stats'
@@ -1720,47 +1707,6 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                       </div>
                     </div>
                   )}
-                </div>
-              )}
-
-              {activeTab === 'accounts' && (
-                <div className="space-y-4">
-                  <div className="bg-[#1e293b] p-5 rounded-2xl border-2 border-cyan-500/40">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-                      <h4 className="text-cyan-300 font-bold flex items-center gap-2"><Users className="w-5 h-5" /> حسابات العملاء المحامين</h4>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="search"
-                          value={accountSearch}
-                          onChange={(e) => setAccountSearch(e.target.value)}
-                          placeholder="بحث بالاسم أو المستخدم..."
-                          className="w-full sm:w-56 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white outline-none focus:border-cyan-400"
-                        />
-                        <button type="button" onClick={loadAccounts} className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs font-bold">تحديث</button>
-                      </div>
-                    </div>
-                    {accountsLoading ? <div className="text-sm text-slate-300">جارٍ تحميل الحسابات...</div> : accountsData.length === 0 ? <div className="text-sm text-slate-400">لا توجد حسابات مسجلة حتى الآن.</div> : (
-                      <div className="space-y-2">
-                        {filteredAccounts.map((account) => (
-                          <div key={account.id} className="p-3 rounded-xl bg-slate-900 border border-slate-700 grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
-                            <div><span className="text-slate-500">الاسم:</span> <b className="text-white">{account.display_name}</b></div>
-                            <div><span className="text-slate-500">المستخدم:</span> <b className="text-amber-300 font-mono">{account.username}</b></div>
-                            <div><span className="text-slate-500">الرصيد:</span> <b className="text-emerald-300">{account.credits} عملية</b></div>
-                            <div><span className="text-slate-500">الحالة:</span> <b className={account.account_status === 'active' ? 'text-emerald-300' : 'text-rose-300'}>{account.account_status === 'active' ? 'نشط' : 'متوقف'}</b></div>
-                            <div className="sm:col-span-4 flex justify-end pt-1">
-                              <button
-                                type="button"
-                                onClick={() => void handleDeleteAccount(account)}
-                                className="px-3 py-1.5 rounded-lg bg-rose-950/70 hover:bg-rose-900 text-rose-300 border border-rose-700/60 text-xs font-bold"
-                              >
-                                حذف الحساب وحظر الجهاز
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
 
