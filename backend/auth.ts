@@ -24,12 +24,11 @@ function getPersonalOwnerUserId(): string {
   return userId.toLowerCase();
 }
 
-function assertPersonalOwner(username: string, userId: string) {
+function assertPersonalOwner(username: string, userId?: string) {
   if (
     !username ||
     username.trim().toLowerCase() !== getPersonalOwnerUsername() ||
-    !userId ||
-    userId.trim().toLowerCase() !== getPersonalOwnerUserId()
+    (userId !== undefined && (!userId || userId.trim().toLowerCase() !== getPersonalOwnerUserId()))
   ) {
     const err: any = new Error('هذه نسخة شخصية ومخصصة لحساب واحد فقط.');
     err.statusCode = 403;
