@@ -333,7 +333,7 @@ export async function loginAccount(username: string, password: string, deviceFin
     throw new Error('هذا الحساب محذوف ولا يمكن تسجيل الدخول إليه. إذا كان الحذف بالخطأ، يُرجى مراجعة الإدارة لاستعادته.');
   }
   if (user.account_status !== 'active') {
-    throw new Error('هذا الحساب موقوف حاليًا. إذا كان السبب انتهاء التجربة أو الرصيد، يُرجى مراجعة الإدارة لإعادة تفعيله أو شحنه.');
+    throw new Error('هذا الحساب غير نشط حاليًا. يُرجى مراجعة مسؤول المنصة.');
   }
   return {
     token: createSession(user.id, user.username),
