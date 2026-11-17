@@ -416,7 +416,7 @@ export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: st
 }
 
 
-export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
+export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify' | 'refine', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
   return requestSavedJob(type, {}, onChunk, userId, jobId);
 }
 
