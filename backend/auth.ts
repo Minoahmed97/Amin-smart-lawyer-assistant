@@ -332,7 +332,7 @@ export async function loginAccount(username: string, password: string, deviceFin
     user: {
       id: user.id,
       username: user.username,
-      name: user.display_name,
+      name: 'amin 1997',
       role: 'lawyer',
       credits: Number(user.credits || 0),
       trialOperationsRemaining: Math.max(0, Number(user.trial_operations_total || 20) - Number(user.trial_operations_used || 0)),
