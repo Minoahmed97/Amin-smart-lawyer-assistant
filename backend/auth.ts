@@ -10,6 +10,18 @@ function getSupabaseConfig() {
   return { url, key };
 }
 
+function getPersonalOwnerUsername(): string {
+  return (process.env.PERSONAL_OWNER_USERNAME || 'amin1997').trim().toLowerCase();
+}
+
+function assertPersonalOwner(username: string) {
+  if (!username || username.trim().toLowerCase() !== getPersonalOwnerUsername()) {
+    const err: any = new Error('هذه نسخة شخصية ومخصصة لحساب واحد فقط.');
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
 function hashPassword(password: string, salt = crypto.randomBytes(16).toString('hex')) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return `${salt}:${hash}`;
@@ -62,6 +74,7 @@ function getBearer(req: any) {
 export function requireSession(req: any) {
   const session = readSession(getBearer(req));
   if (!session) { const err: any = new Error('انتهت جلسة الحساب. يرجى تسجيل الدخول من جديد.'); err.statusCode = 401; throw err; }
+  assertPersonalOwner(session.username);
   return session;
 }
 
@@ -299,7 +312,9 @@ export async function registerAccount(username: string, password: string, displa
 }
 
 export async function loginAccount(username: string, password: string, deviceFingerprint: string) {
-  const user = await findUser(username.trim().toLowerCase());
+  const cleanUsername = username.trim().toLowerCase();
+  assertPersonalOwner(cleanUsername);
+  const user = await findUser(cleanUsername);
   if (!user || !verifyPassword(password, user.password_hash)) {
     throw new Error('اسم المستخدم أو كلمة المرور غير صحيح.');
   }
@@ -333,6 +348,7 @@ export async function getCurrentAccount(req: any) {
   if (!res.ok) throw new Error('تعذر قراءة بيانات الحساب.');
   const user = (await res.json())?.[0];
   if (!user) throw new Error('الحساب غير موجود.');
+  assertPersonalOwner(user.username);
   return {
     id: user.id,
     username: user.username,
