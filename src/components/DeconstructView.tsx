@@ -1,4 +1,3 @@
-import { getCurrentAccount } from '../services/authService.ts';
 import React, { useState, useEffect, useRef } from 'react';
 import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
@@ -36,16 +35,12 @@ import { exportLegalDocToWord } from '../utils/exportHelper.ts';
 interface DeconstructViewProps {
   userId: string;
   onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
-  onOpenSubscribe?: () => void;
-  onCreditsUpdated?: (newCredits: number) => void;
   onTransferToDrafting?: (facts: string, defenses: string, caseNature?: string, responseWorkType?: string) => void;
 }
 
 export const DeconstructView: React.FC<DeconstructViewProps> = ({
   userId,
   onSwitchTab,
-  onOpenSubscribe,
-  onCreditsUpdated,
   onTransferToDrafting,
 }) => {
   const [opponentBriefText, setOpponentBriefText] = useState<string>(() => {
