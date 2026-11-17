@@ -84,10 +84,12 @@ function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
   return error;
 }
 
-async function request(options: any, model: string, stream: boolean): Promise<OpenRouterRequest> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+async function request(options: any, model: string, stream: boolean, provider: { baseUrl?: string; apiKey?: string; name?: string } = {}): Promise<OpenRouterRequest> {
+  const apiKey = (provider.apiKey || process.env.OPENROUTER_API_KEY || '').trim();
+  const providerName = provider.name || 'OpenRouter';
+  const endpoint = `${(provider.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/$/, '')}/chat/completions`;
   if (!apiKey) {
-    const error: any = new Error('اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
+    const error: any = new Error(provider.apiKey ? `مفتاح ${providerName} غير مضبوط.` : 'اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
     error.statusCode = 503;
     throw error;
   }
@@ -119,13 +121,12 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   resetTimeout();
   let response: Response;
   try {
-    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app',
-        'X-Title': 'Amin Smart Lawyer Assistant',
+        ...(providerName === 'OpenRouter' ? { 'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://amin-smart-lawyer-assistant.vercel.app', 'X-Title': 'Amin Smart Lawyer Assistant' } : {}),
       },
       body: JSON.stringify(buildPayload(options, model, stream)),
       signal: controller.signal,
@@ -146,7 +147,7 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
       if (timedOut) throw createTimeoutError(activeTimeoutMs, stream);
     }
     clearRequestTimeout();
-    const error: any = new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
+    const error: any = new Error(`${providerName} request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
     error.status = response.status;
     error.statusCode = response.status;
     throw error;
@@ -160,7 +161,8 @@ async function request(options: any, model: string, stream: boolean): Promise<Op
   };
 }
 
-export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number) {
+export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requestDeadlineAt?: number, baseUrl?: string, apiKey?: string) {
+  const provider = { baseUrl, apiKey, name: baseUrl ? 'Groq' : 'OpenRouter' };
   const applyDefaultTimeout = (options: any) => ({
     ...options,
     requestTimeoutMs: Number(options?.requestTimeoutMs) >= 1000
@@ -174,7 +176,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
         const timedOptions = applyDefaultTimeout(options);
         let pending: OpenRouterRequest | null = null;
         try {
-          pending = await request(timedOptions, timedOptions.model, false);
+          pending = await request(timedOptions, timedOptions.model, false, provider);
           const data: any = await pending.response.json();
           const text = data?.choices?.[0]?.message?.content;
           const finishReason = data?.choices?.[0]?.finish_reason;
@@ -198,7 +200,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
       },
       generateContentStream: async (options: any) => {
         const timedOptions = applyDefaultTimeout(options);
-        const pending = await request(timedOptions, timedOptions.model, true);
+        const pending = await request(timedOptions, timedOptions.model, true, provider);
         const response = pending.response;
         if (!response.body) {
           pending.clearTimeout();
