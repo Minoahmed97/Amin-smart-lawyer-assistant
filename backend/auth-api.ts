@@ -6,7 +6,6 @@ import {
   generateRechargeCode,
   listAccounts,
   adjustAccountBalance,
-  deleteAccount,
   loginAdmin,
 } from './auth.ts';
 import { rateLimit, limitBodyString } from './security.ts';
@@ -52,7 +51,7 @@ export default async function handler(req: any, res: any) {
       return res.json(await adjustAccountBalance(req, body?.userId || '', Number(body?.amount || 0), body?.mode === 'set' ? 'set' : 'add'));
     }
     if (req.method === 'POST' && route === 'admin-delete-account') {
-      return res.json(await deleteAccount(req, body?.userId || ''));
+      return res.status(403).json({ error: 'حذف الحساب معطل في النسخة الشخصية.' });
     }
     return res.status(404).json({ error: 'مسار مصادقة غير موجود.' });
   } catch (err: any) {
