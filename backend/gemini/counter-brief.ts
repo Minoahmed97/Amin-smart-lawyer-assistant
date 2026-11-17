@@ -148,6 +148,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         }, undefined, undefined, false, {
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
+          attemptedPairs: usedPairs,
           startKey: continuationGeminiStartKey || undefined,
         });
       } catch (error: any) {
@@ -251,6 +252,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       }, undefined, undefined, false, {
         deadlineAt,
         avoidPairs: Array.from(usedPairs),
+        attemptedPairs: usedPairs,
         startKey: continuationGeminiStartKey || undefined,
       });
     } catch (error: any) {
