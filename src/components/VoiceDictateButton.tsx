@@ -18,6 +18,8 @@ export const VoiceDictateButton: React.FC<VoiceDictateButtonProps> = ({
   const [isSupported, setIsSupported] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const recognitionRef = useRef<any>(null);
+  const onTranscriptRef = useRef(onTranscript);
+  onTranscriptRef.current = onTranscript;
 
   useEffect(() => {
     const SpeechRecognition =
@@ -42,7 +44,7 @@ export const VoiceDictateButton: React.FC<VoiceDictateButtonProps> = ({
           }
         }
         if (transcriptChunk.trim()) {
-          onTranscript(transcriptChunk.trim());
+          onTranscriptRef.current(transcriptChunk.trim());
         }
       };
 
@@ -73,34 +75,50 @@ export const VoiceDictateButton: React.FC<VoiceDictateButtonProps> = ({
         } catch {}
       }
     };
-  }, [lang, onTranscript]);
+  }, [lang]);
 
-  const toggleListening = () => {
+  const toggleListening = async () => {
     setErrorMessage(null);
-    if (!isSupported) {
-      alert('ميزة الإملاء الصوتي غير مدعومة في متصفحك. يرجى تجربة Google Chrome أو Safari الحديث.');
+
+    if (isListening) {
+      try { recognitionRef.current?.stop(); } catch {}
+      setIsListening(false);
       return;
     }
 
-    if (isListening) {
-      try {
-        recognitionRef.current?.stop();
-      } catch {}
-      setIsListening(false);
-    } else {
-      try {
-        recognitionRef.current?.start();
-        setIsListening(true);
-      } catch (err: any) {
-        console.warn('Speech start error:', err);
-        try {
-          recognitionRef.current?.stop();
-          setTimeout(() => {
-            recognitionRef.current?.start();
-            setIsListening(true);
-          }, 200);
-        } catch {}
+    // Request microphone permission before checking SpeechRecognition support.
+    // Some Android browsers expose getUserMedia but not the Web Speech API.
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setErrorMessage('المتصفح لا يتيح طلب إذن الميكروفون. افتح التطبيق من متصفح Chrome عبر اتصال HTTPS وتحقق من أذونات الموقع.');
+        return;
       }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+
+      if (!isSupported || !recognitionRef.current) {
+        setErrorMessage('تم الوصول إلى الميكروفون، لكن هذا المتصفح لا يدعم تحويل الكلام إلى نص. استخدم Google Chrome محدّثًا.');
+        return;
+      }
+
+      recognitionRef.current.start();
+      setIsListening(true);
+    } catch (err: any) {
+      console.warn('Speech start error:', err);
+      const errorName = String(err?.name || '');
+      if (errorName === 'NotAllowedError' || errorName === 'PermissionDeniedError' || errorName === 'SecurityError') {
+        setErrorMessage('إذن الميكروفون مرفوض. اسمح للمتصفح باستخدام الميكروفون من إعدادات الموقع ثم أعد المحاولة.');
+      } else if (errorName === 'NotFoundError' || errorName === 'DevicesNotFoundError') {
+        setErrorMessage('لم يتم العثور على ميكروفون متاح على الجهاز.');
+      } else if (errorName === 'NotReadableError' || errorName === 'TrackStartError') {
+        setErrorMessage('الميكروفون مستخدم بواسطة تطبيق آخر أو يتعذر تشغيله حاليًا.');
+      } else if (String(err?.message || '').toLowerCase().includes('already started')) {
+        setErrorMessage('الإملاء الصوتي يعمل بالفعل.');
+      } else {
+        setErrorMessage('تعذر تشغيل الإملاء الصوتي. تحقق من إذن الميكروفون واتصال الإنترنت ثم حاول مجددًا.');
+      }
+      setIsListening(false);
     }
   };
 
