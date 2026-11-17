@@ -10,10 +10,7 @@ import { BroadcastBanner } from './BroadcastBanner.tsx';
 import { AdminApiModal } from './AdminApiModal.tsx';
 import { DraftingFormData } from '../types.ts';
 import { getAllLawModels } from '../utils/legalVaultService.ts';
-import {
-  UserRole,
-  getCurrentStoredCredits,
-} from '../utils/deviceFingerprint.ts';
+import { UserRole } from '../utils/deviceFingerprint.ts';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { initAnalyticsTracking, stopAnalyticsTracking, recordAnalyticsEvent } from '../services/analyticsService.ts';
 import { enableCompletionPushNotifications } from '../services/aiService.ts';
@@ -78,7 +75,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   const userId = user?.id || '';
   const userName = user?.name || user?.user_metadata?.full_name || user?.username || 'المستشار القانوني';
 
-  const [credits, setCredits] = useState<number>(() => Number(user?.credits || user?.trialOperationsRemaining || 0));
   const [vaultModelsCount, setVaultModelsCount] = useState<number>(0);
 
   // Shared form data for cross-tab workflows
@@ -93,26 +89,10 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   };
 
   useEffect(() => {
-    setCredits(getCurrentStoredCredits());
-
-    const handleCreditChange = (e: any) => {
-      if (e.detail && typeof e.detail.credits === 'number') {
-        setCredits(e.detail.credits);
-      } else {
-        setCredits(getCurrentStoredCredits());
-      }
-    };
-
-    window.addEventListener('judicial_credits_change', handleCreditChange);
-
     const models = getAllLawModels(userId);
     setVaultModelsCount(models.length);
 
     (window as any).openAdminModal = () => setIsAdminOpen(true);
-
-    return () => {
-      window.removeEventListener('judicial_credits_change', handleCreditChange);
-      };
   }, [user, userId]);
 
   const handleDraftFromQualify = (facts: string) => {
@@ -170,10 +150,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       customInstructions: transferInstruction,
     });
     setActiveTab('draft');
-  };
-
-  const handleCreditsUpdated = (newCredits: number) => {
-    setCredits(newCredits);
   };
 
   const handleEnableNotifications = async () => {
@@ -236,7 +212,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
                 userId={userId}
                 onSwitchTab={handleTabChange}
                 onOpenSubscribe={() => {}}
-                onCreditsUpdated={handleCreditsUpdated}
                 onTransferToDrafting={handleTransferFromDeconstruct}
               />
             </div>
@@ -246,8 +221,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
                 initialFormData={draftingData}
                 userId={userId}
                 onOpenSubscribe={() => {}}
-                onCreditsUpdated={handleCreditsUpdated}
-                onSwitchTab={handleTabChange}
+                  onSwitchTab={handleTabChange}
               />
             </div>
 
@@ -347,15 +321,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
                 <Megaphone className="w-3.5 h-3.5" />
                 <span>المجتمع</span>
               </button>
-              <span>•</span>
-              <a
-                href="https://wa.me/201009319562?text=%D8%A7%D9%84%D8%B3%D9%84%D8%A7%D9%85%20%D8%B9%D9%84%D9%8A%D9%83%D9%85%D8%8C%20%D8%A3%D8%B1%D8%BA%D8%A8%20%D9%81%D9%8A%20%D8%B4%D8%AD%D9%86%20%D8%A7%D9%84%D8%B1%D8%B5%D9%8A%D8%AF%20%D9%88%D8%A7%D9%84%D8%AA%D9%88%D8%A7%D8%B5%D9%84%20%D9%85%D8%B9%20%D8%A7%D9%84%D8%AF%D8%B9%D9%85"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1 cursor-pointer"
-              >
-                <span>الدعم الفني (01009319562)</span>
-              </a>
               <span>•</span>
               <span className="flex items-center gap-1 text-emerald-700 font-semibold">
                 <Shield className="w-3.5 h-3.5 text-emerald-600" />
