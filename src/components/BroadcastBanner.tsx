@@ -3,11 +3,10 @@ import { Megaphone, AlertCircle, Sparkles, X, ArrowLeft, Info } from 'lucide-rea
 import { BroadcastAnnouncement, fetchCurrentBroadcast } from '../services/broadcastService.ts';
 
 interface BroadcastBannerProps {
-  onOpenSubscribe?: () => void;
   onSwitchTab?: (tab: any) => void;
 }
 
-export const BroadcastBanner: React.FC<BroadcastBannerProps> = ({ onOpenSubscribe, onSwitchTab }) => {
+export const BroadcastBanner: React.FC<BroadcastBannerProps> = ({ onSwitchTab }) => {
   const [broadcast, setBroadcast] = useState<BroadcastAnnouncement | null>(null);
   const [isDismissed, setIsDismissed] = useState<boolean>(false);
 
@@ -63,8 +62,7 @@ export const BroadcastBanner: React.FC<BroadcastBannerProps> = ({ onOpenSubscrib
 
   const handleActionClick = () => {
     if (broadcast.actionUrl === '#packages') {
-      if (onSwitchTab) onSwitchTab('packages');
-      else if (onOpenSubscribe) onOpenSubscribe();
+      return;
     } else if (broadcast.actionUrl?.startsWith('http')) {
       window.open(broadcast.actionUrl, '_blank', 'noopener,noreferrer');
     } else if (broadcast.actionUrl) {
@@ -96,7 +94,7 @@ export const BroadcastBanner: React.FC<BroadcastBannerProps> = ({ onOpenSubscrib
       </div>
 
       <div className="flex items-center justify-between sm:justify-start gap-2 w-full sm:w-auto sm:flex-shrink-0">
-        {broadcast.actionText && (
+        {broadcast.actionText && broadcast.actionUrl !== '#packages' && (
           <button
             onClick={handleActionClick}
             className="px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white font-bold text-xs border border-white/20 transition-all flex items-center justify-center gap-1 cursor-pointer whitespace-normal text-center active:scale-95"
