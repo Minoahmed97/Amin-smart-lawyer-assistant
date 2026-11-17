@@ -1,17 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import {
   Lock,
-  Ticket,
-  Sliders,
-  DollarSign,
   Save,
-  RotateCcw,
   Zap,
   Plus,
   Trash2,
   CheckCircle2,
   Check,
-  Send,
   Eye,
   EyeOff,
   KeyRound,
