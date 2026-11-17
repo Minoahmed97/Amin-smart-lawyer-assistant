@@ -40,9 +40,6 @@ export default async function handler(req: any, res: any) {
     if (req.method === 'GET' && route === 'accounts') {
       return res.json({ accounts: await listAccounts(req) });
     }
-    if (req.method === 'POST' && route === 'admin-balance') {
-      return res.json(await adjustAccountBalance(req, body?.userId || '', Number(body?.amount || 0), body?.mode === 'set' ? 'set' : 'add'));
-    }
     if (req.method === 'POST' && route === 'admin-delete-account') {
       return res.status(403).json({ error: 'حذف الحساب معطل في النسخة الشخصية.' });
     }
