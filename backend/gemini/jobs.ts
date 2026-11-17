@@ -475,7 +475,11 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   // so only a genuinely stale running record is eligible for reclamation.
   if (job.status === 'running') {
     const updatedAt = Date.parse(String(job.updated_at || ''));
-    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt < JOB_STALE_TIMEOUT_MS) return;
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt < JOB_STALE_TIMEOUT_MS) {
+      // Keep the queue message alive while another delivery owns this job.
+      // If that worker is terminated, a later retry can reclaim the stale row.
+      throw new Error('AI job is still active; retry after the current worker lease expires.');
+    }
     const requeued = await supabase(
       `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&status=eq.running&updated_at=lt.${encodeURIComponent(new Date(Date.now() - JOB_STALE_TIMEOUT_MS).toISOString())}`,
       {
@@ -901,7 +905,7 @@ export default async function handler(req: any, res: any) {
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
             if (existing.status === 'queued') {
-              if (isPdfOcrPayload(taskType, payload) || taskType !== 'ocr') {
+              if (isPdfOcrPayload(taskType, payload)) {
                 scheduleBackground(dispatchQueuedJob(existing.id));
               } else if (requestBody?.deferQueue !== true) {
                 await send('amin-ai-jobs', { jobId: existing.id });
@@ -914,7 +918,7 @@ export default async function handler(req: any, res: any) {
       }
 
       try {
-        if (isPdfOcrPayload(taskType, payload) || taskType !== 'ocr') {
+        if (isPdfOcrPayload(taskType, payload)) {
           scheduleBackground(dispatchQueuedJob(id));
         } else if (requestBody?.deferQueue !== true) {
           await send('amin-ai-jobs', { jobId: id });
@@ -922,11 +926,11 @@ export default async function handler(req: any, res: any) {
       } catch (queueError: any) {
         await patchJob(id, session.userId, {
           status: 'failed',
-          error: 'تعذر إدخال مهمة الصور إلى الطابور الخلفي. أعد المحاولة.',
+          error: 'تعذر إدخال المهمة إلى الطابور الخلفي. أعد المحاولة.',
           payload: {},
           completed_at: new Date().toISOString(),
         });
-        throw new Error('تعذر تشغيل طابور الصور الخلفي على الخادم.');
+        throw new Error('تعذر تشغيل طابور المهام الخلفي على الخادم.');
       }
       return res.status(202).json({ jobId: id, status: 'queued' });
     }
@@ -965,7 +969,7 @@ export default async function handler(req: any, res: any) {
           );
           const changedRows = requeued.ok ? await requeued.json() : [];
           if (Array.isArray(changedRows) && changedRows.length) {
-            if (isPdfJob || job.task_type !== 'ocr') scheduleBackground(dispatchQueuedJob(id));
+            if (isPdfJob) scheduleBackground(dispatchQueuedJob(id));
             else await send('amin-ai-jobs', { jobId: id });
           }
           const refreshed = await supabase(jobPath);
