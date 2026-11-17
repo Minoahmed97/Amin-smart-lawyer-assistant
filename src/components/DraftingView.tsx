@@ -9,7 +9,6 @@ import {
   resumeDraftCounterBrief,
 } from '../services/aiService.ts';
 import { getAllLawModels } from '../utils/legalVaultService.ts';
-import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
 import {
   FileText,
   Sparkles,
@@ -349,12 +348,6 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       return;
     }
 
-    const availableCredits = getCurrentStoredCredits();
-    if (availableCredits <= 0) {
-      if (onOpenSubscribe) onOpenSubscribe();
-      return;
-    }
-
     const operationId = ++resultOperationRef.current;
     setIsLoading(true);
     setRefineNote('');
@@ -378,7 +371,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         try {
           const account = await getCurrentAccount();
           onCreditsUpdated(account.credits);
-          setRefineNote(`تم تحديث الرصيد. المتبقي: ${account.credits}.`);
+          setRefineNote('تمت العملية بنجاح.');
         } catch {
           setRefineNote('تمت العملية بنجاح.');
         }
@@ -391,8 +384,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       if (looksLikeNetworkFailure) {
         const partialText = persistentStorage.getItem('amin_judicial_draft_result', '');
         setDraftError(partialText
-          ? 'انقطع الاتصال أثناء التوليد. تم الاحتفاظ بالجزء الذي وصل بالفعل؛ راجعه قبل إعادة المحاولة حتى لا تكرر طلباً أو تستهلك رصيداً إضافياً.'
-          : 'انقطع الاتصال أثناء التوليد قبل وصول النتيجة. تحقق من الاتصال قبل إعادة المحاولة لتجنب تكرار الطلب.');
+          ? 'انقطع الاتصال أثناء التوليد. تم الاحتفاظ بالجزء الذي وصل بالفعل؛ راجعه قبل إعادة المحاولة.'
+          : 'انقطع الاتصال أثناء التوليد قبل وصول النتيجة. تحقق من الاتصال قبل إعادة المحاولة.');
       } else {
         setDraftError(err?.message || 'تعذر استكمال الصياغة حالياً.');
       }
