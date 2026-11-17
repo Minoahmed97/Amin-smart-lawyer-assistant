@@ -39,6 +39,16 @@
   "functions": {
     "api/index.ts": {
       "maxDuration": 300
+    },
+    "api/queue-worker.ts": {
+      "maxDuration": 300,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "amin-ai-jobs",
+          "retryAfterSeconds": 45
+        }
+      ]
     }
   }
 }
