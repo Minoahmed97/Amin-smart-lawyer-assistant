@@ -12,7 +12,7 @@ Clock3,
 Image as ImageIcon,
 } from 'lucide-react';
 import { checkServerOCRReadiness, extractTextFromAnyFile } from '../utils/fileExtractor.ts';
-import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
+import { acknowledgeSavedOcrJob, cancelSavedOcrTask, getRequestHeaders, getSavedOcrJobs, resumeSavedOcrTask } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from '../utils/legalVaultService.ts';
 import {
 createFileBatchId,
