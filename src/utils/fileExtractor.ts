@@ -1,10 +1,16 @@
 import mammoth from 'mammoth';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import { getSessionToken } from '../services/authService.ts';
-import { runSavedOcrTask } from '../services/aiService.ts';
-import type { SavedOcrTaskLifecycle } from '../services/aiService.ts';
+import { runSavedOcrTask, runSavedOcrBatchTask, type SavedOcrTaskLifecycle } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from './legalVaultService.ts';
+
+export interface ExtractTextOptions {
+  userId?: string;
+  jobId?: string;
+  signal?: AbortSignal;
+  onStage?: (stage: 'preparing' | 'processing') => void | Promise<void>;
+  onJobStatus?: SavedOcrTaskLifecycle['onStatus'];
+  enqueueOnly?: boolean;
+}
 
 export interface ExtractedFileResult {
   fileName: string;
@@ -29,6 +35,11 @@ export function fileToBase64(file: File | Blob): Promise<string> {
 }
 
 /** * تجهيز الصور قبل OCR: تحويل إلى رمادي، تصغير الأبعاد، وضغط JPEG. * يحاول إبقاء ملف الصورة الناتج دون 1MB مع الحفاظ على وضوح النص قدر الإمكان. */
+/**
+ * Preserve the original image bytes for OCR. Do not downscale or re-encode:
+ * handwriting, dots and fine pen strokes can disappear during lossy resizing.
+ * The server accepts a 20 MB base64 payload, so keep the raw file below 14 MB.
+ */
 export async function compressAndResizeImage( file: File, maxDimension = 1800, quality = 0.82, ): Promise<{ base64Data: string; mimeType: string }> {
   const MAX_IMAGE_BYTES = 1024 * 1024;
   const encodeCanvas = (canvas: HTMLCanvasElement, q: number) =>
@@ -104,54 +115,6 @@ export async function compressAndResizeImage( file: File, maxDimension = 1800, q
     console.warn('Image compression failed:', error);
     throw new Error('تعذر تجهيز الصورة وإيصال حجمها إلى أقل من 1MB. جرّب صورة أوضح أو أصغر.');
   }
-}
-
-/** تحويل صفحات PDF إلى صور JPEG لاستخدام مسار OCR الحالي الخاص بالصور. */
-async function renderPdfPagesForOcr(file: File): Promise<{ firstPageBase64: string; remainingPages: Array<{ base64Data: string; mimeType: string }> }> {
-  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-  const pdfDocument = await pdfjsLib.getDocument({
-    data: await file.arrayBuffer(),
-    useWorkerFetch: false,
-    isEvalSupported: false,
-  }).promise;
-  const pages: Array<{ base64Data: string; mimeType: string }> = [];
-  let totalBytes = 0;
-  try {
-    if (pdfDocument.numPages < 1 || pdfDocument.numPages > 30) {
-      throw new Error('عدد صفحات ملف PDF يتجاوز الحد المدعوم حاليًا (30 صفحة).');
-    }
-    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
-      const page = await pdfDocument.getPage(pageNumber);
-      const baseViewport = page.getViewport({ scale: 1 });
-      const scale = Math.min(2, 1800 / Math.max(baseViewport.width, baseViewport.height));
-      const viewport = page.getViewport({ scale: Math.max(0.5, scale) });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.floor(viewport.width));
-      canvas.height = Math.max(1, Math.floor(viewport.height));
-      const context = canvas.getContext('2d', { alpha: false });
-      if (!context) throw new Error('تعذر تجهيز صفحة PDF كصورة.');
-      context.fillStyle = '#FFFFFF';
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvasContext: context, viewport, canvas } as any).promise;
-      let blob: Blob | null = null;
-      for (const quality of [0.82, 0.76, 0.70, 0.64, 0.58, 0.52]) {
-        blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
-        if (blob && blob.size <= 1024 * 1024) break;
-      }
-      canvas.width = 1;
-      canvas.height = 1;
-      if (!blob || blob.size > 1024 * 1024) throw new Error(`تعذر ضغط صفحة PDF رقم ${pageNumber} إلى الحجم المسموح.`);
-      totalBytes += blob.size;
-      if (totalBytes > 3 * 1024 * 1024) throw new Error('حجم صفحات PDF بعد تحويلها إلى صور تجاوز الحد الآمن للإرسال (3MB). قسّم الملف إلى أجزاء أصغر ثم أعد المحاولة.');
-      pages.push({ base64Data: await fileToBase64(blob), mimeType: 'image/jpeg' });
-      page.cleanup();
-    }
-  } finally {
-    await pdfDocument.destroy();
-  }
-  const [first, ...remainingPages] = pages;
-  if (!first) throw new Error('ملف PDF لا يحتوي على صفحات قابلة للقراءة.');
-  return { firstPageBase64: first.base64Data, remainingPages };
 }
 
 export function resolveMimeType(file: File): string {
@@ -344,47 +307,182 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
   throw new Error(`تعذر استخراج نص وورد القديم (${file.name}).`);
 }
 
-/** * أداة الاستخراج الشاملة والسريعة مع دعم حفظ هوية المهمة ومراحلها لاستعادتها بعد تحديث الصفحة. */
-export interface FileExtractionOptions {
-  userId?: string;
-  jobId?: string;
-  onStage?: (stage: 'preparing' | 'processing') => void | Promise<void>;
-  onJobStatus?: SavedOcrTaskLifecycle['onStatus'];
-  signal?: AbortSignal;
+/** * أداة الاستخراج الشاملة والسريعة: * 1. وورد (.docx): تستخرج مصلحة Mammoth النص فوراً في العميل. * 2. وورد (.doc): فك تشفير البيانات من العميل أو عبر خادم OCR. * 3. بي دي إف والصور: يقوم العميل بضغط الصورة واستخراجها عبر خادم OCR المركزي. * 4. الملفات النصية (.txt): قراءة فورية للنص. */
+// OCR uploads are serialized per browser tab so each image gets a complete
+// server-side key/model rotation before the next image starts.
+let ocrUploadQueue: Promise<void> = Promise.resolve();
+let lastOcrUploadFinishedAt = 0;
+async function runQueuedOcrTask(
+  base64Data: string,
+  mimeType: string,
+  fileName: string,
+  recoveryScope: string,
+  options: ExtractTextOptions = {},
+): Promise<{ text: string; jobId: string }> {
+  let releaseQueue!: () => void;
+  const previous = ocrUploadQueue;
+  ocrUploadQueue = new Promise<void>((resolve) => { releaseQueue = resolve; });
+  await previous.catch(() => undefined);
+  try {
+    const minimumGapMs = 5000;
+    const waitMs = Math.max(0, minimumGapMs - (Date.now() - lastOcrUploadFinishedAt));
+    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
+    await options.onStage?.('processing');
+    return await runSavedOcrTask(
+      base64Data,
+      mimeType,
+      fileName,
+      recoveryScope,
+      options.userId || getActiveLawyerUserId(),
+      options.jobId,
+      { onStatus: options.onJobStatus, signal: options.signal, enqueueOnly: options.enqueueOnly },
+    );
+  } finally {
+    lastOcrUploadFinishedAt = Date.now();
+    releaseQueue();
+  }
 }
 
-async function extractUsingSavedOcr(
+async function runQueuedOcrBatchTask(
+  images: Array<{ pageNumber: number; base64Data: string; mimeType: string }>,
+  pageTexts: Array<{ pageNumber: number; text: string }>,
+  fileName: string,
+  recoveryScope: string,
+  options: ExtractTextOptions = {},
+): Promise<{ text: string; jobId: string }> {
+  let releaseQueue!: () => void;
+  const previous = ocrUploadQueue;
+  ocrUploadQueue = new Promise<void>((resolve) => { releaseQueue = resolve; });
+  await previous.catch(() => undefined);
+  try {
+    const minimumGapMs = 5000;
+    const waitMs = Math.max(0, minimumGapMs - (Date.now() - lastOcrUploadFinishedAt));
+    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
+    await options.onStage?.('processing');
+    return await runSavedOcrBatchTask(
+      images, pageTexts, fileName, recoveryScope,
+      options.userId || getActiveLawyerUserId(), options.jobId,
+      { onStatus: options.onJobStatus, signal: options.signal, enqueueOnly: options.enqueueOnly },
+    );
+  } finally {
+    lastOcrUploadFinishedAt = Date.now();
+    releaseQueue();
+  }
+}
+
+async function extractTextFromPdfPageByPage(
   file: File,
   recoveryScope: string,
-  options: FileExtractionOptions,
-  suppliedBase64?: string,
-  suppliedMimeType?: string,
-  extraPayload: Record<string, unknown> = {},
-): Promise<{ text: string; jobId: string }> {
-  if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-  const base64Data = suppliedBase64 || await fileToBase64(file);
-  const mimeType = suppliedMimeType || resolveMimeType(file);
-  if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-  await options.onStage?.('processing');
-  return runSavedOcrTask(
-    base64Data,
-    mimeType,
-    file.name,
-    recoveryScope,
-    options.userId || getActiveLawyerUserId(),
-    options.jobId,
-    { onStatus: options.onJobStatus, signal: options.signal },
-    extraPayload,
-  );
+  options: ExtractTextOptions = {},
+): Promise<{ text: string; lastJobId?: string }> {
+  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const workerUrlModule: any = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+  pdfjs.GlobalWorkerOptions.workerSrc = workerUrlModule.default || workerUrlModule;
+  const pdfDocument = await pdfjs.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    useSystemFonts: true,
+    isEvalSupported: false,
+  }).promise;
+
+  const imagePages: Array<{ pageNumber: number; base64Data: string; mimeType: string }> = [];
+  const textPages: Array<{ pageNumber: number; text: string }> = [];
+  const imageOperators = new Set([
+    pdfjs.OPS.paintImageXObject, pdfjs.OPS.paintInlineImageXObject,
+    pdfjs.OPS.paintJpegXObject, pdfjs.OPS.paintImageXObjectRepeat,
+  ].filter((value: any) => typeof value === 'number'));
+  const imageMaskOperator = pdfjs.OPS.paintImageMaskXObject;
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
+      const page = await pdfDocument.getPage(pageNumber);
+      try {
+        const textContent = await page.getTextContent();
+        const pageText = (textContent.items || [])
+          .map((item: any) => typeof item?.str === 'string' && item.str ? item.str + (item.hasEOL ? '\n' : ' ') : '')
+          .join('')
+          .replace(/[\t ]+/g, ' ')
+          .replace(/ *\n */g, '\n')
+          .trim();
+
+        let containsImage = false;
+        try {
+          const operatorList = await page.getOperatorList();
+          containsImage = (operatorList.fnArray || []).some((operator: number, index: number) => {
+            if (imageOperators.has(operator)) return true;
+            if (typeof imageMaskOperator !== 'number' || operator !== imageMaskOperator) return false;
+            const args = operatorList.argsArray?.[index];
+            const image = Array.isArray(args) ? args[0] : args;
+            const width = Number(image?.width || image?.bitmap?.width || 0);
+            const height = Number(image?.height || image?.bitmap?.height || 0);
+            return width >= 64 && height >= 64 && width * height >= 10000;
+          });
+        } catch (error: any) {
+          containsImage = true;
+          console.warn(`تعذر فحص الصور داخل صفحة PDF رقم ${pageNumber}:`, error?.message || error);
+        }
+
+        if (!containsImage && pageText) {
+          textPages.push({ pageNumber, text: pageText });
+          continue;
+        }
+
+        const initialViewport = page.getViewport({ scale: 1.6 });
+        const longestSide = Math.max(initialViewport.width, initialViewport.height);
+        const scale = longestSide > 2400 ? 1.6 * (2400 / longestSide) : 1.6;
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error(`تعذر تجهيز صورة صفحة PDF رقم ${pageNumber}.`);
+        context.fillStyle = '#FFFFFF';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: context, viewport }).promise;
+        const blob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob((value) => value ? resolve(value) : reject(new Error('تعذر تحويل صفحة PDF إلى صورة.')), 'image/jpeg', 0.92);
+        });
+        canvas.width = 0;
+        canvas.height = 0;
+        const pageFile = new File([blob], `${file.name.replace(/\.pdf$/i, '')}-page-${pageNumber}.jpg`, { type: 'image/jpeg' });
+        // Keep the original compression dimensions, grayscale and quality settings.
+        const compressed = await compressAndResizeImage(pageFile, 1800, 0.82);
+        imagePages.push({ pageNumber, ...compressed });
+      } finally {
+        page.cleanup?.();
+      }
+    }
+
+    if (imagePages.length > 100) {
+      throw new Error('ملف PDF يحتوي على أكثر من 100 صفحة مصوّرة. قسّمه إلى أجزاء أصغر للحفاظ على إرسال جميع الصور في مهمة واحدة.');
+    }
+
+    if (!imagePages.length) {
+      const text = textPages.sort((a, b) => a.pageNumber - b.pageNumber).map((page) => page.text).join('\n\n').trim();
+      if (!text) throw new Error(`تعذر استخراج نص من ملف PDF "${file.name}".`);
+      return { text };
+    }
+    const totalImageBytes = imagePages.reduce((total, page) => {
+      const compact = page.base64Data.replace(/\s/g, '');
+      return total + Math.floor(compact.length * 3 / 4) - (compact.endsWith('==') ? 2 : compact.endsWith('=') ? 1 : 0);
+    }, 0);
+    if (totalImageBytes > 20 * 1024 * 1024) {
+      throw new Error('حجم صور صفحات PDF بعد الضغط أكبر من الحد الآمن لطلب واحد. قسّم الملف إلى أجزاء أصغر ثم أعد المحاولة.');
+    }
+    // One durable OCR job carries every scanned page and emits one completion push.
+    const task = await runQueuedOcrBatchTask(imagePages, textPages, file.name, recoveryScope, options);
+    return { text: task.text, lastJobId: task.jobId };
+  } finally {
+    await pdfDocument.destroy?.();
+  }
 }
 
-export async function extractTextFromAnyFile(
-  file: File,
-  recoveryScope = 'general',
-  options: FileExtractionOptions = {},
-): Promise<ExtractedFileResult> {
+export async function extractTextFromAnyFile(file: File, recoveryScope = 'general', options: ExtractTextOptions = {}): Promise<ExtractedFileResult> {
   const fileName = file.name;
   const lowerName = fileName.toLowerCase();
+  await options.onStage?.('preparing');
+  if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
   let extractedText = '';
   let backgroundJobId: string | undefined;
 
@@ -392,40 +490,38 @@ export async function extractTextFromAnyFile(
     throw new Error(`ملف مؤقت (${fileName}) من وورد. اختر المستند الأصلي.`);
   }
 
-  await options.onStage?.('preparing');
-
   // 1. الملفات النصية العادية
   if (lowerName.endsWith('.txt')) {
-    await options.onStage?.('processing');
     extractedText = await file.text();
   }
   // 2. ملفات وورد الحديثة docx
   else if (lowerName.endsWith('.docx')) {
     try {
-      await options.onStage?.('processing');
       extractedText = await extractTextFromDocx(file);
-    } catch (localError) {
-      console.warn('Local DOCX extraction failed; continuing through the durable OCR job queue:', localError);
-      const savedTask = await extractUsingSavedOcr(file, recoveryScope, options);
-      extractedText = savedTask.text;
-      backgroundJobId = savedTask.jobId;
+    } catch {
+      const base64Data = await fileToBase64(file);
+      const mimeType = resolveMimeType(file);
+      extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
   // 3. ملفات وورد القديمة .doc
   else if (lowerName.endsWith('.doc')) {
     try {
-      await options.onStage?.('processing');
       extractedText = await extractTextFromLegacyDoc(file);
-    } catch (localError) {
-      console.warn('Local legacy DOC extraction failed; continuing through the durable OCR job queue:', localError);
-      const savedTask = await extractUsingSavedOcr(file, recoveryScope, options);
-      extractedText = savedTask.text;
-      backgroundJobId = savedTask.jobId;
+    } catch {
+      const base64Data = await fileToBase64(file);
+      const mimeType = resolveMimeType(file);
+      extractedText = await extractTextViaServerOCR(base64Data, mimeType, fileName);
     }
   }
-  // 4. مستندات بي دي إف والصور
+  // 4. PDF: extract selectable text locally and OCR only pages containing images.
+  else if (lowerName.endsWith('.pdf')) {
+    const pdfResult = await extractTextFromPdfPageByPage(file, recoveryScope, options);
+    extractedText = pdfResult.text;
+    backgroundJobId = pdfResult.lastJobId;
+  }
+  // 5. Images: keep the original compression and durable OCR job path unchanged.
   else if (
-    lowerName.endsWith('.pdf') ||
     lowerName.endsWith('.jpg') ||
     lowerName.endsWith('.jpeg') ||
     lowerName.endsWith('.png') ||
@@ -433,33 +529,18 @@ export async function extractTextFromAnyFile(
     lowerName.endsWith('.bmp') ||
     file.type.startsWith('image/')
   ) {
-    const isImage = file.type.startsWith('image/') || /\.(jpe?g|png|webp|bmp)$/i.test(lowerName);
-    let base64Data = '';
-    let mimeType = resolveMimeType(file);
-    if (isImage) {
-      const compressed = await compressAndResizeImage(file, 1800, 0.82);
-      base64Data = compressed.base64Data;
-      mimeType = compressed.mimeType;
-      // Preserve the existing compressed-image OCR route unchanged.
-      if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-      const savedTask = await extractUsingSavedOcr(file, recoveryScope, options, base64Data, mimeType);
-      extractedText = savedTask.text;
-      backgroundJobId = savedTask.jobId;
-    } else {
-      const rendered = await renderPdfPagesForOcr(file);
-      base64Data = rendered.firstPageBase64;
-      mimeType = 'image/jpeg';
-      const extraPayload = rendered.remainingPages.length
-        ? { imagePages: JSON.stringify(rendered.remainingPages) }
-        : {};
-      if (options.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-      const savedTask = await extractUsingSavedOcr(file, recoveryScope, options, base64Data, mimeType, extraPayload);
-      extractedText = savedTask.text;
-      backgroundJobId = savedTask.jobId;
-    }
+    const compressed = await compressAndResizeImage(file, 1800, 0.82);
+    const savedTask = await runQueuedOcrTask(
+      compressed.base64Data,
+      compressed.mimeType,
+      fileName,
+      recoveryScope,
+      options,
+    );
+    extractedText = savedTask.text;
+    backgroundJobId = savedTask.jobId;
   } else {
     try {
-      await options.onStage?.('processing');
       extractedText = await file.text();
     } catch {
       throw new Error(`صيغة الملف (${fileName}) غير مدعومة.`);
@@ -467,28 +548,8 @@ export async function extractTextFromAnyFile(
   }
 
   const cleanText = extractedText.trim();
-  if (!cleanText) {
+  if (!cleanText && !(options.enqueueOnly && backgroundJobId)) {
     throw new Error(`تعذر استخراج نص من "${fileName}".`);
-  }
-
-  // DOC/DOCX are normally extracted locally. Notify while the page is active;
-  // fallback jobs use the server Push channel and can notify after the page closes.
-  if (!backgroundJobId && /\.(docx?|doc)$/i.test(fileName)) {
-    try {
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && 'serviceWorker' in navigator) {
-        await navigator.serviceWorker.register('/sw.js');
-        const registration = await navigator.serviceWorker.ready;
-        await registration.showNotification('اكتمل استخراج ملف Word', {
-          body: `تم استخراج النص من ${fileName} بنجاح.`,
-          icon: '/pwa-icon-192.png',
-          badge: '/pwa-icon-192.png',
-          tag: `amin-word-${Date.now()}`,
-          data: { url: '/' },
-        });
-      }
-    } catch (notificationError) {
-      console.warn('Word extraction notification could not be displayed:', notificationError);
-    }
   }
 
   return {
