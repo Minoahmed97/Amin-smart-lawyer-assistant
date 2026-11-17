@@ -38,6 +38,7 @@ import { getLegalDocTemplates, LegalDocTemplate } from '../utils/legalTemplateSe
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
+import { createLegalCaseRecord, getSelectedLegalCaseId } from '../services/legalCaseService.ts';
 
 const sanitizeDraftJobUserId = (value: string | null | undefined): string =>
   String(value || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -375,6 +376,19 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       if (aiText && operationId === resultOperationRef.current) {
         setGeneratedBrief(aiText);
         persistentStorage.setItem('amin_judicial_draft_result', aiText);
+        const selectedCaseId = getSelectedLegalCaseId(userId);
+        if (selectedCaseId) {
+          const workTitle = (formData.customJudicialWorkType || formData.judicialWorkType || formData.briefType || 'عمل قضائي').trim();
+          const caseRecordContent = [
+            '[المهمة الحالية]', workTitle,
+            '[بيانات القضية المدخلة]', `رقم الدعوى: ${formData.caseNumber || ''}`, `المحكمة: ${formData.courtType || ''}`, `الدائرة: ${formData.circuit || ''}`,
+            '[الوقائع المقدمة]', formData.facts || '',
+            '[الدفوع والطلبات المدخلة]', formData.defenses || '', formData.requests || '',
+            '[النص الناتج]', aiText,
+          ].join('\\n\\n');
+          try { await createLegalCaseRecord(selectedCaseId, { record_type: 'memorandum', title: `${workTitle} — ${new Date().toLocaleDateString('ar-EG')}`, content: caseRecordContent }); }
+          catch (saveError) { console.warn('Legal case history save failed:', saveError); setRefineNote('اكتملت الصياغة، لكن تعذر حفظها في ذاكرة القضية.'); }
+        }
         try {
           const account = await getCurrentAccount();
           onCreditsUpdated(account.credits);

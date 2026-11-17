@@ -26,6 +26,7 @@ import chatHandler from '../backend/gemini/chat.ts';
 import geminiOcrHandler from '../backend/gemini/ocr.ts';
 import ocrHandler from '../backend/ocr.ts';
 import authHandler from '../backend/auth-api.ts';
+import legalCasesHandler from '../backend/legal-cases.ts';
 
 export const config = {
   api: {
@@ -113,6 +114,11 @@ export default async function handler(req: any, res: any) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Cache-Control', 'no-store');
+
+  if (route === '/legal-cases' || route.startsWith('/legal-cases/')) {
+    req.query = { ...(req.query || {}), legalCasePath: route.slice('/legal-cases'.length) };
+    return await legalCasesHandler(req, res);
+  }
 
   const target = ROUTES[route];
   if (!target) {

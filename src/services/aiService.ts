@@ -5,6 +5,13 @@ import { getSessionToken } from './authService.ts';
 let lastRequestTimestamp = 0;
 const MIN_REQUEST_INTERVAL_MS = 150;
 
+function getSelectedLegalCaseId(userId?: string): string {
+  try {
+    const key = `amin_selected_legal_case_${String(userId || '').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    return localStorage.getItem(key) || '';
+  } catch { return ''; }
+}
+
 async function throttleRequests(): Promise<void> {
   const now = Date.now();
   const timeSinceLast = now - lastRequestTimestamp;
@@ -627,6 +634,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
     ourPosition: params.ourPosition || '',
     additionalFacts: params.additionalFacts || '',
     vaultContext: lawyerVaultContext,
+    caseId: getSelectedLegalCaseId(params.userId),
   };
 
   try {
@@ -657,6 +665,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
       ...requestParams,
       effectiveWorkType,
       vaultContext: lawyerVaultContext,
+      caseId: getSelectedLegalCaseId(params.userId),
     }, onChunk, params.userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
@@ -673,6 +682,7 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
     const result = await requestSavedJob('qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
+      caseId: getSelectedLegalCaseId(userId),
     }, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
@@ -691,6 +701,7 @@ export async function refineDraftText( draftText: string, enhancementType: 'more
       draftText,
       enhancementType,
       vaultContext: lawyerVaultContext,
+      caseId: getSelectedLegalCaseId(userId),
     }, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {

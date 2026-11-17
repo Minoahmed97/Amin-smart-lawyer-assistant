@@ -2,6 +2,7 @@ import { generateDeepLegalResponse } from './counter-brief.ts';
 import { executeWithKeyRotation } from '../keyRotation.ts';
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
+import { loadLegalCaseContext } from '../legal-cases.ts';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -25,7 +26,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const { taskType, originalContext, result, messages } = body || {};
+    const { taskType, originalContext, result, messages, caseId } = body || {};
 
     if (!['deconstruct', 'qualify', 'draft'].includes(taskType)) {
       return res.status(400).json({
@@ -63,6 +64,7 @@ export default async function handler(req: any, res: any) {
     limitBodyString(lastMessage.content, 10000, 'رسالة المحادثة');
 
     const { session } = await enforceAiCooldown(req);
+    const caseMemoryContext = caseId ? await loadLegalCaseContext(req, String(caseId)) : '';
     rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000, {
       identity: session.userId,
       allowConfiguredAiExemption: true,
@@ -110,7 +112,7 @@ export default async function handler(req: any, res: any) {
 
       /* * تعديل موضعي: * لا نطلب إعادة توليد المستند بالكامل. * النموذج يحدد النص الأصلي والنص البديل فقط. */
 
-      const editPrompt = `أنت محرر مستندات قانونية مصرية. المطلوب تنفيذ تعديل موضعي على المستند التالي. [طلب المحامي] ${latestUserMessage} [المستند الحالي] ${result} تعليمات إلزامية: 1. حدد النص الموجود فعلياً في المستند الذي يجب تغييره. 2. أرجع النص القديم حرفياً دون إعادة صياغته. 3. أرجع النص البديل المطلوب فقط. 4. لا تعيد كتابة المستند بالكامل. 5. لا تعدل أي فقرة أخرى. 6. لا تختلق وقائع أو أسماء أو مواد قانونية. 7. إذا كان التعديل غير واضح أو لا يمكن تحديد موضعه بدقة، أرجع status بقيمة unclear. 8. إذا كان المطلوب إضافة نص جديد، حدد نصاً موجوداً يتم إدراج الإضافة بعده. 9. لا تختصر النص القديم ولا تستخدم علامات الحذف بدلاً منه. 10. اختر موضعاً فريداً لا يتكرر داخل المستند. 11. إذا كان الطلب يتطلب تعديلات متعددة أو إعادة صياغة شاملة لا يمكن تمثيلها باستبدال موضعي واحد، أرجع unclear. أرجع JSON صالحاً فقط بهذا الشكل: { "status": "ok", "oldText": "النص الأصلي المطابق حرفياً", "newText": "النص البديل" } في حالة الإضافة، اجعل newText يحتوي على النص الأصلي المحدد ثم الإضافة المطلوبة بعده. في حالة عدم وضوح الطلب: { "status": "unclear", "oldText": "", "newText": "" } ممنوع إضافة أي شرح خارج JSON.`;
+      const editPrompt = `أنت محرر مستندات قانونية مصرية. المطلوب تنفيذ تعديل موضعي على المستند التالي. [طلب المحامي] ${latestUserMessage} [المستند الحالي] ${result} ${caseMemoryContext ? `\n[ذاكرة القضية السابقة]\n${caseMemoryContext}\n` : ''} تعليمات إلزامية: 1. حدد النص الموجود فعلياً في المستند الذي يجب تغييره. 2. أرجع النص القديم حرفياً دون إعادة صياغته. 3. أرجع النص البديل المطلوب فقط. 4. لا تعيد كتابة المستند بالكامل. 5. لا تعدل أي فقرة أخرى. 6. لا تختلق وقائع أو أسماء أو مواد قانونية. 7. إذا كان التعديل غير واضح أو لا يمكن تحديد موضعه بدقة، أرجع status بقيمة unclear. 8. إذا كان المطلوب إضافة نص جديد، حدد نصاً موجوداً يتم إدراج الإضافة بعده. 9. لا تختصر النص القديم ولا تستخدم علامات الحذف بدلاً منه. 10. اختر موضعاً فريداً لا يتكرر داخل المستند. 11. إذا كان الطلب يتطلب تعديلات متعددة أو إعادة صياغة شاملة لا يمكن تمثيلها باستبدال موضعي واحد، أرجع unclear. أرجع JSON صالحاً فقط بهذا الشكل: { "status": "ok", "oldText": "النص الأصلي المطابق حرفياً", "newText": "النص البديل" } في حالة الإضافة، اجعل newText يحتوي على النص الأصلي المحدد ثم الإضافة المطلوبة بعده. في حالة عدم وضوح الطلب: { "status": "unclear", "oldText": "", "newText": "" } ممنوع إضافة أي شرح خارج JSON.`;
 
       // طلب قصير مخصص للتعديل بدلاً من مولد المستندات الطويلة
       const editResponse = await executeWithKeyRotation(
@@ -223,6 +225,7 @@ export default async function handler(req: any, res: any) {
 6. لا تضف مقدمة طويلة ولا تعِد صياغة المستند كله إذا كان المطلوب نقطة محددة.
 [النتيجة الحالية - مرجع للاطلاع فقط]
 ${result}
+${caseMemoryContext ? `[ذاكرة القضية الدائمة — للتمييز بين ما سبق والمهمة الحالية]\n${caseMemoryContext}\nلا تكرر إجراء أو دفعاً سابقاً باعتباره جديداً، ولا تضف طلباً جديداً إلى المستند دون موافقة المحامي.\n` : ''}
 [طلب المحامي]
 ${latestUserMessage}`;
 

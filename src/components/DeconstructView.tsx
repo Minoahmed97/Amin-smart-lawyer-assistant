@@ -2,6 +2,7 @@ import { getCurrentAccount } from '../services/authService.ts';
 import React, { useState, useEffect } from 'react';
 import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
 import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
+import { createLegalCaseRecord, getSelectedLegalCaseId } from '../services/legalCaseService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { StyleTemplateSelector } from './StyleTemplateSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -189,6 +190,17 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
       });
       if (result) {
         setAnalysisResult(result);
+        const selectedCaseId = getSelectedLegalCaseId(userId);
+        if (selectedCaseId) {
+          const caseRecordContent = [
+            '[المستند الحالي محل التفنيد]', opponentBriefText,
+            '[المحكمة وطبيعة النزاع]', courtType || '', caseNature || '',
+            '[موقفنا والوقائع الإضافية]', ourPosition || '', additionalFacts || '',
+            '[نتيجة التفنيد والتحليل والمقترح]', result,
+          ].join('\\n\\n');
+          try { await createLegalCaseRecord(selectedCaseId, { record_type: 'analysis', title: `تفنيد مستند — ${new Date().toLocaleDateString('ar-EG')}`, content: caseRecordContent }); }
+          catch (saveError) { console.warn('Legal case history save failed:', saveError); setDeconstructError('اكتمل التفنيد، لكن تعذر حفظه في ذاكرة القضية.'); }
+        }
         try {
           const account = await getCurrentAccount();
           if (onCreditsUpdated) onCreditsUpdated(account.credits);

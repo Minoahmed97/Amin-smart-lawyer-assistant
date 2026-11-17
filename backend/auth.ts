@@ -3,6 +3,10 @@ import { rateLimit, getClientIp, getRegistrationGuardKey } from './security.ts';
 
 type Json = Record<string, any>;
 
+const OWNER_PLATFORM_USER_ID = '18c419c1-c066-4e7d-bc87-9cf890524543';
+const OWNER_UNLIMITED_BALANCE = 999999;
+const isOwnerUserId = (value: unknown) => String(value || '').trim().toLowerCase() === OWNER_PLATFORM_USER_ID;
+
 function getSupabaseConfig() {
   const url = (process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
   const key = (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || '').trim();
@@ -62,6 +66,7 @@ function getBearer(req: any) {
 export function requireSession(req: any) {
   const session = readSession(getBearer(req));
   if (!session) { const err: any = new Error('انتهت جلسة الحساب. يرجى تسجيل الدخول من جديد.'); err.statusCode = 401; throw err; }
+  if (!isOwnerUserId(session.userId)) { const err: any = new Error('هذا التطبيق خاص بحساب المالك فقط.'); err.statusCode = 403; throw err; }
   return session;
 }
 
@@ -71,6 +76,7 @@ export async function requireActiveSession(req: any) {
   if (!res.ok) throw new Error('تعذر التحقق من حالة الحساب.');
   const user = (await res.json())?.[0];
   if (!user || user.account_status !== 'active') { const err: any = new Error('الحساب غير نشط أو موقوف.'); err.statusCode = 403; throw err; }
+  if (isOwnerUserId(session.userId)) return { session, user: { ...user, credits: OWNER_UNLIMITED_BALANCE, trial_operations_total: OWNER_UNLIMITED_BALANCE, trial_operations_used: 0 } };
   const trialRemaining = Math.max(0, Number(user.trial_operations_total || 0) - Number(user.trial_operations_used || 0));
   const trialValid = user.trial_expires_at && Date.now() < Date.parse(user.trial_expires_at) && trialRemaining > 0;
   if (Number(user.credits || 0) <= 0 && !trialValid) {
@@ -247,153 +253,27 @@ async function releaseRegistrationGuard(guardKey: string): Promise<void> {
   } catch {}
 }
 
-export async function registerAccount(username: string, password: string, displayName: string, deviceFingerprint: string, crossVersionFingerprint = '', req?: any) {
-  const cleanUsername = username.trim().toLowerCase();
-  const cleanName = displayName.trim() || cleanUsername;
-  if (!/^[a-zA-Z0-9_.-]{4,32}$/.test(cleanUsername)) {
-    throw new Error('اسم المستخدم يجب أن يكون من 4 إلى 32 حرفاً أو رقماً.');
-  }
-  if (password.length < 8) throw new Error('كلمة المرور يجب ألا تقل عن 8 أحرف.');
-  if (!/^EGY-[A-F0-9]+$/i.test(deviceFingerprint)) throw new Error('تعذر التحقق من الجهاز.');
-  if (!/^EGY-[A-F0-9]+$/i.test(crossVersionFingerprint)) throw new Error('تعذر التحقق من بصمة ربط النسختين.');
-  const crossVersionAlias = hashCrossVersionDeviceFingerprint(crossVersionFingerprint);
-
-  if (await findUser(cleanUsername)) throw new Error('اسم المستخدم مستخدم بالفعل.');
-  const existingDevice = await findDevice(deviceFingerprint);
-  if (existingDevice) throw new Error('هذا الجهاز مرتبط بحساب بالفعل. لا يمكن إنشاء حساب ثانٍ من نفس الجهاز.');
-  const existingAlias = await findDeviceAlias(crossVersionAlias);
-  if (existingAlias) throw new Error('هذا الجهاز مرتبط بحساب بالفعل من خلال النسخة الأخرى. لا يمكن إنشاء حساب ثانٍ من نفس الجهاز.');
-
-  // Persistent server-side guard: clearing localStorage or changing the
-  // username must not grant another free trial from the same browser/device.
-  const guardKey = req ? getRegistrationGuardKey(req, deviceFingerprint) : '';
-  if (guardKey && !(await claimRegistrationGuard(guardKey))) {
-    throw new Error('تم استخدام العرض المجاني من هذا الجهاز بالفعل. لا يمكن إنشاء حساب مجاني ثانٍ.');
-  }
-
-  const now = new Date().toISOString();
-  const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
-  const row = {
-    username: cleanUsername,
-    display_name: cleanName,
-    password_hash: hashPassword(password),
-    device_fingerprint: deviceFingerprint,
-    device_fingerprint_alias: crossVersionAlias,
-    role: 'lawyer',
-    credits: 0,
-    trial_operations_total: 20,
-    trial_operations_used: 0,
-    trial_started_at: now,
-    trial_expires_at: expires,
-    account_status: 'active',
-    created_at: now,
-    updated_at: now,
-  };
-
-  const res = await supabase('platform_users', {
-    method: 'POST',
-    headers: { Prefer: 'return=representation' },
-    body: JSON.stringify(row),
-  });
-  if (!res.ok) {
-    if (guardKey) await releaseRegistrationGuard(guardKey);
-    const err = await res.text();
-    throw new Error(`تعذر إنشاء الحساب (${res.status}): ${err.slice(0, 180)}`);
-  }
-  const created = (await res.json())?.[0];
-  if (!created?.id) throw new Error('لم يتم إنشاء الحساب بشكل صحيح.');
-  return {
-    token: createSession(created.id, cleanUsername),
-    user: {
-      id: created.id,
-      username: created.username,
-      name: created.display_name,
-      role: 'lawyer',
-      credits: Number(created.credits || 0),
-      trialOperationsRemaining: Math.max(0, Number(created.trial_operations_total || 20) - Number(created.trial_operations_used || 0)),
-      trialExpiresAt: created.trial_expires_at,
-      status: created.account_status,
-    },
-  };
+export async function registerAccount(_username: string, _password: string, _displayName: string, _deviceFingerprint: string, _crossVersionFingerprint = '', _req?: any) {
+  const error: any = new Error('تم إغلاق إنشاء الحسابات الجديدة؛ أمين مخصص لحساب المالك فقط.');
+  error.statusCode = 403;
+  throw error;
 }
 
-export async function loginAccount(username: string, password: string, deviceFingerprint: string, legacyDeviceFingerprint = '') {
-  if (!/^EGY-[A-F0-9]+$/i.test(deviceFingerprint)) {
-    throw new Error('تعذر التحقق من الجهاز.');
-  }
+export async function loginAccount(username: string, password: string, deviceFingerprint: string, _legacyDeviceFingerprint = '') {
+  if (!/^EGY-[A-F0-9]+$/i.test(deviceFingerprint)) throw new Error('تعذر التحقق من الجهاز.');
   const user = await findUser(username.trim().toLowerCase());
-  if (!user || !verifyPassword(password, user.password_hash)) {
-    throw new Error('اسم المستخدم أو كلمة المرور غير صحيح.');
-  }
-  if (user.account_status === 'deleted') {
-    throw new Error('هذا الحساب محذوف ولا يمكن تسجيل الدخول إليه. إذا كان الحذف بالخطأ، يُرجى مراجعة الإدارة لاستعادته.');
+  if (!user || !verifyPassword(password, user.password_hash)) throw new Error('اسم المستخدم أو كلمة المرور غير صحيح.');
+  if (!isOwnerUserId(user.id)) {
+    const error: any = new Error('اسم المستخدم أو كلمة المرور غير صحيح.');
+    error.statusCode = 403;
+    throw error;
   }
   if (user.account_status !== 'active') {
-    throw new Error('هذا الحساب موقوف حاليًا. إذا كان السبب انتهاء التجربة أو الرصيد، يُرجى مراجعة الإدارة لإعادة تفعيله أو شحنه.');
+    const error: any = new Error('حساب المالك غير نشط. يرجى مراجعة حالة الحساب في قاعدة البيانات.');
+    error.statusCode = 403;
+    throw error;
   }
-
-  const hasValidCrossVersionFingerprint = /^EGY-[A-F0-9]+$/i.test(legacyDeviceFingerprint);
-  const crossVersionAlias = hasValidCrossVersionFingerprint
-    ? hashCrossVersionDeviceFingerprint(legacyDeviceFingerprint)
-    : '';
-  const matchesPrimaryDevice = user.device_fingerprint === deviceFingerprint;
-  const matchesLinkedDevice = Boolean(crossVersionAlias && user.device_fingerprint_alias === crossVersionAlias);
-  const canMigrateLegacyBinding =
-    hasValidCrossVersionFingerprint && user.device_fingerprint === legacyDeviceFingerprint;
-
-  if (!matchesPrimaryDevice && !matchesLinkedDevice && !canMigrateLegacyBinding) {
-    throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
-  }
-
-  if (canMigrateLegacyBinding && !matchesPrimaryDevice) {
-    // Preserve the legacy migration path while registering the same browser
-    // signature for the second deployment.
-    const migrationRes = await supabase(
-      `platform_users?id=eq.${encodeURIComponent(user.id)}&device_fingerprint=eq.${encodeURIComponent(legacyDeviceFingerprint)}&account_status=eq.active`,
-      {
-        method: 'PATCH',
-        headers: { Prefer: 'return=minimal' },
-        body: JSON.stringify({
-          device_fingerprint: deviceFingerprint,
-          device_fingerprint_alias: crossVersionAlias,
-          updated_at: new Date().toISOString(),
-        }),
-      },
-    );
-    if (!migrationRes.ok) {
-      const error: any = new Error('تعذر تحديث ربط الجهاز للحساب. حاول تسجيل الدخول مرة أخرى.');
-      error.statusCode = 503;
-      throw error;
-    }
-    const refreshedUser = await findUser(user.username);
-    if (refreshedUser?.device_fingerprint !== deviceFingerprint) {
-      throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
-    }
-  } else if (matchesPrimaryDevice && hasValidCrossVersionFingerprint && !user.device_fingerprint_alias) {
-    // First successful login on the already-bound deployment enrolls the
-    // same-browser alias, allowing that browser to use the other deployment.
-    const linkRes = await supabase(
-      `platform_users?id=eq.${encodeURIComponent(user.id)}&device_fingerprint=eq.${encodeURIComponent(deviceFingerprint)}&device_fingerprint_alias=is.null&account_status=eq.active`,
-      {
-        method: 'PATCH',
-        headers: { Prefer: 'return=minimal' },
-        body: JSON.stringify({
-          device_fingerprint_alias: crossVersionAlias,
-          updated_at: new Date().toISOString(),
-        }),
-      },
-    );
-    if (!linkRes.ok) {
-      const error: any = new Error('تعذر تفعيل الربط الآمن بين نسختي التطبيق. حاول تسجيل الدخول مرة أخرى.');
-      error.statusCode = 503;
-      throw error;
-    }
-    const refreshedUser = await findUser(user.username);
-    if (refreshedUser?.device_fingerprint_alias !== crossVersionAlias) {
-      throw new Error('تعذر تأكيد ربط الجهاز بين النسختين. يرجى إعادة تسجيل الدخول.');
-    }
-  }
-
+  // The owner may sign in from any of their devices; the signed account session remains mandatory.
   return {
     token: createSession(user.id, user.username),
     user: {
@@ -401,8 +281,8 @@ export async function loginAccount(username: string, password: string, deviceFin
       username: user.username,
       name: user.display_name,
       role: 'lawyer',
-      credits: Number(user.credits || 0),
-      trialOperationsRemaining: Math.max(0, Number(user.trial_operations_total || 20) - Number(user.trial_operations_used || 0)),
+      credits: OWNER_UNLIMITED_BALANCE,
+      trialOperationsRemaining: OWNER_UNLIMITED_BALANCE,
       trialExpiresAt: user.trial_expires_at,
       status: user.account_status,
     },
@@ -420,8 +300,8 @@ export async function getCurrentAccount(req: any) {
     username: user.username,
     name: user.display_name,
     role: user.role,
-    credits: Number(user.credits || 0),
-    trialOperationsRemaining: Math.max(0, Number(user.trial_operations_total || 20) - Number(user.trial_operations_used || 0)),
+    credits: OWNER_UNLIMITED_BALANCE,
+    trialOperationsRemaining: OWNER_UNLIMITED_BALANCE,
     trialExpiresAt: user.trial_expires_at,
     status: user.account_status,
   };
@@ -430,6 +310,7 @@ export async function getCurrentAccount(req: any) {
 export async function consumeOperation(req: any, serviceName: string) {
   const session = requireSession(req);
   if (!serviceName || String(serviceName).length > 120) throw new Error('اسم الخدمة غير صالح.');
+  if (isOwnerUserId(session.userId)) return { success: true, remainingCredits: OWNER_UNLIMITED_BALANCE, trialRemaining: OWNER_UNLIMITED_BALANCE, message: 'استخدام شخصي غير محدود.' };
   const res = await supabase('rpc/consume_platform_operation', {
     method: 'POST',
     body: JSON.stringify({ p_user_id: session.userId }),
@@ -447,19 +328,10 @@ export async function consumeOperation(req: any, serviceName: string) {
   };
 }
 
-export async function redeemCode(req: any, code: string) {
-  const session = requireSession(req);
-  const clean = code.trim().toUpperCase();
-  if (!clean) throw new Error('يرجى إدخال كود الشحن.');
-  const res = await supabase('rpc/redeem_recharge_code', {
-    method: 'POST',
-    body: JSON.stringify({ p_user_id: session.userId, p_code: clean }),
-  });
-  if (!res.ok) {
-    const msg = await res.text();
-    throw new Error(msg.replace(/^.*?message[":\s]+/i, '').slice(0, 220) || 'تعذر استخدام كود الشحن.');
-  }
-  return await res.json();
+export async function redeemCode(_req: any, _code: string) {
+  const error: any = new Error('الشحن وأكواد التفعيل غير مفعلة في النسخة الشخصية من أمين.');
+  error.statusCode = 403;
+  throw error;
 }
 
 export async function generateRechargeCode(req: any, credits: number, packageId?: string) {

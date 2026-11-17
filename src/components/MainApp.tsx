@@ -1,15 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Header } from './Header.tsx';
+import { LegalCaseWorkspace } from './LegalCaseWorkspace.tsx';
 import { DraftingView } from './DraftingView.tsx';
 import { DeconstructView } from './DeconstructView.tsx';
 import { LegalQualifyView } from './LegalQualifyView.tsx';
 import { DefensesCodexView } from './DefensesCodexView.tsx';
 import { LegalVaultView } from './LegalVaultView.tsx';
-import { PackagesView } from './PackagesView.tsx';
 import { CommunityWallView } from './CommunityWallView.tsx';
 import { BroadcastBanner } from './BroadcastBanner.tsx';
 import { AdminApiModal } from './AdminApiModal.tsx';
-import { SubscribeModal } from './SubscribeModal.tsx';
 import { DraftingFormData } from '../types.ts';
 import { getAllLawModels } from '../utils/legalVaultService.ts';
 import {
@@ -19,7 +18,7 @@ import {
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { initAnalyticsTracking, stopAnalyticsTracking, recordAnalyticsEvent } from '../services/analyticsService.ts';
 import { enableCompletionPushNotifications, fetchSavedAiJob } from '../services/aiService.ts';
-import { Scale, Shield, AlertOctagon, CreditCard, FolderArchive, AlertTriangle, Megaphone } from 'lucide-react';
+import { Scale, Shield, FolderArchive, AlertTriangle, Megaphone } from 'lucide-react';
 
 interface MainAppProps {
   user: any;
@@ -58,7 +57,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'packages' | 'vault' | 'community'>(() => {
     try {
       const savedTab = persistentStorage.getItem('judicial_active_tab', '');
-      if (savedTab && ['draft', 'deconstruct', 'qualify', 'defenses', 'packages', 'vault', 'community'].includes(savedTab)) {
+      if (savedTab && ['draft', 'deconstruct', 'qualify', 'defenses', 'vault', 'community'].includes(savedTab)) {
         return savedTab as any;
       }
     } catch {}
@@ -77,7 +76,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   }, [onLogout]);
 
   const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
-  const [isSubscribeOpen, setIsSubscribeOpen] = useState<boolean>(false);
   const userId = user?.id || '';
   const userName = user?.name || user?.user_metadata?.full_name || user?.username || 'المستشار القانوني';
 
@@ -127,6 +125,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   };
 
   const handleTabChange = (targetTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'packages' | 'vault' | 'community') => {
+    if (targetTab === 'packages') return;
     setActiveTab(targetTab);
   };
 
@@ -146,7 +145,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     const models = getAllLawModels(userId);
     setVaultModelsCount(models.length);
 
-    (window as any).openSubscribeModal = () => setIsSubscribeOpen(true);
     (window as any).openAdminModal = () => setIsAdminOpen(true);
 
     return () => {
@@ -242,47 +240,11 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
           : 'bg-[#090d16] text-slate-100 selection:bg-[#b45309]/30 selection:text-amber-200'
       }`}
     >
-      {/* Low/Exhausted Credits Notification Banner */}
-      {credits <= 0 && (
-        <div className="bg-gradient-to-r from-red-950 via-amber-950 to-red-950 border-b-2 border-amber-500 px-4 py-3 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-3 shadow-xl animate-in fade-in">
-          <div className="flex items-center gap-2.5">
-            <AlertOctagon className="w-5 h-5 text-amber-400 flex-shrink-0 animate-pulse" />
-            <div>
-              <span className="font-black text-sm text-white block sm:inline">
-                انتهت محاولاتك المجانية المتاحة
-              </span>
-              <span className="text-amber-200/90 text-xs sm:mr-2">
-                (الرصيد المتبقي: 0 محاولات) - يرجى شحن الرصيد للاستمرار.
-              </span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <a
-              href="https://wa.me/201009319562?text=%D8%A7%D9%84%D8%B3%D9%84%D8%A7%D9%85%20%D8%B9%D9%84%D9%8A%D9%83%D9%85%D8%8C%20%D8%A7%D9%86%D8%AA%D9%87%D8%AA%20%D9%85%D8%AD%D8%A7%D9%88%D9%84%D8%A7%D8%AA%D9%8A%20%D8%A7%D9%84%D9%85%D8%AC%D8%A7%D9%86%D9%8A%D8%A9%20%D9%88%D8%A3%D8%B1%D8%BA%D8%A8%20%D9%81%D9%8A%20%D8%B4%D8%AD%D9%86%20%D8%A7%D9%84%D8%B1%D8%B5%D9%8A%D8%AF%20%D9%88%D8%A5%D8%B1%D8%B3%D8%A7%D9%84%20%D8%A5%D9%8A%D8%B5%D8%A7%D9%84%20%D8%A7%D9%84%D8%AF%D9%81%D8%B9"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold text-xs transition-colors flex items-center gap-1.5 shadow-md cursor-pointer border border-emerald-400"
-              title="تواصل مع الدعم عبر واتساب"
-            >
-              <span>شحن عبر واتساب (01009319562)</span>
-            </a>
-            <button
-              onClick={() => setActiveTab('packages')}
-              className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-bold text-xs transition-colors flex items-center gap-1.5 shadow cursor-pointer border border-amber-400/50"
-            >
-              <CreditCard className="w-3.5 h-3.5" />
-              <span>عرض الباقات</span>
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Main Judicial Header */}
       <Header
         activeTab={activeTab}
         setActiveTab={handleTabChange}
         onOpenAdmin={() => setIsAdminOpen(true)}
-        onOpenSubscribe={() => setIsSubscribeOpen(true)}
         credits={credits}
         userName={userName}
         vaultModelsCount={vaultModelsCount}
@@ -294,15 +256,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         onEnableNotifications={handleEnableNotifications}
       />
 
-      {/* Subscription & Pricing Modal */}
-      <SubscribeModal
-        isOpen={isSubscribeOpen}
-        onClose={() => setIsSubscribeOpen(false)}
-        userId={userId}
-        currentCredits={credits}
-        onCreditsUpdated={handleCreditsUpdated}
-      />
-
       {/* Admin Control Modal */}
       <AdminApiModal
         isOpen={isAdminOpen}
@@ -311,9 +264,11 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
 
       {/* Global Broadcast Announcement from Admin */}
       <BroadcastBanner
-        onOpenSubscribe={() => setIsSubscribeOpen(true)}
+        onOpenSubscribe={() => {}}
         onSwitchTab={handleTabChange}
       />
+
+      <LegalCaseWorkspace userId={userId} />
 
       {/* Main Tab Content - Kept mounted in DOM to prevent losing state when navigating */}
       <main className="flex-1 py-3 sm:py-5">
@@ -323,7 +278,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               <DeconstructView
                 userId={userId}
                 onSwitchTab={handleTabChange}
-                onOpenSubscribe={() => setIsSubscribeOpen(true)}
+                onOpenSubscribe={() => {}}
                 onCreditsUpdated={handleCreditsUpdated}
                 onTransferToDrafting={handleTransferFromDeconstruct}
               />
@@ -333,7 +288,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               <DraftingView
                 initialFormData={draftingData}
                 userId={userId}
-                onOpenSubscribe={() => setIsSubscribeOpen(true)}
+                onOpenSubscribe={() => {}}
                 onCreditsUpdated={handleCreditsUpdated}
                 onSwitchTab={handleTabChange}
               />
@@ -343,7 +298,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               <LegalQualifyView
                 userId={userId}
                 onDraftBriefFromQualify={handleDraftFromQualify}
-                onOpenSubscribe={() => setIsSubscribeOpen(true)}
+                onOpenSubscribe={() => {}}
                 onCreditsUpdated={handleCreditsUpdated}
                 isClientOnly={false}
               />
@@ -359,15 +314,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
                 onUseModelInDrafting={handleUseModelInDrafting}
                 onSwitchTab={handleTabChange}
                 onModelsCountChanged={(count) => setVaultModelsCount(count)}
-              />
-            </div>
-
-            <div style={{ display: activeTab === 'packages' ? 'block' : 'none' }}>
-              <PackagesView
-                currentCredits={credits}
-                userId={userId}
-                onCreditsUpdated={handleCreditsUpdated}
-                onSwitchTab={handleTabChange}
               />
             </div>
 
@@ -447,14 +393,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               >
                 <FolderArchive className="w-3.5 h-3.5" />
                 <span>الخزينة</span>
-              </button>
-              <span>•</span>
-              <button
-                onClick={() => setActiveTab('packages')}
-                className="text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1 cursor-pointer"
-              >
-                <CreditCard className="w-3.5 h-3.5" />
-                <span>الباقات</span>
               </button>
               <span>•</span>
               <button

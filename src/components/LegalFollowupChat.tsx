@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
+import { getSelectedLegalCaseId } from '../services/legalCaseService.ts';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -212,6 +213,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
               originalContext: requestOriginalContext,
               result: requestResult,
               messages: [{ role: 'user', content: question }],
+              caseId: getSelectedLegalCaseId(String(userId || '')),
             },
             }),
           });
