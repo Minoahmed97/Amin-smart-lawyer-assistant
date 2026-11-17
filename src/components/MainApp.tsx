@@ -211,7 +211,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               <DeconstructView
                 userId={userId}
                 onSwitchTab={handleTabChange}
-                onOpenSubscribe={() => {}}
                 onTransferToDrafting={handleTransferFromDeconstruct}
               />
             </div>
@@ -220,8 +219,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               <DraftingView
                 initialFormData={draftingData}
                 userId={userId}
-                onOpenSubscribe={() => {}}
-                  onSwitchTab={handleTabChange}
+                    onSwitchTab={handleTabChange}
               />
             </div>
 
@@ -229,8 +227,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               <LegalQualifyView
                 userId={userId}
                 onDraftBriefFromQualify={handleDraftFromQualify}
-                onOpenSubscribe={() => {}}
-                onCreditsUpdated={handleCreditsUpdated}
                 isClientOnly={false}
               />
             </div>
