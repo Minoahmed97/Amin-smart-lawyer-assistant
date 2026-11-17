@@ -88,10 +88,9 @@ function getBearer(req: any) {
 export function requireSession(req: any) {
   const session = readSession(getBearer(req));
   if (!session) { const err: any = new Error('انتهت جلسة الحساب. يرجى تسجيل الدخول من جديد.'); err.statusCode = 401; throw err; }
-  // The login flow already verifies the database user ID against the configured owner.
-  // For subsequent requests, validate the signed session by the unique owner username.
-  // This avoids rejecting a valid owner session due to an ID-format/source mismatch.
-  assertPersonalOwner(session.username);
+  // Every authenticated API request must match the configured owner UUID.
+  // The signed session username may differ from the login alias/display formatting.
+  assertPersonalOwner(getPersonalOwnerUsername(), session.userId);
   return session;
 }
 
