@@ -6,8 +6,6 @@ import {
   Compass,
   BookOpen,
   Sparkles,
-  CreditCard,
-  Zap,
   FolderArchive,
   Megaphone,
   Sun,
@@ -26,8 +24,8 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 interface HeaderProps {
-  activeTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'packages' | 'vault' | 'community';
-  setActiveTab: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'packages' | 'vault' | 'community') => void;
+  activeTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community';
+  setActiveTab: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community') => void;
   onOpenAdmin?: () => void;
   onOpenSubscribe?: () => void;
   credits: number;
@@ -113,18 +111,7 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
         </div>
 
-        {/* User Credits Badge & Quick Action */}
         <div className="flex items-center gap-2">
-          {userName?.trim().toLowerCase() !== 'amin 1997' && (
-            <div
-              id="userCreditsBadge"
-              className="px-2.5 sm:px-3 py-1 rounded-full bg-gradient-to-r from-amber-600/30 to-amber-700/40 border border-[#b45309] text-amber-200 font-bold text-xs shadow-inner flex items-center gap-1.5 font-mono"
-            >
-              <CreditCard className="w-3.5 h-3.5 text-amber-400" />
-              <span>رصيدك: {credits} محاولة</span>
-            </div>
-          )}
-
           <div className="flex items-center gap-2 mr-1">
             <button
               type="button"
@@ -233,9 +220,6 @@ export const Header: React.FC<HeaderProps> = ({
                       <button onClick={() => { setActiveTab('qualify'); closeMenu(); }} className="header-menu-item" role="menuitem">
                         <Compass className="w-4 h-4 text-emerald-300" /><span>تكييف النزاع واستشارة</span>
                       </button>
-                      <button onClick={() => { setActiveTab('packages'); closeMenu(); }} className="header-menu-item" role="menuitem">
-                        <CreditCard className="w-4 h-4 text-emerald-400" /><span>الباقات والشحن</span>
-                      </button>
                       <button onClick={() => { setActiveTab('community'); closeMenu(); }} className="header-menu-item" role="menuitem">
                         <Megaphone className="w-4 h-4 text-amber-300" /><span>مجتمع المنظومة</span>
                       </button>
@@ -266,11 +250,6 @@ export const Header: React.FC<HeaderProps> = ({
                       </button>
                     </>
                   )}
-
-                  <button onClick={() => { setActiveTab('packages'); closeMenu(); }} className="header-menu-item text-emerald-200" role="menuitem">
-                    <Zap className="w-4 h-4 text-amber-300" />
-                    <span>شحن الرصيد والترقية</span>
-                  </button>
 
                   <div className="my-1 border-t border-slate-700/70" />
 
