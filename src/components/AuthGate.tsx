@@ -1,14 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { LogIn, UserPlus, ShieldCheck } from 'lucide-react';
+import { LogIn, ShieldCheck } from 'lucide-react';
 import { getDeviceFingerprint } from '../utils/deviceFingerprint.ts';
-import { getSessionToken, clearSession, loginAccount, registerAccount, PlatformUser } from '../services/authService.ts';
+import { getSessionToken, clearSession, loginAccount, PlatformUser } from '../services/authService.ts';
 
 interface Props { onAuthenticated: (user: PlatformUser) => void; }
 
 export const AuthGate: React.FC<Props> = ({ onAuthenticated }) => {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
-  const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -71,9 +69,7 @@ export const AuthGate: React.FC<Props> = ({ onAuthenticated }) => {
     setLoading(true);
     try {
       const device = await getDeviceFingerprint();
-      const user = mode === 'register'
-        ? await registerAccount(username, password, displayName, device)
-        : await loginAccount(username, password, device);
+      const user = await loginAccount(username, password, device);
       onAuthenticated(user);
     } catch (e: any) {
       setError(e?.message || 'تعذر تنفيذ العملية.');
@@ -106,27 +102,16 @@ export const AuthGate: React.FC<Props> = ({ onAuthenticated }) => {
           <p className="text-sm text-slate-300 mt-1">دخول موحد لحساب المحامي</p>
         </div>
 
-        {mode === 'register' && (
-          <input value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="الاسم الظاهر" className="w-full bg-[#090d16] border border-slate-600 rounded-xl px-4 py-3 text-white outline-none focus:border-amber-400" />
-        )}
         <input value={username} onChange={e => setUsername(e.target.value)} placeholder="اسم المستخدم" autoComplete="username" className="w-full bg-[#090d16] border border-slate-600 rounded-xl px-4 py-3 text-white outline-none focus:border-amber-400" />
-        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="كلمة المرور (8 أحرف على الأقل)" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} className="w-full bg-[#090d16] border border-slate-600 rounded-xl px-4 py-3 text-white outline-none focus:border-amber-400" />
+        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="كلمة المرور (8 أحرف على الأقل)" type="password" autoComplete="current-password" className="w-full bg-[#090d16] border border-slate-600 rounded-xl px-4 py-3 text-white outline-none focus:border-amber-400" />
 
-        {mode === 'register' && (
-          <div className="text-xs text-amber-200 bg-amber-950/30 border border-amber-500/30 rounded-xl p-3 leading-relaxed">
-            الحساب الجديد يحصل على 20 عملية قضائية خلال 14 يوماً. ينتهي الاستخدام عند استهلاك العمليات أو انتهاء الـ14 يوماً، أيهما أقرب، ثم يلزم الشحن.
-          </div>
-        )}
         {(error || sessionCheckError) && <div className="text-sm text-rose-200 bg-rose-950/50 border border-rose-500/50 rounded-xl p-3">{error || sessionCheckError}</div>}
 
         <button disabled={loading} className="w-full py-3 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 font-black flex items-center justify-center gap-2">
-          {mode === 'login' ? <LogIn className="w-5 h-5" /> : <UserPlus className="w-5 h-5" />}
-          {loading ? 'جارٍ التنفيذ...' : mode === 'login' ? 'تسجيل الدخول' : 'إنشاء الحساب'}
+          <LogIn className="w-5 h-5" />
+          {loading ? 'جارٍ التنفيذ...' : 'تسجيل الدخول'}
         </button>
 
-        <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }} className="w-full text-sm text-amber-300 hover:text-amber-200">
-          {mode === 'login' ? 'إنشاء حساب جديد' : 'لدي حساب بالفعل'}
-        </button>
       </form>
     </div>
   );
