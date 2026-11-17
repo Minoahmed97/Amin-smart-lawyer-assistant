@@ -433,13 +433,23 @@ for (const original of eligible) {
   }
 }
 
-// Link the successfully staged images in their original order and start only
-// the first one. The server starts each following image after the previous ends.
-if (stagedImageJobIds.length) {
+// Read all image job IDs in this batch, including jobs being recovered after a refresh.
+// This closes the small window where the browser could close after staging but before enqueue.
+const stagedRecords = await getFileBatchItems(effectiveUserId, recoveryScope).catch(() => []);
+if (!isCurrent()) return;
+const imageJobIds = eligible
+  .filter((original) => isImageFile(original))
+  .map((original) => stagedRecords.find((record) => record.id === original.id))
+  .filter((record): record is StoredFileBatchItem =>
+    Boolean(record && record.jobId && record.serverJobCreated && record.status === 'processing')
+  )
+  .map((record) => String(record.jobId));
+
+if (imageJobIds.length) {
   const enqueueResponse = await fetch('/api/gemini/jobs', {
     method: 'POST',
     headers: getRequestHeaders(),
-    body: JSON.stringify({ action: 'enqueue-ocr-batch', jobIds: stagedImageJobIds }),
+    body: JSON.stringify({ action: 'enqueue-ocr-batch', jobIds: imageJobIds }),
   });
   const enqueueData = await enqueueResponse.json().catch(() => ({}));
   if (!enqueueResponse.ok) {
