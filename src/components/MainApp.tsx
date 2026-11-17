@@ -208,7 +208,6 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         activeTab={activeTab}
         setActiveTab={handleTabChange}
         onOpenAdmin={() => setIsAdminOpen(true)}
-        credits={credits}
         userName={userName}
         vaultModelsCount={vaultModelsCount}
         userRole={userRole || 'lawyer'}
