@@ -27,7 +27,6 @@ interface HeaderProps {
   activeTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community';
   setActiveTab: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community') => void;
   onOpenAdmin?: () => void;
-  credits: number;
   userName?: string;
   vaultModelsCount?: number;
   userRole?: UserRole;
@@ -41,7 +40,6 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
-  credits,
   userName = 'المحامي الممارس',
   vaultModelsCount = 0,
   userRole = 'lawyer',
