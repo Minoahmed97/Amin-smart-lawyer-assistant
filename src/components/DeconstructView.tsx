@@ -36,7 +36,7 @@ import { exportLegalDocToWord } from '../utils/exportHelper.ts';
 
 interface DeconstructViewProps {
   userId: string;
-  onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'packages' | 'vault') => void;
+  onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
   onOpenSubscribe?: () => void;
   onCreditsUpdated?: (newCredits: number) => void;
   onTransferToDrafting?: (facts: string, defenses: string, caseNature?: string, responseWorkType?: string) => void;
