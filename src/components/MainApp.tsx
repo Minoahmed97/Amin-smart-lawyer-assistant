@@ -208,7 +208,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       }`}
     >
       {/* Low/Exhausted Credits Notification Banner */}
-      {credits <= 0 && (
+      {credits <= 0 && user?.username?.toLowerCase() !== 'amin1997' && (
         <div className="bg-gradient-to-r from-red-950 via-amber-950 to-red-950 border-b-2 border-amber-500 px-4 py-3 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-3 shadow-xl animate-in fade-in">
           <div className="flex items-center gap-2.5">
             <AlertOctagon className="w-5 h-5 text-amber-400 flex-shrink-0 animate-pulse" />
