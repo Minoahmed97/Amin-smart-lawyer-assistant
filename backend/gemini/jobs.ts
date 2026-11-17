@@ -245,7 +245,7 @@ function safePayload(input: any, taskType: string) {
       }
       const batchMime = String(input?.mimeType || '').toLowerCase();
       const batchName = String(input?.fileName || '').trim();
-      if (!Array.isArray(images) || images.length < 1 || images.length > 100 || batchMime !== 'application/pdf' || !/\\.pdf$/i.test(batchName)) {
+      if (!Array.isArray(images) || images.length < 1 || images.length > 100 || batchMime !== 'application/pdf' || !/\.pdf$/i.test(batchName)) {
         const error: any = new Error('مجموعة صور صفحات PDF غير صالحة.'); error.statusCode = 400; throw error;
       }
       let totalBytes = 0;
@@ -285,7 +285,7 @@ function safePayload(input: any, taskType: string) {
       const hasStoragePath = typeof input?.storagePath === 'string' && input.storagePath.length > 0;
       if (hasStoragePath) {
         payload.storagePath = String(input.storagePath);
-        if (!/^[0-9a-f-]{36}\\/[0-9a-f-]{36}\\/[a-zA-Z0-9._-]{1,120}$/i.test(payload.storagePath)) {
+        if (!/^[0-9a-f-]{36}\/[0-9a-f-]{36}\/[a-zA-Z0-9._-]{1,120}$/i.test(payload.storagePath)) {
           const error: any = new Error('مسار ملف OCR غير صالح.');
           error.statusCode = 400;
           throw error;
