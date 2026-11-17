@@ -42,13 +42,6 @@ import {
   fetchCurrentBroadcast,
   updateBroadcastAnnouncement,
 } from '../services/broadcastService.ts';
-import { PlatformPackage } from '../types.ts';
-import {
-  saveManagedPackages,
-  resetPlatformPackagesToDefaults,
-  fetchRemotePackages,
-} from '../utils/creditsManager.ts';
-import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
 import { fetchPlatformAnalytics, PlatformAnalyticsMetrics } from '../services/analyticsService.ts';
 import { getAdminSessionToken, loginAdmin } from '../services/authService.ts';
 
@@ -129,49 +122,8 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   const [aiHealthLoading, setAiHealthLoading] = useState(false);
   const [aiHealthResult, setAiHealthResult] = useState<{ ok: boolean; tested?: boolean; checkType?: 'metadata' | 'generation'; message: string; latencyMs?: number; checkedKeys?: number; cloudKeysReadable?: boolean; routing?: { primary?: string; fallback?: string }; providers?: { openrouter?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; model?: string; usage?: number | null; limit?: number | null; limitRemaining?: number | null; quotaRemaining?: number | null }; gemini?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; keysCount?: number; keysChecked?: number; validKeys?: number; cloudKeysReadable?: boolean; model?: string; quotaRemaining?: number | null; keyResults?: Array<{ index: number; masked: string; valid: boolean; status: string; message: string }> } } } | null>(null);
 
-  const [managedPackages, setManagedPackages] = useState<PlatformPackage[]>([]);
-  const [packageSaveSuccess, setPackageSaveSuccess] = useState<string>('');
-  const [isSavingPackages, setIsSavingPackages] = useState<boolean>(false);
-
-  const [manualRechargeAmount, setManualRechargeAmount] = useState<string>('20');
-  const [manualRechargeMsg, setManualRechargeMsg] = useState<string>('');
-  const [currentBalance, setCurrentBalance] = useState<number>(0);
-  const [selectedAccountId, setSelectedAccountId] = useState<string>('');
-  const [balanceActionLoading, setBalanceActionLoading] = useState<boolean>(false);
-
-  const [codeCredits, setCodeCredits] = useState<string>('20');
-  const [codePackageId, setCodePackageId] = useState<string>('');
-  const [generatedCode, setGeneratedCode] = useState<string>('');
-  const [codeCopied, setCodeCopied] = useState<boolean>(false);
-  const [codeLoading, setCodeLoading] = useState(false);
-
   const [analyticsData, setAnalyticsData] = useState<PlatformAnalyticsMetrics | null>(null);
-  const [accountsData, setAccountsData] = useState<any[]>([]);
-  const [accountSearch, setAccountSearch] = useState<string>('');
-  const [accountsLoading, setAccountsLoading] = useState(false);
   const [isAnalyticsLoading, setIsAnalyticsLoading] = useState<boolean>(false);
-
-  const filteredAccounts = accountsData.filter((account) => {
-    const q = accountSearch.trim().toLowerCase();
-    if (!q) return true;
-    return [account.display_name, account.username, account.id]
-      .filter(Boolean)
-      .some((value) => String(value).toLowerCase().includes(q));
-  });
-
-  const loadAccounts = async () => {
-    setAccountsLoading(true);
-    try {
-      const res = await fetch('/api/auth/accounts', { headers: { 'x-admin-session': getAdminSessionToken() } });
-      const data = await res.json();
-      if (res.ok) {
-        const accounts = Array.isArray(data.accounts) ? data.accounts : [];
-        setAccountsData(accounts);
-        if (!selectedAccountId && accounts[0]?.id) setSelectedAccountId(String(accounts[0].id));
-      }
-    } catch {}
-    finally { setAccountsLoading(false); }
-  };
 
   const loadAnalytics = async () => {
     setIsAnalyticsLoading(true);
@@ -543,19 +495,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   };
 
   useEffect(() => {
-    if (isOpen) {
-      fetchRemotePackages().then((pkgs) => {
-        setManagedPackages(pkgs);
-      });
-      setCurrentBalance(getCurrentStoredCredits());
-      fetchKeysStatus();
-      fetchOCRKeysStatus();
-      fetchGroqOCRFallbackStatus();
-      if (isAuthenticated) {
-        loadAnalytics();
-        loadAccounts();
-      }
-    }
+
   }, [isOpen, isAuthenticated]);
 
   useEffect(() => {
@@ -571,234 +511,11 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
       await loginAdmin(passwordInput.trim());
       setIsAuthenticated(true);
       sessionStorage.setItem('admin_owner_logged_in', 'true');
-      fetchRemotePackages().then((pkgs) => {
-        setManagedPackages(pkgs);
-        if (!codePackageId && pkgs[0]?.id) {
-          setCodePackageId(String(pkgs[0].id));
-          setCodeCredits(String(pkgs[0].credits));
-        }
-      });
       fetchKeysStatus();
       loadAnalytics();
-      loadAccounts();
     } catch (err: any) {
       setPasswordError(err?.message || 'رمز المرور الإداري غير صحيح.');
     }
-  };
-
-  const handlePackageFieldChange = (
-    index: number,
-    field: keyof PlatformPackage,
-    value: any
-  ) => {
-    const updated = [...managedPackages];
-    const current = { ...updated[index] };
-    if (field === 'credits') {
-      const num = parseInt(value, 10);
-      current.credits = isNaN(num) ? 0 : num;
-    } else if (field === 'price') {
-      current.price = value;
-      const parsedNum = parseInt(String(value).replace(/[^0-9]/g, ''), 10);
-      if (!isNaN(parsedNum)) {
-        current.numericPrice = parsedNum;
-      }
-    } else {
-      (current as any)[field] = value;
-    }
-    updated[index] = current;
-    setManagedPackages(updated);
-  };
-
-  const handleSavePackages = async () => {
-    setIsSavingPackages(true);
-    setPackageSaveSuccess('');
-    try {
-      const saved = await saveManagedPackages(managedPackages);
-      setManagedPackages(saved);
-      setPackageSaveSuccess('تم حفظ وتسجيل الباقات بنجاح!');
-      setTimeout(() => setPackageSaveSuccess(''), 4500);
-    } catch (err: any) {
-      alert('فشل الحفظ: ' + (err.message || ''));
-    } finally {
-      setIsSavingPackages(false);
-    }
-  };
-
-  const handleResetPackages = async () => {
-    if (confirm('هل ترغب في استعادة باقات المصنع الافتراضية؟')) {
-      setIsSavingPackages(true);
-      try {
-        const defaults = await resetPlatformPackagesToDefaults();
-        setManagedPackages(defaults);
-        setPackageSaveSuccess('تمت استعادة الباقات الافتراضية.');
-        setTimeout(() => setPackageSaveSuccess(''), 4500);
-      } catch (err: any) {
-        alert('فشل الاستعادة: ' + (err.message || ''));
-      } finally {
-        setIsSavingPackages(false);
-      }
-    }
-  };
-
-  const handleAddNewPackage = async () => {
-    const newPkg: PlatformPackage = {
-      id: `pkg_custom_${Date.now()}`,
-      name: 'باقة مخصصة جديدة',
-      credits: 15,
-      price: '225 جنيه',
-      numericPrice: 225,
-      badge: 'جديد',
-      description: 'باقة مخصصة للصياغة والاستشارات',
-      features: [
-        '15 عملية قضائية',
-        'دعم ملفات وورد وبي دي إف',
-        'استشارات قانونية فورية',
-      ],
-      enabled: true,
-    };
-    const updated = [...managedPackages, newPkg];
-    setManagedPackages(updated);
-    try {
-      const saved = await saveManagedPackages(updated);
-      setManagedPackages(saved);
-      setPackageSaveSuccess('تمت إضافة الباقة وحفظها على الخادم المركزي.');
-      setTimeout(() => setPackageSaveSuccess(''), 4500);
-    } catch (err: any) {
-      setManagedPackages(managedPackages);
-      alert('فشل إضافة الباقة: ' + (err?.message || ''));
-    }
-  };
-
-  const handleDeletePackage = async (id: string) => {
-    if (confirm('هل ترغب في حذف هذه الباقة نهائياً؟')) {
-      const updated = managedPackages.filter((p) => p.id !== id);
-      setManagedPackages(updated);
-      try {
-        const saved = await saveManagedPackages(updated);
-        setManagedPackages(saved);
-        setPackageSaveSuccess('تم حذف الباقة وحفظ التغيير على الخادم المركزي.');
-        setTimeout(() => setPackageSaveSuccess(''), 4500);
-      } catch (err: any) {
-        setManagedPackages(managedPackages);
-        alert('فشل حذف الباقة: ' + (err?.message || ''));
-      }
-    }
-  };
-
-  const refreshSelectedAccountBalance = () => {
-    const selected = accountsData.find((account) => String(account.id) === selectedAccountId);
-    setCurrentBalance(Number(selected?.credits || 0));
-  };
-
-  useEffect(() => {
-    refreshSelectedAccountBalance();
-  }, [selectedAccountId, accountsData]);
-
-  const handleDirectManualRecharge = async (requestedAmount?: number) => {
-    const amount = requestedAmount ?? parseInt(manualRechargeAmount, 10);
-    if (!selectedAccountId) { alert('يرجى اختيار حساب عميل أولاً.'); return; }
-    if (isNaN(amount) || amount <= 0) { alert('يرجى تحديد عدد محاولات صالح.'); return; }
-    setBalanceActionLoading(true);
-    try {
-      const res = await fetch('/api/auth/admin-balance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-session': getAdminSessionToken() },
-        body: JSON.stringify({ userId: selectedAccountId, amount, mode: 'add' }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'تعذر شحن الحساب.');
-      setAccountsData((prev) => prev.map((account) => String(account.id) === selectedAccountId ? { ...account, credits: data.newTotal, account_status: data.accountStatus } : account));
-      setCurrentBalance(Number(data.newTotal || 0));
-      setManualRechargeMsg(`تمت إضافة ${amount} محاولة للحساب المحدد. الرصيد الحالي: ${data.newTotal}.`);
-      setTimeout(() => setManualRechargeMsg(''), 4000);
-    } catch (err: any) {
-      setManualRechargeMsg(err?.message || 'تعذر شحن الحساب.');
-    } finally { setBalanceActionLoading(false); }
-  };
-
-  const handleSetExactBalance = async () => {
-    const amount = parseInt(manualRechargeAmount, 10);
-    if (!selectedAccountId) { alert('يرجى اختيار حساب عميل أولاً.'); return; }
-    if (isNaN(amount) || amount < 0) { alert('يرجى تحديد رصيد صالح.'); return; }
-    setBalanceActionLoading(true);
-    try {
-      const res = await fetch('/api/auth/admin-balance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-session': getAdminSessionToken() },
-        body: JSON.stringify({ userId: selectedAccountId, amount, mode: 'set' }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'تعذر ضبط الرصيد.');
-      setAccountsData((prev) => prev.map((account) => String(account.id) === selectedAccountId ? { ...account, credits: data.newTotal, account_status: data.accountStatus } : account));
-      setCurrentBalance(Number(data.newTotal || 0));
-      setManualRechargeMsg(`تم ضبط رصيد الحساب إلى: ${data.newTotal} محاولة.`);
-      setTimeout(() => setManualRechargeMsg(''), 4000);
-    } catch (err: any) {
-      setManualRechargeMsg(err?.message || 'تعذر ضبط الرصيد.');
-    } finally { setBalanceActionLoading(false); }
-  };
-
-  const handleDeleteAccount = async (account: any) => {
-    if (!account?.id) return;
-    const confirmed = confirm(`سيتم حذف حساب "${account.display_name || account.username}" نهائياً من قائمة الحسابات ومنع إعادة التسجيل من جهازه. هل أنت متأكد؟`);
-    if (!confirmed) return;
-    try {
-      const res = await fetch('/api/auth/admin-delete-account', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-session': getAdminSessionToken() },
-        body: JSON.stringify({ userId: account.id }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'تعذر حذف الحساب.');
-      setAccountsData((prev) => prev.filter((item) => String(item.id) !== String(account.id)));
-      if (selectedAccountId === String(account.id)) {
-        setSelectedAccountId('');
-        setCurrentBalance(0);
-      }
-      alert('تم حذف الحساب وحظر جهازه من إعادة التسجيل.');
-    } catch (err: any) {
-      alert(err?.message || 'تعذر حذف الحساب.');
-    }
-  };
-
-  const generateActivationCode = async () => {
-    const selectedPackage = managedPackages.find((pkg) => String(pkg.id) === codePackageId);
-    const credits = Number(selectedPackage?.credits || codeCredits);
-    if (!credits || credits <= 0) {
-      alert('يرجى اختيار باقة صالحة.');
-      return;
-    }
-    setCodeLoading(true);
-    try {
-      const res = await fetch('/api/auth/generate-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-session': getAdminSessionToken() },
-        body: JSON.stringify({ credits, packageId: codePackageId }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'تعذر إنشاء الكود.');
-      setGeneratedCode(data.code);
-      setCodeCopied(false);
-    } catch (err: any) {
-      alert('تعذر التوليد: ' + (err?.message || ''));
-    } finally {
-      setCodeLoading(false);
-    }
-  };
-
-  const copyCode = () => {
-    if (!generatedCode) return;
-    navigator.clipboard.writeText(generatedCode);
-    setCodeCopied(true);
-    setTimeout(() => setCodeCopied(false), 2500);
-  };
-
-  const getWhatsAppMessageUrl = () => {
-    if (!generatedCode) return '#';
-    const text = encodeURIComponent(
-      `كود شحن رصيد منصة أمين القضائية:\n\n${generatedCode}\n\nالرصيد الممنوح: ${codeCredits} محاولة صياغة واستشارة.\n\nمنصة أمين القضائية 2026`
-    );
-    return `https://wa.me/201009319562?text=${text}`;
   };
 
   if (!isOpen) return null;
