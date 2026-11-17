@@ -14,8 +14,23 @@ function getPersonalOwnerUsername(): string {
   return (process.env.PERSONAL_OWNER_USERNAME || 'amin1997').trim().toLowerCase();
 }
 
-function assertPersonalOwner(username: string) {
-  if (!username || username.trim().toLowerCase() !== getPersonalOwnerUsername()) {
+function getPersonalOwnerUserId(): string {
+  const userId = (process.env.PERSONAL_OWNER_USER_ID || '').trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    const err: any = new Error('إعداد PERSONAL_OWNER_USER_ID غير مضبوط بصورة صحيحة على الخادم.');
+    err.statusCode = 503;
+    throw err;
+  }
+  return userId.toLowerCase();
+}
+
+function assertPersonalOwner(username: string, userId: string) {
+  if (
+    !username ||
+    username.trim().toLowerCase() !== getPersonalOwnerUsername() ||
+    !userId ||
+    userId.trim().toLowerCase() !== getPersonalOwnerUserId()
+  ) {
     const err: any = new Error('هذه نسخة شخصية ومخصصة لحساب واحد فقط.');
     err.statusCode = 403;
     throw err;
@@ -74,7 +89,7 @@ function getBearer(req: any) {
 export function requireSession(req: any) {
   const session = readSession(getBearer(req));
   if (!session) { const err: any = new Error('انتهت جلسة الحساب. يرجى تسجيل الدخول من جديد.'); err.statusCode = 401; throw err; }
-  assertPersonalOwner(session.username);
+  assertPersonalOwner(session.username, session.userId);
   return session;
 }
 
@@ -315,6 +330,7 @@ export async function loginAccount(username: string, password: string, deviceFin
   const cleanUsername = username.trim().toLowerCase();
   assertPersonalOwner(cleanUsername);
   const user = await findUser(cleanUsername);
+  if (user) assertPersonalOwner(user.username, user.id);
   if (!user || !verifyPassword(password, user.password_hash)) {
     throw new Error('اسم المستخدم أو كلمة المرور غير صحيح.');
   }
@@ -348,7 +364,7 @@ export async function getCurrentAccount(req: any) {
   if (!res.ok) throw new Error('تعذر قراءة بيانات الحساب.');
   const user = (await res.json())?.[0];
   if (!user) throw new Error('الحساب غير موجود.');
-  assertPersonalOwner(user.username);
+  assertPersonalOwner(user.username, user.id);
   return {
     id: user.id,
     username: user.username,
@@ -412,8 +428,8 @@ export async function generateRechargeCode(req: any, credits: number, packageId?
 
 export async function listAccounts(req: any) {
   requireAdmin(req);
-  const owner = encodeURIComponent(getPersonalOwnerUsername());
-  const res = await supabase(`platform_users?select=id,username,display_name,role,credits,trial_operations_total,trial_operations_used,trial_expires_at,account_status,operations_used,last_seen_at,created_at,deleted_at&username=eq.${owner}&account_status=neq.deleted&order=created_at.desc`);
+  const ownerId = encodeURIComponent(getPersonalOwnerUserId());
+  const res = await supabase(`platform_users?select=id,username,display_name,role,credits,trial_operations_total,trial_operations_used,trial_expires_at,account_status,operations_used,last_seen_at,created_at,deleted_at&id=eq.${ownerId}&username=eq.${encodeURIComponent(getPersonalOwnerUsername())}&account_status=neq.deleted&order=created_at.desc`);
   if (!res.ok) throw new Error('تعذر قراءة حسابات المنصة.');
   return await res.json();
 }
@@ -425,7 +441,11 @@ export async function adjustAccountBalance(req: any, userId: string, amount: num
   const ownerCheck = await supabase(`platform_users?select=id,username&id=eq.${encodeURIComponent(cleanId)}&limit=1`);
   if (!ownerCheck.ok) throw new Error('تعذر التحقق من الحساب المستهدف.');
   const targetUser = (await ownerCheck.json())?.[0];
-  if (!targetUser || targetUser.username !== getPersonalOwnerUsername()) {
+  if (
+    !targetUser ||
+    targetUser.username?.toLowerCase() !== getPersonalOwnerUsername() ||
+    targetUser.id?.toLowerCase() !== getPersonalOwnerUserId()
+  ) {
     const err: any = new Error('هذه النسخة تسمح بإدارة رصيد الحساب الشخصي فقط.'); err.statusCode = 403; throw err;
   }
   const value = Math.floor(Number(amount));
@@ -461,6 +481,14 @@ export async function deleteAccount(req: any, userId: string) {
   if (!currentRes.ok) throw new Error('تعذر قراءة الحساب المستهدف.');
   const current = (await currentRes.json())?.[0];
   if (!current) throw new Error('الحساب المستهدف غير موجود.');
+  if (
+    current.username?.toLowerCase() === getPersonalOwnerUsername() ||
+    current.id?.toLowerCase() === getPersonalOwnerUserId()
+  ) {
+    const err: any = new Error('لا يمكن حذف الحساب الشخصي الأساسي من هذه النسخة.');
+    err.statusCode = 403;
+    throw err;
+  }
 
   const now = new Date().toISOString();
   const updateRes = await supabase(`platform_users?id=eq.${encodeURIComponent(cleanId)}`, {
