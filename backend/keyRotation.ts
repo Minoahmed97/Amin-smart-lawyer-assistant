@@ -498,6 +498,8 @@ type KeyRotationExecutionOptions = {
   avoidPairs?: string[];
   /** Resume Gemini rotation from the key used by the previous continuation segment. */
   startKey?: string;
+  /** Mutable per-generation ledger so failed model attempts are not retried on continuation. */
+  attemptedPairs?: Set<string>;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -566,6 +568,7 @@ export async function executeWithKeyRotation<T>(
       lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
     }
     for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
+      executionOptions?.attemptedPairs?.add(`openrouter::${model}`);
       try {
         const result = await action(
           withAdaptiveAnswerLength(createOpenRouterCompatibleClient(12000, deadlineAt)) as unknown as GoogleGenAI,
@@ -619,6 +622,7 @@ export async function executeWithKeyRotation<T>(
           break geminiKeyLoop;
         }
         const model = keyModels[m];
+        executionOptions?.attemptedPairs?.add(rotationPairKey(currentKey, model));
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(30000, remainingMs)));
         try {
           const result = await action(ai, currentKey, model);
@@ -730,6 +734,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
     for (const model of models) {
       if (deadlineAt - Date.now() < 10000) break;
+      executionOptions?.attemptedPairs?.add(`openrouter::${model}`);
       let emittedOpenRouterText = false;
       try {
         const ai = withAdaptiveAnswerLength(
@@ -774,6 +779,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
       for (let m = 0; m < keyModels.length; m++) {
         attemptedModelCount += 1;
+        executionOptions?.attemptedPairs?.add(rotationPairKey(currentKey, keyModels[m]));
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
         let emittedAnyChunk = false;
         try {
