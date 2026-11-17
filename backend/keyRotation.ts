@@ -324,7 +324,8 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
   for (let round = 0; round < 2; round++) {
     const roundStart = overallStart + Math.floor(totalBudget * round / 2);
     const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-    const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
+    // Reserve most of each round for a full Gemini key/model rotation; Groq remains the fallback.
+    const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.88);
     if (round > 0) await new Promise((r) => setTimeout(r, 1000));
 
     if (keys.length > 0) {
@@ -340,21 +341,35 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
         const keyIndex = (startIndex + offset) % usableOCRKeys.length;
         const key = usableOCRKeys[keyIndex];
         if (isCooling(ocrKeyCooldownUntil, key) || permanentlyInvalidOCRKeys.has(key)) continue;
-        const keyModels = selectModelsForKey(preferredModels, key, 'ocr');
+        const selectedModels = selectModelsForKey(preferredModels, key, 'ocr');
+        if (key === dedicatedOCRActiveKey && dedicatedOCRActiveModel) {
+          const rememberedModelIndex = selectedModels.indexOf(dedicatedOCRActiveModel);
+          if (rememberedModelIndex > 0) {
+            selectedModels.splice(rememberedModelIndex, 1);
+            selectedModels.unshift(dedicatedOCRActiveModel);
+          }
+        }
+        const keyModels = selectedModels.filter((model) => !dedicatedOCRInFlightPairs.has(rotationPairKey(key, model)));
 
         for (let modelIndex = 0; modelIndex < keyModels.length; modelIndex++) {
           const remainingMs = geminiDeadlineAt - Date.now();
           if (remainingMs < 10000) break ocrKeyLoop;
           const model = keyModels[modelIndex];
+          const pair = rotationPairKey(key, model);
+          if (dedicatedOCRInFlightPairs.has(pair)) continue;
+          dedicatedOCRInFlightPairs.add(pair);
           try {
-            const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(18000, remainingMs)));
+            const ai = withAdaptiveAnswerLength(createGeminiClient(key, Math.min(25000, remainingMs)));
             const result = await action(ai, key, model);
             if (Date.now() >= geminiDeadlineAt) throw Object.assign(new Error('انتهت مهلة محاولة OCR عبر Gemini.'), { status: 504, statusCode: 504 });
             dedicatedOCRActiveKey = key;
+            dedicatedOCRActiveModel = model;
             return result;
           } catch (error: any) {
             lastError = error;
             markRotationFailure(key, model, error, 'ocr');
+          } finally {
+            dedicatedOCRInFlightPairs.delete(pair);
           }
         }
       }
