@@ -358,6 +358,37 @@ if (mountedRef.current) {
   setErrorMsg(null);
 }
 
+// Keep the original OCR readiness check for PDFs and other non-image files.
+// Images use the durable queue and are staged below as one batch.
+const needsReadinessCheck = eligible.some((item) =>
+  item.status !== 'completed' && isDirectOcrFile(item) && !isImageFile(item) &&
+  !(item.status === 'processing' && item.jobId),
+);
+if (needsReadinessCheck) {
+  for (const item of eligible) {
+    if (!isCurrent()) return;
+    if (!isFileTaskCancelled(effectiveUserId, recoveryScope, item.id) &&
+        item.status !== 'completed' && isDirectOcrFile(item) && !isImageFile(item) &&
+        !(item.status === 'processing' && item.jobId)) {
+      try {
+        await updateRecord(item.id, { status: 'preparing', stageLabel: 'التحقق من جاهزية خدمة OCR' });
+      } catch (error: any) {
+        if (error?.name !== 'AbortError') throw error;
+      }
+    }
+  }
+  try {
+    await checkServerOCRReadiness();
+  } catch (error: any) {
+    if (isCurrent() && mountedRef.current) {
+      setErrorMsg(error?.message || 'مجموعة مفاتيح الصور والمستندات (OCR) غير جاهزة.');
+      setIsProcessing(false);
+      onProcessingChange?.(false);
+    }
+    return;
+  }
+}
+
 // Stage image jobs on the server without starting the queue yet.
 // PDFs deliberately keep their original client-driven extraction path.
 for (const original of eligible) {
