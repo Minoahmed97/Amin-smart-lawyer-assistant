@@ -1,4 +1,3 @@
-import { getCurrentAccount } from '../services/authService.ts';
 import React, { useState, useEffect, useRef } from 'react';
 import { DraftingFormData } from '../types.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
@@ -44,16 +43,12 @@ const sanitizeDraftJobUserId = (value: string | null | undefined): string =>
 interface DraftingViewProps {
   initialFormData?: Partial<DraftingFormData>;
   userId: string;
-  onOpenSubscribe: () => void;
-  onCreditsUpdated: (credits: number) => void;
   onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
 }
 
 export const DraftingView: React.FC<DraftingViewProps> = ({
   initialFormData,
   userId,
-  onOpenSubscribe,
-  onCreditsUpdated,
   onSwitchTab,
 }) => {
   const [formData, setFormData] = useState<DraftingFormData>(() => {
@@ -325,13 +320,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       if (!active || operationId !== resultOperationRef.current) return;
       setGeneratedBrief(result);
       persistentStorage.setItem('amin_judicial_draft_result', result);
-      try {
-        const account = await getCurrentAccount();
-        onCreditsUpdated(account.credits);
-        setRefineNote(`اكتملت المهمة المحفوظة. الرصيد المتبقي: ${account.credits}.`);
-      } catch {
-        setRefineNote('اكتملت مهمة الصياغة المحفوظة.');
-      }
+      setRefineNote('اكتملت مهمة الصياغة المحفوظة.');
     }).catch((err: any) => {
       if (active && operationId === resultOperationRef.current) setDraftError(err?.message || 'تعذر استعادة مهمة الصياغة المحفوظة.');
     }).finally(() => {
@@ -368,13 +357,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       if (aiText && operationId === resultOperationRef.current) {
         setGeneratedBrief(aiText);
         persistentStorage.setItem('amin_judicial_draft_result', aiText);
-        try {
-          const account = await getCurrentAccount();
-          onCreditsUpdated(account.credits);
-          setRefineNote('تمت العملية بنجاح.');
-        } catch {
-          setRefineNote('تمت العملية بنجاح.');
-        }
+        setRefineNote('تمت العملية بنجاح.');
       }
     } catch (err: any) {
       if (operationId !== resultOperationRef.current) return;
