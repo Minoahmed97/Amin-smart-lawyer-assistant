@@ -125,3 +125,10 @@ export async function consumeOperation(serviceName: string) {
   return data;
 }
 
+
+export async function redeemRechargeCode(code: string) {
+  return await request('/api/auth/redeem', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
