@@ -412,7 +412,8 @@ export async function generateRechargeCode(req: any, credits: number, packageId?
 
 export async function listAccounts(req: any) {
   requireAdmin(req);
-  const res = await supabase('platform_users?select=id,username,display_name,role,credits,trial_operations_total,trial_operations_used,trial_expires_at,account_status,operations_used,last_seen_at,created_at,deleted_at&account_status=neq.deleted&order=created_at.desc');
+  const owner = encodeURIComponent(getPersonalOwnerUsername());
+  const res = await supabase(`platform_users?select=id,username,display_name,role,credits,trial_operations_total,trial_operations_used,trial_expires_at,account_status,operations_used,last_seen_at,created_at,deleted_at&username=eq.${owner}&account_status=neq.deleted&order=created_at.desc`);
   if (!res.ok) throw new Error('تعذر قراءة حسابات المنصة.');
   return await res.json();
 }
@@ -421,6 +422,12 @@ export async function adjustAccountBalance(req: any, userId: string, amount: num
   requireAdmin(req);
   const cleanId = String(userId || '').trim();
   if (!cleanId) throw new Error('يجب تحديد الحساب المستهدف.');
+  const ownerCheck = await supabase(`platform_users?select=id,username&id=eq.${encodeURIComponent(cleanId)}&limit=1`);
+  if (!ownerCheck.ok) throw new Error('تعذر التحقق من الحساب المستهدف.');
+  const targetUser = (await ownerCheck.json())?.[0];
+  if (!targetUser || targetUser.username !== getPersonalOwnerUsername()) {
+    const err: any = new Error('هذه النسخة تسمح بإدارة رصيد الحساب الشخصي فقط.'); err.statusCode = 403; throw err;
+  }
   const value = Math.floor(Number(amount));
   if (!Number.isFinite(value) || value < 0) throw new Error('قيمة الرصيد غير صالحة.');
 
