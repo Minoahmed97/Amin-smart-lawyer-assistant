@@ -170,9 +170,9 @@ export default async function handler(req: any, res: any) {
             const endPage = index === groups.length - 1 ? totalPages : groups[index + 1][0].pageNumber - 1;
             const relevantTexts = batchPageTexts.filter((page) => page.pageNumber >= startPage && page.pageNumber <= endPage);
             const textContext = relevantTexts.length
-              ? `\\n\\nنص الصفحات القابلة للتحديد ضمن هذا الجزء، أدرجه كما هو في مواضعه:\\n${relevantTexts.map((page) => `[الصفحة ${page.pageNumber}]\\n${page.text}`).join('\\n\\n')}`
+              ? `\n\nنص الصفحات القابلة للتحديد ضمن هذا الجزء، أدرجه كما هو في مواضعه:\n${relevantTexts.map((page) => `[الصفحة ${page.pageNumber}]\n${page.text}`).join('\n\n')}`
               : '';
-            const batchPrompt = `${ocrPrompt}\\n\\nهذا الجزء يغطي الصفحات من ${startPage} إلى ${endPage}. استخرج نص هذه الصفحات فقط بالترتيب، مع تضمين النصوص القابلة للتحديد أعلاه كما هي ودون تكرار.${textContext}`;
+            const batchPrompt = `${ocrPrompt}\n\nهذا الجزء يغطي الصفحات من ${startPage} إلى ${endPage}. استخرج نص هذه الصفحات فقط بالترتيب، مع تضمين النصوص القابلة للتحديد أعلاه كما هي ودون تكرار.${textContext}`;
             const parts = group.flatMap((page) => [
               { text: `الصورة التالية تخص الصفحة رقم ${page.pageNumber} من المستند.` },
               { inlineData: { mimeType: page.mimeType, data: page.base64Data } },
