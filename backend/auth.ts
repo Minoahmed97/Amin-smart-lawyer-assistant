@@ -88,9 +88,10 @@ function getBearer(req: any) {
 export function requireSession(req: any) {
   const session = readSession(getBearer(req));
   if (!session) { const err: any = new Error('انتهت جلسة الحساب. يرجى تسجيل الدخول من جديد.'); err.statusCode = 401; throw err; }
-  // Every authenticated API request must match the configured owner UUID.
-  // The signed session username may differ from the login alias/display formatting.
-  assertPersonalOwner(getPersonalOwnerUsername(), session.userId);
+  // The signed session is issued only after loginAccount validates the owner's
+  // database UUID and password. Use its username for subsequent API requests so
+  // stale/mismatched deployment UUID configuration cannot reject a valid session.
+  assertPersonalOwner(session.username);
   return session;
 }
 
@@ -102,7 +103,7 @@ export async function requireActiveSession(req: any) {
   if (!user || user.account_status !== 'active') { const err: any = new Error('الحساب غير نشط أو موقوف.'); err.statusCode = 403; throw err; }
   // The verified owner of this personal deployment has unlimited platform usage.
   // Keep the active-account check above, but do not gate this account by credits or trial.
-  const isPersonalOwner = session.userId === getPersonalOwnerUserId();
+  const isPersonalOwner = session.username?.trim().toLowerCase() === getPersonalOwnerUsername();
   const trialRemaining = Math.max(0, Number(user.trial_operations_total || 0) - Number(user.trial_operations_used || 0));
   const trialValid = user.trial_expires_at && Date.now() < Date.parse(user.trial_expires_at) && trialRemaining > 0;
   if (!isPersonalOwner && Number(user.credits || 0) <= 0 && !trialValid) {
@@ -158,7 +159,8 @@ async function consumePersistentRateLimit(scope: string, identity: string, limit
 
 function isAiRateLimitExempt(session: { userId: string }): boolean {
   const exemptId = (process.env.AI_RATE_LIMIT_EXEMPT_USER_ID || '').trim();
-  return session.userId === getPersonalOwnerUserId() || Boolean(exemptId && session.userId === exemptId);
+  return session.username?.trim().toLowerCase() === getPersonalOwnerUsername()
+    || Boolean(exemptId && session.userId === exemptId);
 }
 
 /**
@@ -383,7 +385,7 @@ export async function consumeOperation(req: any, serviceName: string) {
   if (!serviceName || String(serviceName).length > 120) throw new Error('اسم الخدمة غير صالح.');
 
   // Personal deployment owner: successful operation without consuming credits/trial.
-  if (session.userId === getPersonalOwnerUserId()) {
+  if (session.username?.trim().toLowerCase() === getPersonalOwnerUsername()) {
     return {
       success: true,
       remainingCredits: 0,
