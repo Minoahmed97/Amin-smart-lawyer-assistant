@@ -1,4 +1,5 @@
 import { waitUntil } from '@vercel/functions';
+import { send } from '@vercel/queue';
 import crypto from 'node:crypto';
 import webpush from 'web-push';
 import { createSession, requireActiveSession, requireSession } from '../auth.ts';
@@ -25,7 +26,7 @@ const OCR_STORAGE_BUCKET = 'amin-ocr-private';
 const MAX_OCR_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
-const JOB_STALE_TIMEOUT_MS = 4 * 60 * 1000 + 10 * 1000;
+const JOB_STALE_TIMEOUT_MS = 5 * 60 * 1000 + 20 * 1000;
 const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة الملف.';
 
 function safeDiagnosticMessage(value: unknown) {
@@ -411,6 +412,14 @@ function isInternalWorkerRequest(req: any) {
   }
 }
 
+function isPdfOcrPayload(taskType: string, payload: Record<string, string>) {
+  return taskType === 'ocr' && (
+    String(payload.mimeType || '').toLowerCase() === 'application/pdf' ||
+    typeof payload.storagePath === 'string' ||
+    typeof payload.images === 'string'
+  );
+}
+
 function scheduleBackground(task: Promise<unknown>) {
   try {
     waitUntil(task);
@@ -456,8 +465,59 @@ function startClaimedJob(job: any) {
   scheduleBackground(processJob(jobId, userId, token, taskType, payload, workerReq));
 }
 
+/** Durable Vercel Queue consumer entry: claim and await the existing job pipeline. */
+export async function runDurableQueuedJob(jobId: string): Promise<void> {
+  let job = await loadQueueJob(jobId);
+  if (!job) return;
+
+  // Recover a job whose previous function invocation was terminated by its
+  // platform execution limit. A live worker refreshes updated_at every 30s,
+  // so only a genuinely stale running record is eligible for reclamation.
+  if (job.status === 'running') {
+    const updatedAt = Date.parse(String(job.updated_at || ''));
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt < JOB_STALE_TIMEOUT_MS) return;
+    const requeued = await supabase(
+      `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&status=eq.running&updated_at=lt.${encodeURIComponent(new Date(Date.now() - JOB_STALE_TIMEOUT_MS).toISOString())}`,
+      {
+        method: 'PATCH',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ status: 'queued', error: null, updated_at: new Date().toISOString() }),
+      },
+    );
+    if (!requeued.ok) throw new Error(`تعذر استعادة المهمة المتوقفة (${requeued.status}).`);
+    const rows = await requeued.json();
+    if (!Array.isArray(rows) || !rows.length) return;
+    job = rows[0];
+  }
+  if (job.status !== 'queued') return;
+  const claimed = await claimQueuedJob(jobId);
+  if (!claimed) return;
+  const userId = String(claimed.user_id || '');
+  const storedTaskType = String(claimed.task_type || '');
+  const payload = toPayload(claimed.payload);
+  const taskType = payload._actualTaskType === 'legal-chat' ? 'legal-chat' : storedTaskType;
+  delete payload._actualTaskType;
+  if (!userId || !TASK_HANDLERS[taskType]) {
+    await patchJob(jobId, userId, { status: 'failed', error: 'بيانات المهمة المحفوظة غير صالحة.', payload: {} });
+    return;
+  }
+  const token = createSession(userId, 'background-worker', 10 * 60 * 1000);
+  const workerReq = {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      'user-agent': 'Amin-AI-Durable-Queue-Worker',
+      'x-forwarded-for': `worker-${userId}`,
+    },
+    body: payload,
+    query: {},
+  };
+  await processJob(jobId, userId, token, taskType, payload, workerReq);
+}
+
 async function loadQueueJob(jobId: string) {
-  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status&id=eq.${encodeURIComponent(jobId)}&limit=1`);
+  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status,updated_at&id=eq.${encodeURIComponent(jobId)}&limit=1`);
   if (!response.ok) throw new Error(`تعذر قراءة المهمة من الطابور (${response.status}).`);
   const rows = await response.json();
   return Array.isArray(rows) ? rows[0] || null : null;
@@ -664,6 +724,18 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     }
   } finally {
     clearInterval(heartbeat);
+    // Advance image OCR batches on the server; this continues even after the browser closes.
+    if (taskType === 'ocr' && /^[0-9a-f-]{36}$/i.test(String(payload.nextJobId || ''))) {
+      try {
+        const finished = await loadQueueJob(jobId);
+        if (finished && ['completed', 'failed'].includes(String(finished.status))) {
+          await send('amin-ai-jobs', { jobId: String(payload.nextJobId) });
+        }
+      } catch (advanceError: any) {
+        console.error('Could not advance the sequential OCR image queue:', safeDiagnosticMessage(advanceError?.message || advanceError));
+        throw advanceError;
+      }
+    }
     if (taskType === 'ocr' && payload.storagePath) {
       await deleteOcrObject(payload.storagePath).catch((error: any) => {
         console.warn('Temporary OCR file cleanup skipped:', safeDiagnosticMessage(error?.message || error));
@@ -699,6 +771,50 @@ export default async function handler(req: any, res: any) {
         if (mimeType && !allowedMimeTypes.includes(mimeType)) return res.status(400).json({ error: 'نوع الملف غير مدعوم.' });
         const upload = await createOcrUploadUrl(session.userId, jobId, fileName, mimeType || 'application/octet-stream');
         return res.status(200).json(upload);
+      }
+      if (requestBody?.action === 'enqueue-ocr-batch') {
+        const rawIds = Array.isArray(requestBody?.jobIds) ? requestBody.jobIds : [];
+        const jobIds = rawIds.map((value: unknown) => String(value || '').trim());
+        if (!jobIds.length || jobIds.length > 100 || jobIds.some((id: string) => !/^[0-9a-f-]{36}$/i.test(id)) || new Set(jobIds).size !== jobIds.length) {
+          return res.status(400).json({ error: 'قائمة مهام الصور غير صالحة.' });
+        }
+
+        const jobs: any[] = [];
+        for (const id of jobIds) {
+          const job = await loadQueueJob(id);
+          if (!job || job.user_id !== session.userId || job.task_type !== 'ocr') {
+            return res.status(404).json({ error: 'تعذر العثور على إحدى مهام الصور المحفوظة.' });
+          }
+          if (!['queued', 'running', 'completed'].includes(String(job.status))) {
+            return res.status(409).json({ error: 'إحدى مهام الصور ليست جاهزة للتشغيل.' });
+          }
+          jobs.push(job);
+        }
+
+        // Store the next image ID inside the durable job payload. The worker
+        // will enqueue it only after this image reaches a terminal state.
+        for (let index = 0; index < jobs.length; index += 1) {
+          if (jobs[index].status !== 'queued') continue;
+          const payload = toPayload(jobs[index].payload);
+          const nextJobId = jobIds[index + 1];
+          if (nextJobId) payload.nextJobId = nextJobId;
+          else delete payload.nextJobId;
+          const updated = await supabase(
+            `${JOB_TABLE}?id=eq.${encodeURIComponent(jobIds[index])}&user_id=eq.${encodeURIComponent(session.userId)}&task_type=eq.ocr&status=eq.queued`,
+            {
+              method: 'PATCH',
+              headers: { Prefer: 'return=minimal' },
+              body: JSON.stringify({ payload, updated_at: new Date().toISOString() }),
+            },
+          );
+          if (!updated.ok) throw new Error('تعذر ربط مهام الصور بالتتابع على الخادم.');
+        }
+
+        const first = jobs[0];
+        if (first.status === 'queued') {
+          await send('amin-ai-jobs', { jobId: first.id });
+        }
+        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: first.id });
       }
       if (requestBody?.action === 'cancel-ocr') {
         const jobId = String(requestBody?.jobId || '').trim();
@@ -770,18 +886,92 @@ export default async function handler(req: any, res: any) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
-            if (existing.status === 'queued') scheduleBackground(dispatchQueuedJob(existing.id));
+            if (existing.status === 'queued') {
+              if (isPdfOcrPayload(taskType, payload) || taskType !== 'ocr') {
+                scheduleBackground(dispatchQueuedJob(existing.id));
+              } else if (requestBody?.deferQueue !== true) {
+                await send('amin-ai-jobs', { jobId: existing.id });
+              }
+            }
             return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
           }
         }
         return res.status(503).json({ error: 'تعذر حفظ مهمة الصياغة على الخادم.' });
       }
 
-      scheduleBackground(dispatchQueuedJob(id));
+      try {
+        if (isPdfOcrPayload(taskType, payload) || taskType !== 'ocr') {
+          scheduleBackground(dispatchQueuedJob(id));
+        } else if (requestBody?.deferQueue !== true) {
+          await send('amin-ai-jobs', { jobId: id });
+        }
+      } catch (queueError: any) {
+        await patchJob(id, session.userId, {
+          status: 'failed',
+          error: 'تعذر إدخال مهمة الصور إلى الطابور الخلفي. أعد المحاولة.',
+          payload: {},
+          completed_at: new Date().toISOString(),
+        });
+        throw new Error('تعذر تشغيل طابور الصور الخلفي على الخادم.');
+      }
       return res.status(202).json({ jobId: id, status: 'queued' });
     }
 
     if (req.method === 'GET') {
+      const session = requireSession(req);
+      if (String(req?.query?.action || '') === 'push-public-key') {
+        const publicKey = (process.env.VAPID_PUBLIC_KEY || '').trim();
+        if (!publicKey) return res.status(503).json({ error: 'إعدادات إشعارات الإنجاز غير مكتملة.' });
+        return res.status(200).json({ publicKey });
+      }
+      const id = String(req?.query?.id || '').trim();
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
+      const jobPath = `${JOB_TABLE}?select=id,status,payload,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
+      const result = await supabase(jobPath);
+      if (!result.ok) return res.status(503).json({ error: 'تعذر استرجاع حالة المهمة.' });
+      const rows = await result.json();
+      let job = Array.isArray(rows) ? rows[0] : null;
+      if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
+
+      // PDF OCR keeps the original Mino-ocr dispatcher; image OCR uses Vercel Queues.
+      const isPdfJob = isPdfOcrPayload('ocr', toPayload(job.payload));
+
+      const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
+      if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
+        // Do not convert an interrupted background task into a terminal failure.
+        // Return it to the durable queue so the same stored payload can resume.
+        try {
+          const requeued = await supabase(
+            `${JOB_TABLE}?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&status=eq.running&updated_at=lt.${encodeURIComponent(new Date(Date.now() - JOB_STALE_TIMEOUT_MS).toISOString())}`,
+            {
+              method: 'PATCH',
+              headers: { Prefer: 'return=representation' },
+              body: JSON.stringify({ status: 'queued', error: null, updated_at: new Date().toISOString() }),
+            },
+          );
+          const changedRows = requeued.ok ? await requeued.json() : [];
+          if (Array.isArray(changedRows) && changedRows.length) {
+            if (isPdfJob || job.task_type !== 'ocr') scheduleBackground(dispatchQueuedJob(id));
+            else await send('amin-ai-jobs', { jobId: id });
+          }
+          const refreshed = await supabase(jobPath);
+          const refreshedRows = await refreshed.json();
+          job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
+        } catch (recoveryError: any) {
+          console.warn('Stale AI job recovery deferred:', safeDiagnosticMessage(recoveryError?.message || recoveryError));
+        }
+      }
+      return res.status(200).json({
+        jobId: job.id,
+        status: job.status,
+        partialResult: job.partial_result || '',
+        result: job.result || '',
+        error: job.error || null,
+        updatedAt: job.updated_at || null,
+        completedAt: job.completed_at || null,
+      });
+    }
+
       const session = requireSession(req);
       if (String(req?.query?.action || '') === 'push-public-key') {
         const publicKey = (process.env.VAPID_PUBLIC_KEY || '').trim();
