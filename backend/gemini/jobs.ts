@@ -729,11 +729,21 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       try {
         const finished = await loadQueueJob(jobId);
         if (finished && ['completed', 'failed'].includes(String(finished.status))) {
-          await send('amin-ai-jobs', { jobId: String(payload.nextJobId) });
+          let queued = false;
+          for (let attempt = 0; attempt < 4 && !queued; attempt += 1) {
+            try {
+              await send('amin-ai-jobs', { jobId: String(payload.nextJobId) });
+              queued = true;
+            } catch (queueError: any) {
+              if (attempt === 3) throw queueError;
+              await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+            }
+          }
         }
       } catch (advanceError: any) {
+        // The current OCR result is already safely stored; leave diagnostics for
+        // the next status check rather than converting a completed OCR into failure.
         console.error('Could not advance the sequential OCR image queue:', safeDiagnosticMessage(advanceError?.message || advanceError));
-        throw advanceError;
       }
     }
     if (taskType === 'ocr' && payload.storagePath) {
@@ -785,22 +795,27 @@ export default async function handler(req: any, res: any) {
           if (!job || job.user_id !== session.userId || job.task_type !== 'ocr') {
             return res.status(404).json({ error: 'تعذر العثور على إحدى مهام الصور المحفوظة.' });
           }
-          if (!['queued', 'running', 'completed'].includes(String(job.status))) {
+          if (job.status === 'failed' || job.status === 'completed') continue;
+          if (!['queued', 'running'].includes(String(job.status))) {
             return res.status(409).json({ error: 'إحدى مهام الصور ليست جاهزة للتشغيل.' });
           }
           jobs.push(job);
         }
 
-        // Store the next image ID inside the durable job payload. The worker
-        // will enqueue it only after this image reaches a terminal state.
-        for (let index = 0; index < jobs.length; index += 1) {
-          if (jobs[index].status !== 'queued') continue;
-          const payload = toPayload(jobs[index].payload);
-          const nextJobId = jobIds[index + 1];
+        // A running first job already owns the batch chain written before its
+        // first delivery. Do not dispatch later images concurrently on refresh.
+        if (jobs.some((job) => job.status === 'running')) {
+          return res.status(202).json({ queued: true, alreadyRunning: true, count: jobIds.length });
+        }
+
+        const queuedJobs = jobs.filter((job) => job.status === 'queued');
+        for (let index = 0; index < queuedJobs.length; index += 1) {
+          const payload = toPayload(queuedJobs[index].payload);
+          const nextJobId = queuedJobs[index + 1]?.id;
           if (nextJobId) payload.nextJobId = nextJobId;
           else delete payload.nextJobId;
           const updated = await supabase(
-            `${JOB_TABLE}?id=eq.${encodeURIComponent(jobIds[index])}&user_id=eq.${encodeURIComponent(session.userId)}&task_type=eq.ocr&status=eq.queued`,
+            `${JOB_TABLE}?id=eq.${encodeURIComponent(queuedJobs[index].id)}&user_id=eq.${encodeURIComponent(session.userId)}&task_type=eq.ocr&status=eq.queued`,
             {
               method: 'PATCH',
               headers: { Prefer: 'return=minimal' },
@@ -810,11 +825,10 @@ export default async function handler(req: any, res: any) {
           if (!updated.ok) throw new Error('تعذر ربط مهام الصور بالتتابع على الخادم.');
         }
 
-        const first = jobs[0];
-        if (first.status === 'queued') {
-          await send('amin-ai-jobs', { jobId: first.id });
+        if (queuedJobs.length) {
+          await send('amin-ai-jobs', { jobId: queuedJobs[0].id });
         }
-        return res.status(202).json({ queued: true, count: jobIds.length, firstJobId: first.id });
+        return res.status(202).json({ queued: true, count: jobIds.length, started: queuedJobs.length > 0 });
       }
       if (requestBody?.action === 'cancel-ocr') {
         const jobId = String(requestBody?.jobId || '').trim();
