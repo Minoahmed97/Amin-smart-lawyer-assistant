@@ -236,16 +236,63 @@ function safePayload(input: any, taskType: string) {
   }
 
   if (taskType === 'ocr') {
-    const hasStoragePath = typeof input?.storagePath === 'string' && input.storagePath.length > 0;
-    if (hasStoragePath) {
-      payload.storagePath = String(input.storagePath);
-      if (!/^[0-9a-f-]{36}\/[0-9a-f-]{36}\/[a-zA-Z0-9._-]{1,120}$/i.test(payload.storagePath)) {
-        const error: any = new Error('مسار ملف OCR غير صالح.');
-        error.statusCode = 400;
-        throw error;
+    const hasBatchImages = typeof input?.images === 'string' && input.images.length > 0;
+    if (hasBatchImages) {
+      limitBodyString(input.images, 28 * 1024 * 1024, 'صور صفحات PDF');
+      let images: any;
+      try { images = JSON.parse(input.images); } catch {
+        const error: any = new Error('بيانات صور صفحات PDF غير صالحة.'); error.statusCode = 400; throw error;
       }
+      const batchMime = String(input?.mimeType || '').toLowerCase();
+      const batchName = String(input?.fileName || '').trim();
+      if (!Array.isArray(images) || images.length < 1 || images.length > 100 || batchMime !== 'application/pdf' || !/\\.pdf$/i.test(batchName)) {
+        const error: any = new Error('مجموعة صور صفحات PDF غير صالحة.'); error.statusCode = 400; throw error;
+      }
+      let totalBytes = 0;
+      const normalizedImages = images.map((image: any) => {
+        const pageNumber = Number(image?.pageNumber);
+        const imageMime = String(image?.mimeType || '').toLowerCase();
+        if (!Number.isInteger(pageNumber) || pageNumber < 1 || !['image/jpeg', 'image/png', 'image/webp', 'image/bmp'].includes(imageMime)) {
+          const error: any = new Error('بيانات إحدى صور صفحات PDF غير صالحة.'); error.statusCode = 400; throw error;
+        }
+        const base64 = validateBase64Payload(image?.base64Data, MAX_OCR_FILE_BYTES);
+        const bytes = Math.floor(base64.length * 3 / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+        totalBytes += bytes;
+        if (totalBytes > MAX_OCR_FILE_BYTES) {
+          const error: any = new Error('حجم صور صفحات PDF بعد الضغط أكبر من الحد الآمن للإرسال.'); error.statusCode = 413; throw error;
+        }
+        return { pageNumber, mimeType: imageMime, base64Data: base64 };
+      }).sort((a: any, b: any) => a.pageNumber - b.pageNumber);
+      payload.images = JSON.stringify(normalizedImages);
+      limitBodyString(payload.pageTexts || '[]', 2 * 1024 * 1024, 'النصوص القابلة للتحديد في PDF');
+      let pageTexts: any;
+      try { pageTexts = JSON.parse(payload.pageTexts || '[]'); } catch {
+        const error: any = new Error('النصوص القابلة للتحديد في PDF غير صالحة.'); error.statusCode = 400; throw error;
+      }
+      if (!Array.isArray(pageTexts)) {
+        const error: any = new Error('قائمة صفحات النص في PDF غير صالحة.'); error.statusCode = 400; throw error;
+      }
+      for (const page of pageTexts) {
+        if (!Number.isInteger(Number(page?.pageNumber)) || Number(page.pageNumber) < 1 || typeof page?.text !== 'string') {
+          const error: any = new Error('بيانات صفحة نصية داخل PDF غير صالحة.'); error.statusCode = 400; throw error;
+        }
+        limitBodyString(page.text, 100000, 'نص صفحة PDF');
+      }
+      payload.pageTexts = JSON.stringify(pageTexts.sort((a: any, b: any) => Number(a.pageNumber) - Number(b.pageNumber)));
+      delete payload.base64Data;
+      delete payload.storagePath;
     } else {
-      payload.base64Data = validateBase64Payload(payload.base64Data, MAX_OCR_FILE_BYTES);
+      const hasStoragePath = typeof input?.storagePath === 'string' && input.storagePath.length > 0;
+      if (hasStoragePath) {
+        payload.storagePath = String(input.storagePath);
+        if (!/^[0-9a-f-]{36}\\/[0-9a-f-]{36}\\/[a-zA-Z0-9._-]{1,120}$/i.test(payload.storagePath)) {
+          const error: any = new Error('مسار ملف OCR غير صالح.');
+          error.statusCode = 400;
+          throw error;
+        }
+      } else {
+        payload.base64Data = validateBase64Payload(payload.base64Data, MAX_OCR_FILE_BYTES);
+      }
     }
     limitBodyString(payload.fileName, 255, 'اسم الملف');
     const fileName = String(payload.fileName || '').trim();
