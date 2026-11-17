@@ -322,7 +322,9 @@ export async function loginAccount(username: string, password: string, deviceFin
   const cleanUsername = username.trim().toLowerCase();
   assertPersonalOwner(cleanUsername);
   const user = await findUser(cleanUsername);
-  if (user) assertPersonalOwner(user.username, user.id);
+  // The unique owner username is the login allowlist. Do not reject the same
+  // authenticated account because a deployment UUID setting is stale.
+  if (user) assertPersonalOwner(user.username);
   if (!user || !verifyPassword(password, user.password_hash)) {
     throw new Error('اسم المستخدم أو كلمة المرور غير صحيح.');
   }
