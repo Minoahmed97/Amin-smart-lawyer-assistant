@@ -58,6 +58,8 @@ export interface SavedOcrJob {
 export interface SavedOcrTaskLifecycle {
   onStatus?: (status: 'queued' | 'processing' | 'completed' | 'failed') => void | Promise<void>;
   signal?: AbortSignal;
+  enqueueOnly?: boolean;
+  deferQueue?: boolean;
 }
 
 function sanitizeStoragePart(value: string): string {
@@ -272,7 +274,12 @@ async function requestSavedJob<T extends Record<string, any>>(
       const createResponse = await fetch('/api/gemini/jobs', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ taskType: type, payload, jobId }),
+        body: JSON.stringify({
+          taskType: type,
+          payload,
+          jobId,
+          deferQueue: type === 'ocr' && lifecycle?.deferQueue === true,
+        }),
       });
       receivedHttpResponse = true;
       if (!createResponse.ok) {
@@ -298,6 +305,8 @@ async function requestSavedJob<T extends Record<string, any>>(
   }
 
   await cancelIfAborted();
+  // Batch image uploads first create all server-side job records, then start the ordered queue.
+  if (type === 'ocr' && lifecycle?.enqueueOnly) return '';
   let lastText = '';
   let lastReportedOcrStatus = '';
   let transientFailures = 0;
