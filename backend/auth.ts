@@ -88,29 +88,18 @@ function getBearer(req: any) {
 export function requireSession(req: any) {
   const session = readSession(getBearer(req));
   if (!session) { const err: any = new Error('انتهت جلسة الحساب. يرجى تسجيل الدخول من جديد.'); err.statusCode = 401; throw err; }
-  // The signed session is issued only after loginAccount validates the owner's
-  // database UUID and password. Use its username for subsequent API requests so
-  // stale/mismatched deployment UUID configuration cannot reject a valid session.
-  assertPersonalOwner(session.username);
+  // Login is the only place that restricts which account may enter this deployment.
+  // Once authenticated, every service accepts the valid signed session normally.
   return session;
 }
 
 export async function requireActiveSession(req: any) {
   const session = requireSession(req);
-  const res = await supabase(`platform_users?select=id,account_status,trial_expires_at,credits,trial_operations_total,trial_operations_used&id=eq.${encodeURIComponent(session.userId)}&limit=1`);
+  const res = await supabase(`platform_users?select=id,account_status&id=eq.${encodeURIComponent(session.userId)}&limit=1`);
   if (!res.ok) throw new Error('تعذر التحقق من حالة الحساب.');
   const user = (await res.json())?.[0];
   if (!user || user.account_status !== 'active') { const err: any = new Error('الحساب غير نشط أو موقوف.'); err.statusCode = 403; throw err; }
-  // The verified owner of this personal deployment has unlimited platform usage.
-  // Keep the active-account check above, but do not gate this account by credits or trial.
-  const isPersonalOwner = session.username?.trim().toLowerCase() === getPersonalOwnerUsername();
-  const trialRemaining = Math.max(0, Number(user.trial_operations_total || 0) - Number(user.trial_operations_used || 0));
-  const trialValid = user.trial_expires_at && Date.now() < Date.parse(user.trial_expires_at) && trialRemaining > 0;
-  if (!isPersonalOwner && Number(user.credits || 0) <= 0 && !trialValid) {
-    const err: any = new Error('انتهى رصيد/تجربة الحساب.');
-    err.statusCode = 402;
-    throw err;
-  }
+  // Credits, recharge, and trial balances do not control access to services.
   return { session, user };
 }
 
@@ -367,7 +356,6 @@ export async function getCurrentAccount(req: any) {
   if (!res.ok) throw new Error('تعذر قراءة بيانات الحساب.');
   const user = (await res.json())?.[0];
   if (!user) throw new Error('الحساب غير موجود.');
-  assertPersonalOwner(user.username, user.id);
   return {
     id: user.id,
     username: user.username,
@@ -384,30 +372,13 @@ export async function consumeOperation(req: any, serviceName: string) {
   const session = requireSession(req);
   if (!serviceName || String(serviceName).length > 120) throw new Error('اسم الخدمة غير صالح.');
 
-  // Personal deployment owner: successful operation without consuming credits/trial.
-  if (session.username?.trim().toLowerCase() === getPersonalOwnerUsername()) {
-    return {
-      success: true,
-      remainingCredits: 0,
-      trialRemaining: 0,
-      message: `تم تنفيذ خدمة ${serviceName} دون خصم رصيد للحساب الشخصي.`,
-    };
-  }
-
-  const res = await supabase('rpc/consume_platform_operation', {
-    method: 'POST',
-    body: JSON.stringify({ p_user_id: session.userId }),
-  });
-  if (!res.ok) {
-    const msg = await res.text();
-    throw new Error(msg.replace(/^.*?message[":\s]+/i, '').slice(0, 220) || `تعذر خصم العملية لخدمة ${serviceName}.`);
-  }
-  const result = await res.json();
+  // All authenticated users of this single-user deployment can use every service.
+  // Do not read, reserve, or deduct credits/trial operations.
   return {
     success: true,
-    remainingCredits: Number(result?.remainingCredits || 0),
-    trialRemaining: Number(result?.trialRemaining || 0),
-    message: `تم خصم عملية لخدمة ${serviceName}.`,
+    remainingCredits: 0,
+    trialRemaining: 0,
+    message: `تم تنفيذ خدمة ${serviceName} بنجاح.`,
   };
 }
 
