@@ -1,7 +1,6 @@
 import { getCurrentAccount } from '../services/authService.ts';
 import React, { useState, useEffect, useRef } from 'react';
 import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
-import { getCurrentStoredCredits } from '../utils/deviceFingerprint.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { StyleTemplateSelector } from './StyleTemplateSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -177,12 +176,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
       return;
     }
 
-    const availableCredits = getCurrentStoredCredits();
-    if (availableCredits <= 0) {
-      if (onOpenSubscribe) onOpenSubscribe();
-      return;
-    }
-
     const operationId = ++resultOperationRef.current;
     setIsLoading(true);
     setDeconstructError('');
@@ -201,10 +194,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
       });
       if (result && operationId === resultOperationRef.current) {
         setAnalysisResult(result);
-        try {
-          const account = await getCurrentAccount();
-          if (onCreditsUpdated) onCreditsUpdated(account.credits);
-        } catch {}
       }
     } catch (err: any) {
       if (operationId !== resultOperationRef.current) return;
