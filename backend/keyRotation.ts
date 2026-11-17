@@ -43,7 +43,7 @@ const KEY_QUOTA_COOLDOWN_MS = 60_000;
 const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
-const MAX_MODELS_PER_KEY_PER_REQUEST = 2;
+const MAX_MODELS_PER_KEY_PER_REQUEST = 3;
 
 function rotationPairKey(key: string, model: string): string {
   return `${key}:${model}`;
@@ -496,6 +496,8 @@ type KeyRotationExecutionOptions = {
   providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
   /** Previously used key/model pairs are avoided first during continuation. */
   avoidPairs?: string[];
+  /** Resume Gemini rotation from the key used by the previous continuation segment. */
+  startKey?: string;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -517,39 +519,41 @@ export async function executeWithKeyRotation<T>(
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const overallStart = Date.now();
     const totalBudget = Math.max(0, deadlineAt - overallStart);
-    let lastProviderError: any = null;
+    const geminiDeadlineAt = overallStart + Math.floor(totalBudget * 0.9);
+    let geminiError: any = null;
 
-    for (let round = 0; round < 2; round++) {
-      const roundStart = overallStart + Math.floor(totalBudget * round / 2);
-      const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
-      if (deadlineAt - Date.now() < 10000) break;
+    if (totalBudget >= 10000) {
       try {
         return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
           ...executionOptions,
           deadlineAt: geminiDeadlineAt,
           providerAttempt: 'gemini-primary',
         });
-      } catch (geminiError: any) {
-        lastProviderError = geminiError;
+      } catch (error: any) {
+        geminiError = error;
       }
-      if (roundEnd - Date.now() < 10000) break;
+    }
+
+    if (deadlineAt - Date.now() >= 10000) {
       try {
         return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
           ...executionOptions,
-          deadlineAt: roundEnd,
+          deadlineAt,
           providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
+          previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
         });
       } catch (openRouterError: any) {
-        lastProviderError = openRouterError;
+        const combined: any = new Error(
+          `فشلت محاولات Gemini على المفاتيح والنماذج المتاحة، وتعذر الاحتياطي OpenRouter. سبب Gemini: ${String(geminiError?.message || 'انتهت المهلة أو لم تتوفر محاولة كافية.')} سبب OpenRouter: ${String(openRouterError?.message || 'خطأ غير محدد.')}`
+        );
+        combined.status = Number(openRouterError?.status || geminiError?.status || 503);
+        combined.statusCode = combined.status;
+        combined.cause = { gemini: geminiError, openrouter: openRouterError };
+        throw combined;
       }
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
-    combined.status = 503;
-    combined.statusCode = 503;
-    combined.cause = lastProviderError;
-    throw combined;
+
+    throw geminiError || timeoutError();
   }
 
   if (!_forceGeminiFallback) {
@@ -599,7 +603,8 @@ export async function executeWithKeyRotation<T>(
       await new Promise((r) => setTimeout(r, 2000));
     }
 
-    const startIdx = reserveStartIndex(keys.length, 'general');
+    const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
+    const startIdx = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
@@ -660,16 +665,14 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const overallStart = Date.now();
     const totalBudget = Math.max(0, deadlineAt - overallStart);
-    let lastProviderError: any = null;
-    for (let round = 0; round < 2; round++) {
-      const roundStart = overallStart + Math.floor(totalBudget * round / 2);
-      const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-      const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.55);
-      if (deadlineAt - Date.now() < 10000) break;
-      let anyProviderEmittedText = false;
+    const geminiDeadlineAt = overallStart + Math.floor(totalBudget * 0.9);
+    let geminiError: any = null;
+    let geminiEmittedText = false;
+
+    if (totalBudget >= 10000) {
       try {
         await executeWithKeyRotationStream(action, (chunk) => {
-          if (chunk) anyProviderEmittedText = true;
+          if (chunk) geminiEmittedText = true;
           onChunk(chunk);
         }, preferredModels, _ignoredClientFallbackKey, true, {
           ...executionOptions,
@@ -677,32 +680,38 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           providerAttempt: 'gemini-primary',
         });
         return;
-      } catch (geminiError: any) {
-        lastProviderError = geminiError;
-        if (anyProviderEmittedText) throw geminiError;
+      } catch (error: any) {
+        geminiError = error;
+        if (geminiEmittedText) throw error;
       }
-      if (roundEnd - Date.now() < 10000) break;
+    }
+
+    if (deadlineAt - Date.now() >= 10000) {
+      let openRouterEmittedText = false;
       try {
         await executeWithKeyRotationStream(action, (chunk) => {
-          if (chunk) anyProviderEmittedText = true;
+          if (chunk) openRouterEmittedText = true;
           onChunk(chunk);
         }, preferredModels, _ignoredClientFallbackKey, false, {
           ...executionOptions,
-          deadlineAt: roundEnd,
+          deadlineAt,
           providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(lastProviderError?.message || 'تعذر استخدام Gemini.'),
+          previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
         });
         return;
       } catch (openRouterError: any) {
-        lastProviderError = openRouterError;
-        if (anyProviderEmittedText) throw openRouterError;
+        if (openRouterEmittedText) throw openRouterError;
+        const combined: any = new Error(
+          `فشلت محاولات Gemini على المفاتيح والنماذج المتاحة، وتعذر الاحتياطي OpenRouter. سبب Gemini: ${String(geminiError?.message || 'انتهت المهلة أو لم تتوفر محاولة كافية.')} سبب OpenRouter: ${String(openRouterError?.message || 'خطأ غير محدد.')}`
+        );
+        combined.status = Number(openRouterError?.status || geminiError?.status || 503);
+        combined.statusCode = combined.status;
+        combined.cause = { gemini: geminiError, openrouter: openRouterError };
+        throw combined;
       }
     }
-    const combined: any = new Error('تعذر تنفيذ الطلب بعد محاولتين كاملتين: Gemini أولاً ثم OpenRouter في كل محاولة.');
-    combined.status = 503;
-    combined.statusCode = 503;
-    combined.cause = lastProviderError;
-    throw combined;
+
+    throw geminiError || timeoutError();
   }
 
   if (!_forceGeminiFallback && executionOptions?.providerAttempt === 'openrouter-fallback' && !executionOptions?.ocrMode) {
@@ -756,7 +765,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
   for (let cycle = 0; cycle < 1; cycle++) {
-    const startIdx = reserveStartIndex(keys.length, 'general');
+    const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
+    const startIdx = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
