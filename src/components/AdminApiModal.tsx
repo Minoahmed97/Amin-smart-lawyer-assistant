@@ -23,7 +23,6 @@ import {
   BarChart3,
   Scale,
   AlertTriangle,
-  CreditCard,
   Cloud,
   Database,
   Copy,
@@ -65,7 +64,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [passwordError, setPasswordError] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'packages' | 'codes' | 'keyStatus' | 'stats' | 'supabase' | 'broadcast'>('keyStatus');
+  const [activeTab, setActiveTab] = useState<'keyStatus' | 'stats' | 'supabase' | 'broadcast'>('keyStatus');
 
   // Broadcast announcement states
   const [broadcastTitle, setBroadcastTitle] = useState<string>('تحديث قضائي عام 2026');
@@ -821,7 +820,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                 لوحة الإدارة والتحكم المركزي
               </h2>
               <p className="text-xs text-slate-400">
-                إدارة الباقات، مفاتيح الذكاء الاصطناعي، أكواد التفعيل، والإعلانات
+                إدارة مفاتيح الذكاء الاصطناعي، إعدادات السحابة، والإعلانات
               </p>
             </div>
           </div>
@@ -881,7 +880,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
           <>
             {/* Tabs */}
             <div className="bg-[#090d16] p-2.5 sm:p-3 border-b border-amber-900/50">
-              <div className="grid grid-cols-2 sm:grid-cols-7 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <button
                   type="button"
                   onClick={() => setActiveTab('keyStatus')}
@@ -909,32 +908,6 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                   {supabaseConfig.isConnected && (
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
                   )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('packages')}
-                  className={`flex items-center justify-center gap-1.5 sm:gap-2 px-2 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer border ${
-                    activeTab === 'packages'
-                      ? 'bg-gradient-to-r from-[#b45309] to-amber-600 text-white border-amber-400 shadow-md shadow-amber-950/40'
-                      : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-white border-slate-700/80'
-                  }`}
-                >
-                  <Sliders className="w-4 h-4 flex-shrink-0 text-amber-300" />
-                  <span className="truncate">إدارة الباقات</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('codes')}
-                  className={`flex items-center justify-center gap-1.5 sm:gap-2 px-2 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer border ${
-                    activeTab === 'codes'
-                      ? 'bg-gradient-to-r from-emerald-600 to-teal-700 text-white border-emerald-400 shadow-md shadow-emerald-950/40'
-                      : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-white border-slate-700/80'
-                  }`}
-                >
-                  <Ticket className="w-4 h-4 flex-shrink-0 text-emerald-300" />
-                  <span className="truncate">أكواد التفعيل</span>
                 </button>
 
                 <button
@@ -1444,272 +1417,6 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                 </div>
               )}
 
-              {activeTab === 'packages' && (
-                <div className="space-y-5">
-                  <div className="bg-[#1e293b] p-4 rounded-xl border border-amber-500/40 space-y-3 shadow-md">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-700 pb-2">
-                      <div className="flex items-center gap-2">
-                        <Zap className="w-4 h-4 text-amber-400" />
-                        <h4 className="text-sm font-bold text-amber-300">
-                          إدارة رصيد حساب العميل المحدد
-                        </h4>
-                      </div>
-                      <div className="text-xs text-slate-300">
-                        الرصيد الفعلي الآن:{' '}
-                        <b className="text-emerald-400 font-mono text-sm">{currentBalance} محاولة</b>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <input
-                        type="search"
-                        value={accountSearch}
-                        onChange={(e) => setAccountSearch(e.target.value)}
-                        placeholder="ابحث بالاسم أو اسم المستخدم..."
-                        className="min-w-[220px] px-2.5 py-1.5 bg-slate-900 border border-slate-600 rounded text-xs text-white outline-none focus:border-amber-400"
-                      />
-                      <select
-                        value={selectedAccountId}
-                        onChange={(e) => setSelectedAccountId(e.target.value)}
-                        className="min-w-[190px] px-2.5 py-1.5 bg-slate-900 border border-slate-600 rounded text-xs text-white outline-none"
-                        disabled={balanceActionLoading}
-                      >
-                        <option value="">اختر حساب العميل</option>
-                        {filteredAccounts.map((account) => (
-                          <option key={account.id} value={account.id}>{account.display_name} — {account.username}</option>
-                        ))}
-                      </select>
-                      <span className="text-slate-300 font-bold">شحن سريع:</span>
-                      {[10, 25, 50, 100].map((qty) => (
-                        <button
-                          key={qty}
-                          type="button"
-                          onClick={() => { setManualRechargeAmount(String(qty)); void handleDirectManualRecharge(qty); }}
-                          disabled={balanceActionLoading}
-                          className="px-2.5 py-1 bg-slate-800 hover:bg-[#b45309] text-amber-200 hover:text-white rounded border border-slate-700 font-mono font-bold transition-all cursor-pointer"
-                        >
-                          +{qty}
-                        </button>
-                      ))}
-                      <div className="flex items-center gap-1.5 mr-auto">
-                        <input
-                          type="number"
-                          value={manualRechargeAmount}
-                          onChange={(e) => setManualRechargeAmount(e.target.value)}
-                          className="w-20 px-2 py-1 bg-slate-900 border border-slate-600 rounded text-center text-xs font-mono text-white"
-                          placeholder="العدد"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => void handleDirectManualRecharge()}
-                          disabled={balanceActionLoading}
-                          className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold text-xs cursor-pointer shadow"
-                        >
-                          شحن
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleSetExactBalance()}
-                          disabled={balanceActionLoading}
-                          className="px-3 py-1 bg-sky-700 hover:bg-sky-600 text-white rounded font-bold text-xs cursor-pointer shadow disabled:opacity-50"
-                        >
-                          ضبط الرصيد
-                        </button>
-                      </div>
-                    </div>
-                    {manualRechargeMsg && (
-                      <div className="p-2 bg-emerald-950/80 border border-emerald-500/50 rounded text-xs text-emerald-200 font-bold flex items-center gap-1.5 animate-in fade-in">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                        <span>{manualRechargeMsg}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                      <div>
-                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                          <DollarSign className="w-4 h-4 text-amber-400" />
-                          <span>باقات الاشتراك المعروضة للجمهور:</span>
-                        </h4>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleAddNewPackage}
-                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded-lg text-xs font-bold border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>إضافة باقة</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleResetPackages}
-                          className="px-3 py-1.5 bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300 rounded-lg text-xs font-semibold border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>استعادة الافتراضي</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {packageSaveSuccess && (
-                      <div className="p-3 bg-emerald-950/90 border border-emerald-500 rounded-xl text-xs text-emerald-200 font-bold flex items-center gap-2 animate-in fade-in">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                        <span>{packageSaveSuccess}</span>
-                      </div>
-                    )}
-
-                    <div className="space-y-3.5">
-                      {managedPackages.map((pkg, idx) => (
-                        <div
-                          key={pkg.id}
-                          className="bg-[#1e293b] border-2 border-slate-700/80 hover:border-amber-500/50 rounded-xl p-4 space-y-3 shadow-md transition-all"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-2.5">
-                            <div className="flex items-center gap-2">
-                              <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
-                              <span className="text-xs font-bold text-amber-300">
-                                باقة #{idx + 1}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleDeletePackage(pkg.id)}
-                              className="text-rose-400 hover:text-rose-300 p-1 text-xs cursor-pointer"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                            <div>
-                              <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                                اسم الباقة:
-                              </label>
-                              <input
-                                type="text"
-                                value={pkg.name}
-                                onChange={(e) =>
-                                  handlePackageFieldChange(idx, 'name', e.target.value)
-                                }
-                                className="w-full p-2 bg-[#090d16] border border-slate-600 rounded-lg text-white font-bold outline-none focus:border-[#b45309]"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                                السعر:
-                              </label>
-                              <input
-                                type="text"
-                                value={pkg.price}
-                                onChange={(e) =>
-                                  handlePackageFieldChange(idx, 'price', e.target.value)
-                                }
-                                className="w-full p-2 bg-[#090d16] border border-slate-600 rounded-lg text-amber-300 font-mono font-bold outline-none focus:border-[#b45309]"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                                عدد العمليات:
-                              </label>
-                              <input
-                                type="number"
-                                value={pkg.credits}
-                                onChange={(e) =>
-                                  handlePackageFieldChange(
-                                    idx,
-                                    'credits',
-                                    parseInt(e.target.value, 10) || 0
-                                  )
-                                }
-                                className="w-full p-2 bg-[#090d16] border border-slate-600 rounded-lg text-emerald-400 font-mono font-bold outline-none focus:border-[#b45309]"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleSavePackages}
-                      disabled={isSavingPackages}
-                      className="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl font-bold text-sm shadow-lg flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
-                    >
-                      <Save className="w-4 h-4" />
-                      <span>{isSavingPackages ? 'جارٍ الحفظ...' : 'حفظ وتحديث باقات المنظومة'}</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {activeTab === 'codes' && (
-                <div className="bg-[#0f172a] p-5 rounded-xl border border-slate-700 space-y-4">
-                  <div className="border-b border-slate-700 pb-3">
-                    <h4 className="text-amber-400 text-sm font-bold flex items-center gap-2">
-                      <Ticket className="w-4 h-4 text-amber-500" />
-                      <span>توليد أكواد شحن الرصيد الفورية:</span>
-                    </h4>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="block text-xs font-bold text-slate-300">
-                      اختر الباقة التي سيحملها كارت الشحن:
-                    </label>
-                    <select
-                      value={codePackageId}
-                      onChange={(e) => {
-                        const id = e.target.value;
-                        setCodePackageId(id);
-                        const pkg = managedPackages.find((item) => String(item.id) === id);
-                        if (pkg) setCodeCredits(String(pkg.credits));
-                      }}
-                      className="w-full p-2.5 bg-slate-900 border border-slate-600 rounded-lg text-white text-xs font-bold outline-none focus:border-emerald-500"
-                    >
-                      <option value="">اختر الباقة</option>
-                      {managedPackages.filter((pkg) => pkg.enabled !== false).map((pkg) => (
-                        <option key={pkg.id} value={pkg.id}>{pkg.name} — {pkg.credits} عملية</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <button
-                    onClick={generateActivationCode}
-                    disabled={codeLoading}
-                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-all disabled:opacity-50 cursor-pointer shadow-md flex items-center justify-center gap-1.5"
-                  >
-                    <Ticket className="w-4 h-4" />
-                    <span>{codeLoading ? 'جارٍ التوليد...' : 'توليد الكود فوراً'}</span>
-                  </button>
-                  {generatedCode && (
-                    <div className="p-4 bg-slate-900 border-2 border-emerald-500/50 rounded-xl space-y-3 text-center animate-in fade-in">
-                      <span className="text-xs text-slate-300 font-semibold">
-                        كارت شحن الباقة ({codeCredits} عملية):
-                      </span>
-                      <div className="text-emerald-400 font-mono text-xl font-extrabold tracking-widest bg-slate-950 p-2.5 rounded-lg border border-slate-800 select-all">
-                        {generatedCode}
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                        <button
-                          onClick={copyCode}
-                          className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer border border-amber-500/30"
-                        >
-                          {codeCopied ? <Check className="w-3.5 h-3.5" /> : null}
-                          <span>{codeCopied ? 'تم النسخ!' : 'نسخ الكود'}</span>
-                        </button>
-                        <a
-                          href={getWhatsAppMessageUrl()}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="w-full py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-                        >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>إرسال بالواتساب للمشتري</span>
-                        </a>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
               {activeTab === 'stats' && (
                 <div className="space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-[#090d16] p-3.5 rounded-xl border border-slate-700/80">
@@ -1767,15 +1474,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                       </div>
                     </div>
 
-                    <div className="bg-[#1e293b] p-4 rounded-xl border border-purple-500/50 shadow-md flex flex-col justify-between">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs text-purple-300 font-bold">الاشتراكات:</span>
-                        <CreditCard className="w-4 h-4 text-purple-400" />
-                      </div>
-                      <div className="text-3xl font-extrabold text-purple-400 font-mono">
-                        {analyticsData?.totalSubscribed ?? 0}
-                      </div>
-                    </div>
+
                   </div>
                 </div>
               )}
