@@ -26,10 +26,9 @@ export function getRegistrationGuardKey(req: any, deviceFingerprint: string): st
 
 function isVerifiedPersonalOwnerRequest(req: any): boolean {
   try {
-    const ownerId = (process.env.PERSONAL_OWNER_USER_ID || '').trim().toLowerCase();
     const ownerUsername = (process.env.PERSONAL_OWNER_USERNAME || 'amin1997').trim().toLowerCase();
     const secret = (process.env.APP_ENCRYPTION_KEY || '').trim();
-    if (!ownerId || secret.length < 32) return false;
+    if (!ownerUsername || secret.length < 32) return false;
 
     const authorization = String(req?.headers?.authorization || '');
     if (!authorization.startsWith('Bearer ')) return false;
@@ -43,8 +42,7 @@ function isVerifiedPersonalOwnerRequest(req: any): boolean {
     if (actualBytes.length !== expectedBytes.length || !crypto.timingSafeEqual(actualBytes, expectedBytes)) return false;
 
     const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return String(session?.userId || '').toLowerCase() === ownerId
-      && String(session?.username || '').toLowerCase() === ownerUsername
+    return String(session?.username || '').toLowerCase() === ownerUsername
       && Number(session?.exp || 0) > Date.now();
   } catch {
     return false;
