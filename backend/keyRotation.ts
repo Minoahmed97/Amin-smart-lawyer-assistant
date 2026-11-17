@@ -30,7 +30,7 @@ export const GEMINI_MODELS = [
 
 function safeDiagnosticMessage(error: any): string {
   return String(error?.message || error || 'Unknown error')
-    .replace(/Bearer\\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
     .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_API_KEY]')
     .replace(/sk-or-v1-[A-Za-z0-9]{20,}/g, '[REDACTED_API_KEY]')
     .replace(/gsk_[A-Za-z0-9]{20,}/g, '[REDACTED_API_KEY]')
