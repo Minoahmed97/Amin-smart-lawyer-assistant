@@ -6,9 +6,6 @@ export interface PlatformUser {
   username: string;
   name: string;
   role: 'lawyer';
-  credits: number;
-  trialOperationsRemaining: number;
-  trialExpiresAt: string;
   status: 'active' | 'suspended';
 }
 
@@ -68,7 +65,6 @@ export function saveSession(token: string) {
 function cacheUser(user: PlatformUser) {
   try {
     localStorage.setItem('amin_account_snapshot', JSON.stringify(user));
-    localStorage.setItem('judicial_open_credits_v6', String(user.credits > 0 ? user.credits : user.trialOperationsRemaining));
   } catch {}
 }
 
@@ -126,29 +122,6 @@ export async function consumeOperation(serviceName: string) {
     method: 'POST',
     body: JSON.stringify({ serviceName }),
   });
-  try {
-    const raw = localStorage.getItem('amin_account_snapshot');
-    const current = raw ? JSON.parse(raw) : {};
-    current.credits = Number(data.remainingCredits || 0);
-    current.trialOperationsRemaining = Number(data.trialRemaining || 0);
-    localStorage.setItem('amin_account_snapshot', JSON.stringify(current));
-    localStorage.setItem('judicial_open_credits_v6', String(current.credits > 0 ? current.credits : current.trialOperationsRemaining));
-  } catch {}
   return data;
 }
 
-export async function redeemRechargeCode(code: string) {
-  const data = await request('/api/auth/redeem', {
-    method: 'POST',
-    body: JSON.stringify({ code }),
-  });
-  try {
-    const raw = localStorage.getItem('amin_account_snapshot');
-    const current = raw ? JSON.parse(raw) : {};
-    current.credits = Number(data.newTotal || 0);
-    current.status = 'active';
-    localStorage.setItem('amin_account_snapshot', JSON.stringify(current));
-    localStorage.setItem('judicial_open_credits_v6', String(current.credits));
-  } catch {}
-  return data;
-}
