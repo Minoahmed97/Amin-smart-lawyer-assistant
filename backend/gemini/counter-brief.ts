@@ -43,6 +43,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let continuationCount = 0;
   let lastError: any = null;
   let previousPair = '';
+  let continuationGeminiStartKey = '';
 
   const makeContinuationPrompt = () => accumulatedText
     ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
@@ -147,13 +148,17 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         }, undefined, undefined, false, {
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
+          startKey: continuationGeminiStartKey || undefined,
         });
       } catch (error: any) {
         segmentError = error;
         lastError = error;
       }
 
-      if (activePair) usedPairs.add(activePair);
+      if (activePair) {
+        usedPairs.add(activePair);
+        if (!activePair.startsWith('openrouter::')) continuationGeminiStartKey = activePair.split('::')[0];
+      }
       if (segmentError?.blockedResponse) throw segmentError;
       if (!segmentPrefixResolved && segmentBuffer) {
         const addition = mergeContinuation(segmentBaseText, segmentBuffer);
@@ -246,6 +251,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       }, undefined, undefined, false, {
         deadlineAt,
         avoidPairs: Array.from(usedPairs),
+        startKey: continuationGeminiStartKey || undefined,
       });
     } catch (error: any) {
       lastError = error;
@@ -254,7 +260,10 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       throw error;
     }
 
-    if (activePair) usedPairs.add(activePair);
+    if (activePair) {
+      usedPairs.add(activePair);
+      if (!activePair.startsWith('openrouter::')) continuationGeminiStartKey = activePair.split('::')[0];
+    }
     const addition = mergeContinuation(accumulatedText, segmentResult.text || '');
     accumulatedText += addition;
     if (segmentResult.completed) return accumulatedText.trim();
