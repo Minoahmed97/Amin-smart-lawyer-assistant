@@ -47,7 +47,7 @@ interface DraftingViewProps {
   userId: string;
   onOpenSubscribe: () => void;
   onCreditsUpdated: (credits: number) => void;
-  onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'packages' | 'vault') => void;
+  onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
 }
 
 export const DraftingView: React.FC<DraftingViewProps> = ({
