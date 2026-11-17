@@ -360,7 +360,6 @@ if (mountedRef.current) {
 
 // Stage image jobs on the server without starting the queue yet.
 // PDFs deliberately keep their original client-driven extraction path.
-const stagedImageJobIds: string[] = [];
 for (const original of eligible) {
   if (!isCurrent()) return;
   if (!isImageFile(original) || original.status === 'completed' ||
@@ -399,7 +398,6 @@ for (const original of eligible) {
     });
 
     if (staged.backgroundJobId) {
-      stagedImageJobIds.push(staged.backgroundJobId);
       await updateRecord(original.id, {
         status: 'processing',
         stageLabel: 'المهمة محفوظة بالخادم؛ في انتظار النتيجة',
