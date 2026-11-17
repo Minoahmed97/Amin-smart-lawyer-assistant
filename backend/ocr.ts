@@ -163,7 +163,7 @@ export default async function handler(req: any, res: any) {
             }
             extractedPages.push(text);
           }
-          return extractedPages.join('\\n\\n');
+          return extractedPages.join('\n\n');
         }
 
         const response = await ai.models.generateContent({
