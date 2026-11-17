@@ -250,6 +250,8 @@ export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<
 }
 
 let dedicatedOCRActiveKey = '';
+let dedicatedOCRActiveModel = '';
+const dedicatedOCRInFlightPairs = new Set<string>();
 
 export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): Promise<{ ready: boolean; keyCount: number; checkedKeys: number; message: string }> {
   let keys: string[];
