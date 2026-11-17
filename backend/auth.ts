@@ -339,9 +339,6 @@ export async function loginAccount(username: string, password: string, deviceFin
   if (user.account_status !== 'active') {
     throw new Error('هذا الحساب موقوف حاليًا. إذا كان السبب انتهاء التجربة أو الرصيد، يُرجى مراجعة الإدارة لإعادة تفعيله أو شحنه.');
   }
-  if (user.device_fingerprint !== deviceFingerprint) {
-    throw new Error('هذا الحساب مرتبط بجهاز آخر. لا يمكن الدخول به من جهاز مختلف.');
-  }
   return {
     token: createSession(user.id, user.username),
     user: {
