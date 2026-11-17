@@ -135,19 +135,41 @@ export default async function handler(req: any, res: any) {
     let extractedText = '';
     try {
       extractedText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
+        const imageParts = [
+          { inlineData: { mimeType: safeGeminiMime, data: compactBase64 } },
+          ...pdfImagePages.map((page) => ({ inlineData: { mimeType: page.mimeType, data: page.base64Data } })),
+        ];
+
+        // Groq's Qwen vision endpoint accepts up to 3 images per request.
+        // Split larger PDFs into ordered page batches only for the Groq fallback;
+        // Gemini keeps the existing single-request path.
+        if (_key.startsWith('gsk_') && imageParts.length > 3) {
+          const extractedPages: string[] = [];
+          for (let offset = 0; offset < imageParts.length; offset += 3) {
+            const pageEnd = Math.min(offset + 3, imageParts.length);
+            const batchPrompt = `${ocrPrompt}\n\nهذه الصفحات من المستند الأصلي، الصفحات ${offset + 1} إلى ${pageEnd} من إجمالي ${imageParts.length} صفحة. استخرج نص هذه الصفحات فقط وبالترتيب، دون مقدمة أو تكرار.`;
+            const response = await ai.models.generateContent({
+              skipAdaptiveAnswerLength: true,
+              model,
+              contents: [{ role: 'user', parts: [{ text: batchPrompt }, ...imageParts.slice(offset, pageEnd)] }],
+              config: { temperature: 0.2, maxOutputTokens: 32768 },
+            } as any);
+            const text = response.text?.trim() || '';
+            if (!text) {
+              throw Object.assign(new Error(`لم يُرجع النموذج ${model} نصاً صالحاً لصفحات PDF ${offset + 1}-${pageEnd}.`), {
+                status: 503,
+                statusCode: 503,
+              });
+            }
+            extractedPages.push(text);
+          }
+          return extractedPages.join('\\n\\n');
+        }
+
         const response = await ai.models.generateContent({
           skipAdaptiveAnswerLength: true,
           model,
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                { text: ocrPrompt },
-                { inlineData: { mimeType: safeGeminiMime, data: compactBase64 } },
-                ...pdfImagePages.map((page) => ({ inlineData: { mimeType: page.mimeType, data: page.base64Data } })),
-              ],
-            },
-          ],
+          contents: [{ role: 'user', parts: [{ text: ocrPrompt }, ...imageParts] }],
           config: { temperature: 0.2, maxOutputTokens: 32768 },
         } as any);
         const text = response.text?.trim() || '';
