@@ -75,6 +75,30 @@ type OpenRouterRequest = {
   didTimeout: () => boolean;
 };
 
+function safeProviderErrorDetail(raw: string): string {
+  let detail = '';
+  try {
+    const parsed: any = raw ? JSON.parse(raw) : {};
+    const providerError = parsed?.error;
+    const parts = [
+      providerError?.message,
+      providerError?.code,
+      providerError?.type,
+      parsed?.message,
+    ].filter((value) => typeof value === 'string' || typeof value === 'number');
+    detail = parts.map(String).join(' | ');
+  } catch {
+    detail = raw;
+  }
+  return detail
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/sk-or-v1-[A-Za-z0-9]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/gsk_[A-Za-z0-9]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/(api[_-]?key\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .slice(0, 500);
+}
+
 function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
   const error: any = new Error(beforeFirstText
     ? `لم يصل أول جزء من النص عبر OpenRouter خلال ${Math.ceil(timeoutMs / 1000)} ثانية.`
@@ -147,9 +171,18 @@ async function request(options: any, model: string, stream: boolean, provider: {
       if (timedOut) throw createTimeoutError(activeTimeoutMs, stream);
     }
     clearRequestTimeout();
-    const error: any = new Error(`${providerName} request failed (${response.status}): ${body.slice(0, 1200) || response.statusText}`);
+    const detail = safeProviderErrorDetail(body) || response.statusText || 'No response detail';
+    const error: any = new Error(`${providerName} model ${model} request failed (${response.status}): ${detail}`);
     error.status = response.status;
     error.statusCode = response.status;
+    error.provider = providerName;
+    error.model = model;
+    console.warn('[AI provider request failed]', {
+      provider: providerName,
+      model,
+      status: response.status,
+      message: detail,
+    });
     throw error;
   }
   return {
