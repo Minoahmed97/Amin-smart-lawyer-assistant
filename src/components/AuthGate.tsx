@@ -6,7 +6,7 @@ import { getSessionToken, clearSession, loginAccount, PlatformUser } from '../se
 interface Props { onAuthenticated: (user: PlatformUser) => void; }
 
 export const AuthGate: React.FC<Props> = ({ onAuthenticated }) => {
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState('amin1997');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
