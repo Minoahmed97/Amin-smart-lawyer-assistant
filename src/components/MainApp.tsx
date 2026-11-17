@@ -226,10 +226,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       />
 
       {/* Global Broadcast Announcement from Admin */}
-      <BroadcastBanner
-        onOpenSubscribe={() => {}}
-        onSwitchTab={handleTabChange}
-      />
+      <BroadcastBanner onSwitchTab={handleTabChange} />
 
       {/* Main Tab Content - Kept mounted in DOM to prevent losing state when navigating */}
       <main className="flex-1 py-3 sm:py-5">
