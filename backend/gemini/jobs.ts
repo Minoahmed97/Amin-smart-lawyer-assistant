@@ -986,44 +986,6 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-      const session = requireSession(req);
-      if (String(req?.query?.action || '') === 'push-public-key') {
-        const publicKey = (process.env.VAPID_PUBLIC_KEY || '').trim();
-        if (!publicKey) return res.status(503).json({ error: 'إعدادات إشعارات الإنجاز غير مكتملة.' });
-        return res.status(200).json({ publicKey });
-      }
-      const id = String(req?.query?.id || '').trim();
-      if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
-      const jobPath = `${JOB_TABLE}?select=id,status,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
-      const result = await supabase(jobPath);
-      if (!result.ok) return res.status(503).json({ error: 'تعذر استرجاع حالة المهمة.' });
-      const rows = await result.json();
-      let job = Array.isArray(rows) ? rows[0] : null;
-      if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
-
-      if (job.status === 'queued') scheduleBackground(dispatchQueuedJob(id));
-
-      const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
-      if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
-        const staleError = 'توقفت المعالجة بعد عدم وصول أي تحديث.';
-        try {
-          await patchJob(id, session.userId, { status: 'failed', error: staleError, partial_result: job.partial_result || '', payload: {} });
-          const refreshed = await supabase(jobPath);
-          const refreshedRows = await refreshed.json();
-          job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
-        } catch {}
-      }
-      return res.status(200).json({
-        jobId: job.id,
-        status: job.status,
-        partialResult: job.partial_result || '',
-        result: job.result || '',
-        error: job.error || null,
-        updatedAt: job.updated_at || null,
-        completedAt: job.completed_at || null,
-      });
-    }
-
     return res.status(405).json({ error: 'Method Not Allowed' });
   } catch (err: any) {
     const statusCode = Number(err?.statusCode);
