@@ -1,4 +1,3 @@
-import { getCurrentAccount } from '../services/authService.ts';
 import React, { useState, useEffect, useRef } from 'react';
 import { qualifyLegalCase, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
@@ -30,16 +29,12 @@ import { exportLegalDocToWord } from '../utils/exportHelper.ts';
 interface LegalQualifyViewProps {
   userId: string;
   onDraftBriefFromQualify: (facts: string) => void;
-  onOpenSubscribe?: () => void;
-  onCreditsUpdated?: (newCredits: number) => void;
   isClientOnly?: boolean;
 }
 
 export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
   userId,
   onDraftBriefFromQualify,
-  onOpenSubscribe,
-  onCreditsUpdated,
   isClientOnly = false,
 }) => {
   const [disputeDetails, setDisputeDetails] = useState<string>(() => {
