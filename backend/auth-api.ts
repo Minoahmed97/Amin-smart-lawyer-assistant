@@ -15,7 +15,6 @@ export default async function handler(req: any, res: any) {
     }
     const route = String(req?.query?.subroute || req?.query?.action || '').trim();
     if (route === 'login') rateLimit(req, 'login', 12, 10 * 60 * 1000);
-    if (route === 'redeem') rateLimit(req, 'redeem', 10, 10 * 60 * 1000);
     if (route === 'consume') rateLimit(req, 'consume', 30, 10 * 60 * 1000);
     if (typeof body?.username === 'string') limitBodyString(body.username, 64, 'اسم المستخدم');
     if (typeof body?.password === 'string') limitBodyString(body.password, 256, 'كلمة المرور');
@@ -35,11 +34,8 @@ export default async function handler(req: any, res: any) {
     if (req.method === 'POST' && route === 'consume') {
       return res.json(await consumeOperation(req, body?.serviceName || 'عملية قضائية'));
     }
-    if (req.method === 'POST' && route === 'redeem') {
-      return res.json(await redeemCode(req, body?.code || ''));
-    }
-    if (req.method === 'POST' && route === 'generate-code') {
-      return res.json(await generateRechargeCode(req, Number(body?.credits || 0), body?.packageId || ''));
+    if (req.method === 'POST' && ['redeem', 'generate-code', 'admin-balance'].includes(route)) {
+      return res.status(403).json({ error: 'الشحن وإدارة الأرصدة معطلان في النسخة الشخصية.' });
     }
     if (req.method === 'GET' && route === 'accounts') {
       return res.json({ accounts: await listAccounts(req) });
