@@ -352,7 +352,7 @@ export async function loginAccount(username: string, password: string, deviceFin
 
 export async function getCurrentAccount(req: any) {
   const session = requireSession(req);
-  const res = await supabase(`platform_users?select=id,username,display_name,role,credits,trial_operations_total,trial_operations_used,trial_expires_at,account_status,operations_used,last_seen_at,created_at&id=eq.${encodeURIComponent(session.userId)}&limit=1`);
+  const res = await supabase(`platform_users?select=id,username,display_name,role,account_status&id=eq.${encodeURIComponent(session.userId)}&limit=1`);
   if (!res.ok) throw new Error('تعذر قراءة بيانات الحساب.');
   const user = (await res.json())?.[0];
   if (!user) throw new Error('الحساب غير موجود.');
@@ -361,9 +361,6 @@ export async function getCurrentAccount(req: any) {
     username: user.username,
     name: user.display_name,
     role: user.role,
-    credits: Number(user.credits || 0),
-    trialOperationsRemaining: Math.max(0, Number(user.trial_operations_total || 20) - Number(user.trial_operations_used || 0)),
-    trialExpiresAt: user.trial_expires_at,
     status: user.account_status,
   };
 }
