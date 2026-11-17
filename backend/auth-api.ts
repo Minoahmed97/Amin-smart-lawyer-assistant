@@ -1,5 +1,4 @@
 import {
-  registerAccount,
   loginAccount,
   getCurrentAccount,
   consumeOperation,
@@ -20,7 +19,6 @@ export default async function handler(req: any, res: any) {
     }
     const route = String(req?.query?.subroute || req?.query?.action || '').trim();
     if (route === 'login') rateLimit(req, 'login', 12, 10 * 60 * 1000);
-    if (route === 'register') rateLimit(req, 'register', 6, 60 * 60 * 1000);
     if (route === 'redeem') rateLimit(req, 'redeem', 10, 10 * 60 * 1000);
     if (route === 'consume') rateLimit(req, 'consume', 30, 10 * 60 * 1000);
     if (typeof body?.username === 'string') limitBodyString(body.username, 64, 'اسم المستخدم');
@@ -30,7 +28,7 @@ export default async function handler(req: any, res: any) {
       return res.json(await loginAdmin(body?.pin || '', req));
     }
     if (req.method === 'POST' && route === 'register') {
-      return res.json(await registerAccount(body?.username || '', body?.password || '', body?.displayName || '', body?.deviceFingerprint || '', req));
+      return res.status(403).json({ error: 'إنشاء الحسابات معطل في النسخة الشخصية.' });
     }
     if (req.method === 'POST' && route === 'login') {
       return res.json(await loginAccount(body?.username || '', body?.password || '', body?.deviceFingerprint || ''));
