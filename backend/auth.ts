@@ -313,9 +313,6 @@ export async function registerAccount(username: string, password: string, displa
       username: created.username,
       name: created.display_name,
       role: 'lawyer',
-      credits: Number(created.credits || 0),
-      trialOperationsRemaining: Math.max(0, Number(created.trial_operations_total || 20) - Number(created.trial_operations_used || 0)),
-      trialExpiresAt: created.trial_expires_at,
       status: created.account_status,
     },
   };
@@ -342,9 +339,6 @@ export async function loginAccount(username: string, password: string, deviceFin
       username: user.username,
       name: 'amin 1997',
       role: 'lawyer',
-      credits: Number(user.credits || 0),
-      trialOperationsRemaining: Math.max(0, Number(user.trial_operations_total || 20) - Number(user.trial_operations_used || 0)),
-      trialExpiresAt: user.trial_expires_at,
       status: user.account_status,
     },
   };
@@ -411,7 +405,7 @@ export async function generateRechargeCode(req: any, credits: number, packageId?
 export async function listAccounts(req: any) {
   requireAdmin(req);
   const ownerId = encodeURIComponent(getPersonalOwnerUserId());
-  const res = await supabase(`platform_users?select=id,username,display_name,role,credits,trial_operations_total,trial_operations_used,trial_expires_at,account_status,operations_used,last_seen_at,created_at,deleted_at&id=eq.${ownerId}&username=eq.${encodeURIComponent(getPersonalOwnerUsername())}&account_status=neq.deleted&order=created_at.desc`);
+  const res = await supabase(`platform_users?select=id,username,display_name,role,account_status,last_seen_at,created_at,deleted_at&id=eq.${ownerId}&username=eq.${encodeURIComponent(getPersonalOwnerUsername())}&account_status=neq.deleted&order=created_at.desc`);
   if (!res.ok) throw new Error('تعذر قراءة حسابات المنصة.');
   return await res.json();
 }
