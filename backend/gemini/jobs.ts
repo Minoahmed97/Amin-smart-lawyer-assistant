@@ -476,9 +476,12 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   if (job.status === 'running') {
     const updatedAt = Date.parse(String(job.updated_at || ''));
     if (!Number.isFinite(updatedAt) || Date.now() - updatedAt < JOB_STALE_TIMEOUT_MS) {
-      // Keep the queue message alive while another delivery owns this job.
-      // If that worker is terminated, a later retry can reclaim the stale row.
-      throw new Error('AI job is still active; retry after the current worker lease expires.');
+      // Preserve the existing OCR delivery behavior. Legal tasks must keep
+      // their queue message retryable until an interrupted worker becomes stale.
+      if (String(job.task_type || '') !== 'ocr') {
+        throw new Error('AI job is still active; retry after the current worker lease expires.');
+      }
+      return;
     }
     const requeued = await supabase(
       `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&status=eq.running&updated_at=lt.${encodeURIComponent(new Date(Date.now() - JOB_STALE_TIMEOUT_MS).toISOString())}`,
