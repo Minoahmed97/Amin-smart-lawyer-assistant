@@ -6,7 +6,7 @@ import { getSessionToken, clearSession, loginAccount, PlatformUser } from '../se
 interface Props { onAuthenticated: (user: PlatformUser) => void; }
 
 export const AuthGate: React.FC<Props> = ({ onAuthenticated }) => {
-  const [username, setUsername] = useState('amin1997');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -93,7 +93,7 @@ export const AuthGate: React.FC<Props> = ({ onAuthenticated }) => {
 
   return (
     <div className="min-h-screen min-h-[100dvh] bg-[#090d16] text-white flex items-center justify-center p-4" dir="rtl">
-      <form onSubmit={submit} className="w-full max-w-md bg-[#0f172a] border-2 border-[#b45309] rounded-3xl p-6 sm:p-8 shadow-2xl space-y-5">
+      <form onSubmit={submit} autoComplete="off" className="w-full max-w-md bg-[#0f172a] border-2 border-[#b45309] rounded-3xl p-6 sm:p-8 shadow-2xl space-y-5">
         <div className="text-center">
           <div className="mx-auto w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400 mb-3">
             <ShieldCheck className="w-7 h-7" />
@@ -102,8 +102,8 @@ export const AuthGate: React.FC<Props> = ({ onAuthenticated }) => {
           <p className="text-sm text-slate-300 mt-1">دخول موحد لحساب المحامي</p>
         </div>
 
-        <input value={username} onChange={e => setUsername(e.target.value)} placeholder="اسم المستخدم" autoComplete="username" className="w-full bg-[#090d16] border border-slate-600 rounded-xl px-4 py-3 text-white outline-none focus:border-amber-400" />
-        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="كلمة المرور (8 أحرف على الأقل)" type="password" autoComplete="current-password" className="w-full bg-[#090d16] border border-slate-600 rounded-xl px-4 py-3 text-white outline-none focus:border-amber-400" />
+        <input value={username} onChange={e => setUsername(e.target.value)} placeholder="اسم المستخدم" autoComplete="off" name="personal-login-user" className="w-full bg-[#090d16] border border-slate-600 rounded-xl px-4 py-3 text-white outline-none focus:border-amber-400" />
+        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="كلمة المرور (8 أحرف على الأقل)" type="password" autoComplete="new-password" name="personal-login-password" className="w-full bg-[#090d16] border border-slate-600 rounded-xl px-4 py-3 text-white outline-none focus:border-amber-400" />
 
         {(error || sessionCheckError) && <div className="text-sm text-rose-200 bg-rose-950/50 border border-rose-500/50 rounded-xl p-3">{error || sessionCheckError}</div>}
 
