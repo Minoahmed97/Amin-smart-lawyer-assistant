@@ -6,6 +6,7 @@ import {
   refineDraftText,
   draftCounterBrief,
   resumeDraftCounterBrief,
+  resumeSavedAiTask,
 } from '../services/aiService.ts';
 import { getAllLawModels } from '../utils/legalVaultService.ts';
 import {
@@ -284,48 +285,68 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
   const [draftError, setDraftError] = useState<string>('');
 
-  // Recover an in-flight server-side job after refresh, app backgrounding, or reopening.
+  // Recover saved drafting and refinement jobs after refresh or reopening.
   useEffect(() => {
     let active = true;
     const operationId = resultOperationRef.current;
-    let jobId = '';
     const storageUser = sanitizeDraftJobUserId(userId);
-    const jobKey = `amin_judicial_draft_job_id_${storageUser}`;
-    const legacyJobKey = `amin_judicial_draft_job_id_${String(userId || 'default')}`;
+    const refineJobKey = `amin_ai_job_refine_${storageUser}`;
+    const draftJobKey = `amin_judicial_draft_job_id_${storageUser}`;
+    const legacyDraftJobKey = `amin_judicial_draft_job_id_${String(userId || 'default')}`;
+    let refineJobId = '';
+    let draftJobId = '';
     try {
-      jobId = localStorage.getItem(jobKey) || '';
-      // Migrate an older unsanitized key only when the canonical key is absent.
-      if (!jobId && legacyJobKey !== jobKey) {
-        const legacyJobId = localStorage.getItem(legacyJobKey) || '';
+      refineJobId = localStorage.getItem(refineJobKey) || '';
+      draftJobId = localStorage.getItem(draftJobKey) || '';
+      // Migrate an older unsanitized draft key only when the canonical key is absent.
+      if (!draftJobId && legacyDraftJobKey !== draftJobKey) {
+        const legacyJobId = localStorage.getItem(legacyDraftJobKey) || '';
         if (legacyJobId) {
-          jobId = legacyJobId;
+          draftJobId = legacyJobId;
           try {
-            localStorage.setItem(jobKey, legacyJobId);
-            localStorage.removeItem(legacyJobKey);
+            localStorage.setItem(draftJobKey, legacyJobId);
+            localStorage.removeItem(legacyDraftJobKey);
           } catch {}
         }
       }
     } catch {}
-    if (!jobId) return () => { active = false; };
-    setIsLoading(true);
+    if (!refineJobId && !draftJobId) return () => { active = false; };
     setDraftError('');
-    void resumeDraftCounterBrief(jobId, (chunk) => {
-      if (active && operationId === resultOperationRef.current) setGeneratedBrief((current) => {
-        if (!current) return chunk;
-        if (chunk.startsWith(current)) return chunk;
-        if (current.startsWith(chunk)) return current;
-        return current + chunk;
+    if (refineJobId) {
+      setIsRefining(true);
+      setGeneratedBrief('');
+      void resumeSavedAiTask('refine', refineJobId, (chunk) => {
+        if (active && operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
+      }, userId).then((result) => {
+        if (!active || operationId !== resultOperationRef.current) return;
+        setGeneratedBrief(result);
+        persistentStorage.setItem('amin_judicial_draft_result', result);
+        setRefineNote('اكتملت مراجعة الصياغة المحفوظة.');
+      }).catch((err: any) => {
+        if (active && operationId === resultOperationRef.current) setDraftError(err?.message || 'تعذر استعادة مراجعة الصياغة المحفوظة.');
+      }).finally(() => {
+        if (active && operationId === resultOperationRef.current) setIsRefining(false);
       });
-    }, userId).then(async (result) => {
-      if (!active || operationId !== resultOperationRef.current) return;
-      setGeneratedBrief(result);
-      persistentStorage.setItem('amin_judicial_draft_result', result);
-      setRefineNote('اكتملت مهمة الصياغة المحفوظة.');
-    }).catch((err: any) => {
-      if (active && operationId === resultOperationRef.current) setDraftError(err?.message || 'تعذر استعادة مهمة الصياغة المحفوظة.');
-    }).finally(() => {
-      if (active && operationId === resultOperationRef.current) setIsLoading(false);
-    });
+    } else {
+      setIsLoading(true);
+      void resumeDraftCounterBrief(draftJobId, (chunk) => {
+        if (active && operationId === resultOperationRef.current) setGeneratedBrief((current) => {
+          if (!current) return chunk;
+          if (chunk.startsWith(current)) return chunk;
+          if (current.startsWith(chunk)) return current;
+          return current + chunk;
+        });
+      }, userId).then((result) => {
+        if (!active || operationId !== resultOperationRef.current) return;
+        setGeneratedBrief(result);
+        persistentStorage.setItem('amin_judicial_draft_result', result);
+        setRefineNote('اكتملت مهمة الصياغة المحفوظة.');
+      }).catch((err: any) => {
+        if (active && operationId === resultOperationRef.current) setDraftError(err?.message || 'تعذر استعادة مهمة الصياغة المحفوظة.');
+      }).finally(() => {
+        if (active && operationId === resultOperationRef.current) setIsLoading(false);
+      });
+    }
     return () => { active = false; };
   }, [userId]);
 
@@ -400,7 +421,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         setRefineNote(notes[type] || 'تم تحسين المسودة بنجاح.');
       }
     } catch (err: any) {
-      console.warn('Refine attempt handled silently:', err);
+      if (operationId === resultOperationRef.current) {
+        setGeneratedBrief(previousDraft);
+        setDraftError(err?.message || 'تعذرت مراجعة الصياغة حالياً.');
+      }
     } finally {
       if (operationId === resultOperationRef.current) setIsRefining(false);
     }
