@@ -13,6 +13,7 @@ import {
 } from './store.ts';
 import { formatApprovedMemoryContext } from './policy.ts';
 import { extractLearningFromEvent } from './extractor.ts';
+import { analyzeLegalCaseArchive } from './archive.ts';
 import {
   LEARNING_MEMORY_CATEGORIES,
   LEARNING_TASK_TYPES,
@@ -111,6 +112,57 @@ export default async function handler(req: any, res: any) {
 
     const body = parseBody(req);
     const action = String(body.action || '');
+
+
+    if (action === 'analyze-case-archive') {
+      if (!Array.isArray(body.cases) || body.cases.length < 1 || body.cases.length > 8) {
+        return res.status(400).json({ error: 'أرسل من قضية واحدة إلى 8 قضايا في الطلب الواحد.' });
+      }
+
+      let totalCharacters = 0;
+      const seenCaseRefs = new Set<string>();
+      const cases = body.cases.map((rawCase: any, caseIndex: number) => {
+        if (!rawCase || typeof rawCase !== 'object' || Array.isArray(rawCase)) {
+          const error: any = new Error('بيانات إحدى القضايا غير صالحة.');
+          error.statusCode = 400;
+          throw error;
+        }
+        const caseRef = validateCaseRef(rawCase.caseRef, true) as string;
+        if (seenCaseRefs.has(caseRef)) {
+          const error: any = new Error('يجب أن يكون لكل قضية مرجع داخلي مختلف.');
+          error.statusCode = 400;
+          throw error;
+        }
+        seenCaseRefs.add(caseRef);
+        const title = optionalText(rawCase.title, 240, 'عنوان القضية') || ('قضية ' + (caseIndex + 1));
+        if (!Array.isArray(rawCase.documents) || rawCase.documents.length < 1 || rawCase.documents.length > 30) {
+          const error: any = new Error('كل قضية يجب أن تحتوي على مستند واحد على الأقل وبحد أقصى 30 مستندًا.');
+          error.statusCode = 400;
+          throw error;
+        }
+        const documents = rawCase.documents.map((document: any, documentIndex: number) => {
+          if (!document || typeof document !== 'object' || Array.isArray(document)) {
+            const error: any = new Error('بيانات أحد المستندات غير صالحة.');
+            error.statusCode = 400;
+            throw error;
+          }
+          const name = optionalText(document.name, 240, 'اسم المستند') || ('مستند ' + (documentIndex + 1));
+          const type = optionalText(document.type, 80, 'نوع المستند') || 'غير محدد';
+          const content = requireText(document.text, 120000, 'النص المستخرج من المستند');
+          totalCharacters += content.length;
+          if (totalCharacters > 500000) {
+            const error: any = new Error('إجمالي نصوص الأرشيف أكبر من الحد المسموح (500 ألف حرف). قسّم الأرشيف إلى دفعات.');
+            error.statusCode = 413;
+            throw error;
+          }
+          return { name, type, text: content };
+        });
+        return { caseRef, title, documents };
+      });
+
+      const result = await analyzeLegalCaseArchive(session.userId, cases);
+      return res.status(200).json({ ok: true, ...result });
+    }
 
     if (action === 'record-correction') {
       const taskType = String(body.taskType || 'other') as LearningTaskType;
