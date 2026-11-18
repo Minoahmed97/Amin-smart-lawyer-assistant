@@ -529,12 +529,12 @@ function getWorkerBaseUrl() {
   return `https://${host.replace(/^https?:\/\//i, '').replace(/\/$/, '')}`;
 }
 
-async function enqueueDurableAiJob(jobId: string) {
+async function enqueueDurableAiJob(jobId: string, idempotencyKey = jobId) {
   let lastError: any = null;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
       await send('amin-ai-jobs', { jobId }, {
-        idempotencyKey: jobId,
+        idempotencyKey,
         retentionSeconds: 24 * 60 * 60,
       });
       console.info('AI job accepted by durable queue:', { jobId });
@@ -989,7 +989,7 @@ export default async function handler(req: any, res: any) {
           const changedRows = requeued.ok ? await requeued.json() : [];
           if (Array.isArray(changedRows) && changedRows.length) {
             if (isPdfJob) scheduleBackground(dispatchQueuedJob(id));
-            else if (job.task_type !== 'ocr') await enqueueDurableAiJob(id);
+            else if (job.task_type !== 'ocr') await enqueueDurableAiJob(id, `${id}:recovery:${Date.now()}`);
             else await send('amin-ai-jobs', { jobId: id }, { idempotencyKey: id, retentionSeconds: 24 * 60 * 60 });
           }
           const refreshed = await supabase(jobPath);
