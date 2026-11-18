@@ -717,6 +717,7 @@ export async function refineDraftText( draftText: string, enhancementType: 'more
       draftText,
       enhancementType,
       vaultContext: lawyerVaultContext,
+      caseRef: caseRef || '',
     }, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
