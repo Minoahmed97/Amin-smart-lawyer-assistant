@@ -15,13 +15,19 @@ export interface LearningEventInput {
   context?: Record<string, unknown>;
 }
 
-export interface LearningEventRecord extends LearningEventInput {
+export interface LearningEventRecord {
   id: string;
   user_id: string;
+  case_ref: string | null;
+  task_type: LearningTaskType;
   event_type: LearningEventType;
   status: LearningEventStatus;
+  before_text: string;
+  after_text: string;
+  reason: string;
+  context: Record<string, unknown>;
   created_at: string;
-  reviewed_at?: string | null;
+  reviewed_at: string | null;
 }
 
 export interface ProfessionalMemoryInput {
