@@ -1,6 +1,6 @@
 import { LearningCaseSelector } from './LearningCaseSelector.tsx';
 import React, { useState, useEffect, useRef } from 'react';
-import { deconstructBrief, resumeSavedAiTask, recordLearningCorrection } from '../services/aiService.ts';
+import { deconstructBrief, resumeSavedAiTask, recordLearningCorrection, recordLearningDecision } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { StyleTemplateSelector } from './StyleTemplateSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -154,6 +154,26 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     }
   };
   const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
+  const [lawyerDecision, setLawyerDecision] = useState('');
+  const [lawyerDecisionReason, setLawyerDecisionReason] = useState('');
+  const [decisionSaveState, setDecisionSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  const saveLawyerDecision = async () => {
+    if (!lawyerDecision.trim() || !lawyerDecisionReason.trim() || !analysisResult.trim() || decisionSaveState === 'saving') return;
+    setDecisionSaveState('saving');
+    const saved = await recordLearningDecision({
+      taskType: 'deconstruct',
+      caseRef: activeLearningCaseRef,
+      analysisContext: analysisResult,
+      decision: lawyerDecision,
+      reason: lawyerDecisionReason,
+    });
+    setDecisionSaveState(saved ? 'saved' : 'error');
+    if (saved) {
+      setLawyerDecision('');
+      setLawyerDecisionReason('');
+    }
+  };
 
   // استرجاع مهمة ذكاء اصطناعي محفوظة مسبقاً إذا تم إعادة فتح الواجهة
   useEffect(() => {
@@ -794,6 +814,22 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </div>
               )}
             </div>
+
+            {analysisResult && (
+              <div className="bg-slate-900 border border-amber-700/50 rounded-xl p-3 space-y-2">
+                <div className="text-xs font-bold text-amber-300">تسجيل قرارك المهني بعد مراجعة التحليل</div>
+                <textarea rows={2} value={lawyerDecision} onChange={(e) => { setLawyerDecision(e.target.value); setDecisionSaveState('idle'); }} placeholder="ما القرار الذي اتخذته فعلياً؟ مثال: سأقدم تعقيباً على تقرير الخبير فقط، مع الإحالة إلى المذكرة السابقة في باقي الدفاع." className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-xs text-white" />
+                <textarea rows={2} value={lawyerDecisionReason} onChange={(e) => { setLawyerDecisionReason(e.target.value); setDecisionSaveState('idle'); }} placeholder="لماذا اخترت هذا المسار؟ وما الذي رفضته أو أضفته مقارنة باقتراح أمين؟" className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-xs text-white" />
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button type="button" onClick={() => void saveLawyerDecision()} disabled={!lawyerDecision.trim() || !lawyerDecisionReason.trim() || decisionSaveState === 'saving'} className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white text-xs font-bold">
+                    {decisionSaveState === 'saving' ? 'جارٍ تسجيل القرار...' : 'تسجيل القرار للتعلّم'}
+                  </button>
+                  {decisionSaveState === 'saved' && <span className="text-xs text-emerald-400">تم تسجيل القرار للمراجعة والتعلّم.</span>}
+                  {decisionSaveState === 'error' && <span className="text-xs text-rose-400">تعذر التسجيل؛ يمكنك المحاولة مرة أخرى.</span>}
+                </div>
+                <p className="text-[11px] text-slate-400">لن يتحول القرار إلى خبرة معتمدة تلقائياً؛ سيُحلل كمقترح، ولا يُستخدم لاحقاً إلا بعد موافقتك من قائمة مراجعة التعلم. وعند ربطه بقضية يظل خاصاً بها افتراضياً.</p>
+              </div>
+            )}
 
             {analysisResult && (
               <div className="bg-slate-900/90 border border-slate-700/80 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-md">
