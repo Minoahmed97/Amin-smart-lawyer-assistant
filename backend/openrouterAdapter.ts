@@ -1,4 +1,4 @@
-/** OpenRouter adapter exposing the small GoogleGenAI-compatible surface used by this project. */
+/** OpenAI-compatible adapter used for direct Groq API calls. */
 type Part = { text?: string; inlineData?: { mimeType?: string; data?: string } };
 
 function normalizeMessages(contents: any, systemInstruction?: any) {
@@ -101,19 +101,19 @@ function safeProviderErrorDetail(raw: string): string {
 
 function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
   const error: any = new Error(beforeFirstText
-    ? `لم يصل أول جزء من النص عبر OpenRouter خلال ${Math.ceil(timeoutMs / 1000)} ثانية.`
-    : `انتهت مهلة طلب OpenRouter بعد ${Math.ceil(timeoutMs / 1000)} ثانية دون تحديث.`);
+    ? `لم يصل أول جزء من النص عبر المزود خلال ${Math.ceil(timeoutMs / 1000)} ثانية.`
+    : `انتهت مهلة طلب المزود بعد ${Math.ceil(timeoutMs / 1000)} ثانية دون تحديث.`);
   error.status = 504;
   error.statusCode = 504;
   return error;
 }
 
 async function request(options: any, model: string, stream: boolean, provider: { baseUrl?: string; apiKey?: string; name?: string } = {}): Promise<OpenRouterRequest> {
-  const apiKey = (provider.apiKey || process.env.OPENROUTER_API_KEY || '').trim();
-  const providerName = provider.name || 'OpenRouter';
+  const apiKey = String(provider.apiKey || '').trim();
+  const providerName = provider.name || 'AI provider';
   const endpoint = `${(provider.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/$/, '')}/chat/completions`;
   if (!apiKey) {
-    const error: any = new Error(provider.apiKey ? `مفتاح ${providerName} غير مضبوط.` : 'اتصال الذكاء الاصطناعي غير مضبوط. أضف OPENROUTER_API_KEY إلى متغيرات البيئة في Vercel.');
+    const error: any = new Error(`مفتاح ${providerName} غير مضبوط.`);
     error.statusCode = 503;
     throw error;
   }
@@ -215,7 +215,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
           const finishReason = data?.choices?.[0]?.finish_reason;
           const normalizedText = typeof text === 'string' ? text : Array.isArray(text) ? text.map((p: any) => p?.text || '').join('') : '';
           if (!normalizedText.trim()) {
-            const emptyError: any = new Error(`OpenRouter model ${timedOptions.model} returned no text (finish_reason: ${finishReason || 'UNKNOWN'}).`);
+            const emptyError: any = new Error(`${provider.name || 'AI provider'} model ${timedOptions.model} returned no text (finish_reason: ${finishReason || 'UNKNOWN'}).`);
             emptyError.status = 503;
             emptyError.statusCode = 503;
             throw emptyError;
@@ -237,7 +237,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
         const response = pending.response;
         if (!response.body) {
           pending.clearTimeout();
-          throw new Error('OpenRouter لم يُرجع تدفق استجابة.');
+          throw new Error('المزود لم يُرجع تدفق استجابة.');
         }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -295,7 +295,7 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
               }
             }
             if (!firstTextSeen && !pending.didTimeout()) {
-              const emptyError: any = new Error(`OpenRouter model ${timedOptions.model} closed its stream before returning text.`);
+              const emptyError: any = new Error(`${provider.name || 'AI provider'} model ${timedOptions.model} closed its stream before returning text.`);
               emptyError.status = 503;
               emptyError.statusCode = 503;
               throw emptyError;
