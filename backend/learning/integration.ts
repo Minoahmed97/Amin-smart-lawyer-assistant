@@ -3,9 +3,8 @@ import { formatApprovedMemoryContext } from './policy.ts';
 import type { LearningTaskType } from './types.ts';
 
 /**
- * Retrieves only lawyer-approved global professional memories for a live task.
- * Case-scoped memories are deliberately excluded until the active case reference
- * is explicitly connected to the task workflow.
+ * Retrieves lawyer-approved global memories and, only when explicitly selected,
+ * approved memories scoped to the active case.
  *
  * Learning storage is an additive aid: retrieval failure must not disable an
  * otherwise healthy legal AI task.
@@ -73,8 +72,7 @@ export async function getCaseHistoryInstruction(
   const ref = String(caseRef || '').trim();
   if (!ref) return '';
   try {
-    const { getCaseMemory } = await import('./store.ts');
-    const record = await getCaseMemory(userId, ref);
+        const record = await getCaseMemory(userId, ref);
     if (!record?.case_state || typeof record.case_state !== 'object') return '';
     const state = record.case_state as Record<string, any>;
     const analysis = state.archiveAnalysis && typeof state.archiveAnalysis === 'object'
