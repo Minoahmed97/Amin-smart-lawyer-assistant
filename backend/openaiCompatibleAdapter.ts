@@ -57,7 +57,7 @@ function buildPayload(options: any, model: string, stream: boolean) {
     // The provider requires a numeric cap; use the request's own limit when supplied.
     // Otherwise use a configurable ceiling, while the legal generator continues output
     // automatically when a model ends early. Providers/models may enforce lower limits.
-    max_tokens: Math.max(1024, Math.min(
+    max_completion_tokens: Math.max(1024, Math.min(
       typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : 16384,
       Number(process.env.GROQ_MAX_OUTPUT_TOKENS) > 0
         ? Math.min(32768, Number(process.env.GROQ_MAX_OUTPUT_TOKENS))
