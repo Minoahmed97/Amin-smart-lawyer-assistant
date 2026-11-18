@@ -331,6 +331,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       }
     } catch {}
     if (!jobId) return () => { active = false; };
+    setAnalysisCaseRef(activeLearningCaseRef);
     setIsLoading(true);
     setDraftError('');
     void resumeDraftCounterBrief(jobId, (chunk) => {
