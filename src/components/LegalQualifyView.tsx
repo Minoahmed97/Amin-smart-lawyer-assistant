@@ -1,6 +1,6 @@
 import { LearningCaseSelector } from './LearningCaseSelector.tsx';
 import React, { useState, useEffect, useRef } from 'react';
-import { qualifyLegalCase, resumeSavedAiTask } from '../services/aiService.ts';
+import { qualifyLegalCase, resumeSavedAiTask, recordLearningCorrection } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
@@ -112,6 +112,26 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
 
 
   const [qualifyError, setQualifyError] = useState<string>('');
+  const editBaselineRef = useRef('');
+  const toggleLiveEditing = () => {
+    if (!isLiveEditing) {
+      editBaselineRef.current = qualificationResult;
+      setIsLiveEditing(true);
+      return;
+    }
+    setIsLiveEditing(false);
+    const beforeText = editBaselineRef.current;
+    const afterText = qualificationResult;
+    editBaselineRef.current = '';
+    if (beforeText && afterText && beforeText !== afterText) {
+      void recordLearningCorrection({
+        taskType: 'qualify',
+        caseRef: activeLearningCaseRef,
+        beforeText,
+        afterText,
+      });
+    }
+  };
   const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
 
   useEffect(() => {
@@ -451,7 +471,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => setIsLiveEditing(!isLiveEditing)}
+                    onClick={toggleLiveEditing}
                     className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                       isLiveEditing ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-300 border border-slate-700'
                     }`}
