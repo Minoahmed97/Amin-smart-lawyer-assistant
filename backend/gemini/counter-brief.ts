@@ -45,6 +45,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let continuationCount = 0;
   let lastError: any = null;
   let previousPair = '';
+  let nextProviderAttempt: 'gemini-primary' | 'groq-fallback' | undefined;
+  let providerRetryCount = 0;
 
   const makeContinuationPrompt = () => accumulatedText
     ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
@@ -147,10 +149,24 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         }, undefined, undefined, false, {
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
+          ...(nextProviderAttempt ? { providerAttempt: nextProviderAttempt } : {}),
         });
       } catch (error: any) {
         segmentError = error;
         lastError = error;
+      }
+
+      // If Gemini stopped after emitting part of this segment, the next request
+      // must send the accumulated text to Groq as a continuation, not restart it.
+      // If Groq cannot produce a token, give the remaining Gemini pairs one retry.
+      if (segmentError && segmentBuffer.trim()) {
+        nextProviderAttempt = activePair.startsWith('groq::') ? 'gemini-primary' : 'groq-fallback';
+        providerRetryCount = 0;
+      } else if (segmentError && !segmentBuffer.trim() && nextProviderAttempt === 'groq-fallback' && providerRetryCount < 1) {
+        nextProviderAttempt = 'gemini-primary';
+        providerRetryCount += 1;
+        if (activePair) usedPairs.add(activePair);
+        continue;
       }
 
       if (activePair) usedPairs.add(activePair);
