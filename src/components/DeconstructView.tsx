@@ -8,7 +8,6 @@ import { StyleTemplate, DEFAULT_STYLE_TEMPLATES } from '../data/styleTemplates.t
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
-import { LearningDecisionCapture } from './LearningDecisionCapture.tsx';
 import {
   ShieldAlert,
   Loader2,
