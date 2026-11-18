@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
 import { recordLearningCorrection } from '../services/aiService.ts';
+import { LearningDecisionCapture } from './LearningDecisionCapture.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -394,5 +395,11 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, caseRef, 
       </div>
       <button type="submit" disabled={loading || !draft.trim()} className="rounded-xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-5 py-3 text-sm font-bold text-white">{loading ? 'جارٍ الرد...' : 'إرسال السؤال'}</button>
     </form>
+    <LearningDecisionCapture
+      taskType={taskType}
+      caseRef={caseRef}
+      analysisContext={[originalContext, result, ...messages.map((message) => `${message.role === 'user' ? 'قرار/تعليمات المحامي' : 'رد أمين'}: ${message.content}`)].join('\n\n').slice(0, 140000)}
+      heading="تسجيل قرارك المهني من واقع المناقشة مع أمين"
+    />
   </section>;
 };
