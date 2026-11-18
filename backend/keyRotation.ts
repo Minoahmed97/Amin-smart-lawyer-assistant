@@ -133,6 +133,13 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
   return 'other';
 }
 
+function isRetryableRotationFailure(err: any): boolean {
+  const status = Number(err?.status || err?.statusCode || err?.response?.status);
+  const message = String(err?.message || err?.error?.message || '').toLowerCase();
+  if (status === 408 || status === 504) return true;
+  return /network|fetch failed|connection reset|connection refused|socket|econn|timed out|timeout|aborted/.test(message);
+}
+
 const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
 let inMemoryDynamicKeys: string[] = [];
 
@@ -604,26 +611,37 @@ export async function executeWithKeyRotation<T>(
   let attemptedModelCount = 0;
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   const keyFailureKinds = new Map<string, string>();
-
+  const retryablePairs = new Set<string>();
   const startIdx = reserveStartIndex(keys.length, 'general');
+  const totalGeminiBudget = Math.max(0, deadlineAt - Date.now());
+  // Keep a small, explicit window for one retry pass; the rest remains available
+  // for the first pass and normal model response time.
+  const firstCycleDeadlineAt = deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
+
   for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
     if (cycle > 0) {
-      await new Promise((r) => setTimeout(r, 2000));
+      if (retryablePairs.size === 0 || Date.now() >= deadlineAt) break;
+      await new Promise((r) => setTimeout(r, Math.min(2000, Math.max(0, deadlineAt - Date.now()))));
     }
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length, cycle > 0);
+      const keyModels = cycle === 0
+        ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length)
+        : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
 
       for (let m = 0; m < keyModels.length; m++) {
+        const model = keyModels[m];
+        const pair = rotationPairKey(currentKey, model);
+        if (cycle > 0) retryablePairs.delete(pair);
         attemptedModelCount += 1;
-        const remainingMs = deadlineAt - Date.now();
-        if (remainingMs < 10000) {
+        const cycleDeadlineAt = cycle === 0 ? firstCycleDeadlineAt : deadlineAt;
+        const remainingMs = cycleDeadlineAt - Date.now();
+        if (remainingMs < 1000) {
           lastError = timeoutError();
           break geminiKeyLoop;
         }
-        const model = keyModels[m];
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(30000, remainingMs)));
         try {
           const result = await action(ai, currentKey, model);
@@ -634,6 +652,7 @@ export async function executeWithKeyRotation<T>(
           lastError = err;
           const kind = markRotationFailure(currentKey, model, err, 'general');
           keyFailureKinds.set(currentKey, kind);
+          if (cycle === 0 && isRetryableRotationFailure(err)) retryablePairs.add(pair);
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
           if (permanentlyInvalidKeys.has(currentKey)) break;
         }
@@ -749,24 +768,39 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  const retryablePairs = new Set<string>();
   let attemptedModelCount = 0;
   let lastGeminiError: any = null;
   let lastFailedModel = '';
   let lastFailedKeyIndex = 0;
   const startIdx = reserveStartIndex(keys.length, 'general');
+  const totalGeminiBudget = Math.max(0, deadlineAt - Date.now());
+  const firstCycleDeadlineAt = deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
+
   for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
-    if (cycle > 0) await new Promise((r) => setTimeout(r, 2000));
+    if (cycle > 0) {
+      if (retryablePairs.size === 0 || Date.now() >= deadlineAt) break;
+      await new Promise((r) => setTimeout(r, Math.min(2000, Math.max(0, deadlineAt - Date.now()))));
+    }
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length, cycle > 0);
+      const keyModels = cycle === 0
+        ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length)
+        : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
 
       for (let m = 0; m < keyModels.length; m++) {
+        const model = keyModels[m];
+        const pair = rotationPairKey(currentKey, model);
+        if (cycle > 0) retryablePairs.delete(pair);
+        const cycleDeadlineAt = cycle === 0 ? firstCycleDeadlineAt : deadlineAt;
+        const remainingMs = cycleDeadlineAt - Date.now();
+        if (remainingMs < 1000) break;
         attemptedModelCount += 1;
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, Math.max(1000, deadlineAt - Date.now()))));
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, Math.max(1000, remainingMs))));
         let emittedAnyChunk = false;
         try {
-          const stream = await action(ai, currentKey, keyModels[m]);
+          const stream = await action(ai, currentKey, model);
           for await (const chunk of stream) {
             const text = typeof chunk?.text === 'string' ? chunk.text : '';
             if (text) {
@@ -778,12 +812,13 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           return;
         } catch (err: any) {
           lastGeminiError = err;
-          lastFailedModel = keyModels[m];
+          lastFailedModel = model;
           lastFailedKeyIndex = currentKeyIndex + 1;
-          markRotationFailure(currentKey, keyModels[m], err, 'general');
+          markRotationFailure(currentKey, model, err, 'general');
+          if (cycle === 0 && !emittedAnyChunk && isRetryableRotationFailure(err)) retryablePairs.add(pair);
           console.warn('[Gemini stream attempt failed]', {
             provider: 'Gemini',
-            model: keyModels[m],
+            model,
             keyIndex: currentKeyIndex + 1,
             status: Number(err?.status || err?.statusCode || err?.response?.status) || null,
             message: safeDiagnosticMessage(err),
