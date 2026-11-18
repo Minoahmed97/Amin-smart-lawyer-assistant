@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
+import { recordLearningCorrection } from '../services/aiService.ts';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -290,7 +291,16 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, caseRef, 
       if (!answer) throw new Error('لم تصل إجابة صالحة. احتفظ بسؤالك وأعد المحاولة بعد قليل.');
       const updatedResult = typeof finalData?.updatedResult === 'string' ? finalData.updatedResult.replace(/^\s*(?:reply|response|answer)\s*[:：-]?\s*(?:\r?\n)?/i, '').trim() : '';
       if (!isRequestCurrent()) return;
-      if (updatedResult && updatedResult !== requestResult.trim()) onResultChange?.(updatedResult);
+      if (updatedResult && updatedResult !== requestResult.trim()) {
+        onResultChange?.(updatedResult);
+        void recordLearningCorrection({
+          taskType,
+          caseRef,
+          beforeText: requestResult,
+          afterText: updatedResult,
+          reason: question,
+        });
+      }
       setMessages((current) => [...current, { role: 'assistant', content: answer }]);
     } catch (err: any) {
       const statusCode = Number(err?.statusCode);
