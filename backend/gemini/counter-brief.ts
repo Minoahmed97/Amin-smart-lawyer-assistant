@@ -64,11 +64,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
       try {
         await executeWithKeyRotationStream(async (ai, key, model) => {
-          activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
-          activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-          const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-            ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-            : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+          activePair = key === 'groq' ? `groq::${model}` : `${key}::${model}`;
+          activePairLabel = `${key === 'groq' ? 'Groq' : 'Gemini'} / ${model}`;
+          const providerSearchEnabled = options.legalResearch && key !== 'groq' && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
 
           return (async function* () {
             let pendingMarkerTail = '';
@@ -210,9 +208,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-          ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-          : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+        const providerSearchEnabled = options.legalResearch && key !== 'groq' && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
