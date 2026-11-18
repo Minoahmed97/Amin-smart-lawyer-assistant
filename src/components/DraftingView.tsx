@@ -1182,7 +1182,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           </div>
         </div>
       </div>
-      {generatedBrief && <LegalFollowupChat taskType="draft" userId={userId} originalContext={JSON.stringify(formData)} result={generatedBrief} onResultChange={(nextResult) => { setGeneratedBrief(nextResult); persistentStorage.setItem('amin_judicial_draft_result', nextResult); }} />}
+      {generatedBrief && <LegalFollowupChat taskType="draft" userId={userId} caseRef={activeLearningCaseRef} originalContext={JSON.stringify(formData)} result={generatedBrief} onResultChange={(nextResult) => { setGeneratedBrief(nextResult); persistentStorage.setItem('amin_judicial_draft_result', nextResult); }} />}
     </div>
   );
 };
