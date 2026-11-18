@@ -69,7 +69,7 @@ Example correction payload:
 
 Then call `extract-event` with the returned event ID. The result is a proposed memory and remains excluded from retrieval until an explicit `review-memory` action approves it.
 
-The deconstruction screen can separately record the lawyer's explicit decision and reason after reviewing the analysis. The pending decision event is processed through the same extractor/review queue; case-linked decisions default to case-scoped proposals, and no proposal is automatically approved. The AI's suggested strategy is never recorded as the lawyer's decision unless the lawyer explicitly submits it.
+The deconstruction, drafting, qualification, and follow-up chat screens can record the lawyer's explicit decision and reason after reviewing the result or discussion. The pending decision event is processed through the same extractor/review queue; case-linked decisions default to case-scoped proposals, and no proposal is automatically approved. The AI's suggested strategy is never recorded as the lawyer's decision unless the lawyer explicitly submits it.
 
 
 ## Learning from a prior-case archive
