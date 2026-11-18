@@ -243,8 +243,9 @@ export async function analyzeLegalCaseArchive(
       const category = String(lesson?.category || '') as MemoryCategory;
       const title = cleanText(lesson?.title, 240);
       const content = cleanText(lesson?.content, 8000);
-      const supportingRefs = Array.isArray(lesson?.supportingCaseRefs)
-        ? [...new Set(lesson.supportingCaseRefs.map((value: unknown) => String(value)))].filter((ref: string) => analyzed.some((item) => item.caseRef === ref))
+      const supportingRefs: string[] = Array.isArray(lesson?.supportingCaseRefs)
+        ? Array.from(new Set<string>(lesson.supportingCaseRefs.map((value: unknown) => String(value))))
+            .filter((ref) => analyzed.some((item) => item.caseRef === ref))
         : [];
       const supportingItems = analyzed.filter((item) => supportingRefs.includes(item.caseRef));
       const supportingCaseCount = supportingItems.length;
