@@ -300,7 +300,7 @@ export const CaseArchiveLearningView: React.FC<{ userId: string }> = ({ userId }
 
       <div className="flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
         <p className="text-[10px] text-slate-400 leading-relaxed">
-          النصوص المستخرجة تُرسل إلى Gemini لتحليلها. تُحفظ المستندات الأصلية محليًا على هذا الجهاز، بينما تُحفظ خلاصة التحليل والخبرات في حسابك.
+          تُرسل النصوص المستخرجة إلى Gemini، ويُحفظ نص المستند والتحليل وسجلات التعلّم في قاعدة بيانات حسابك. الملفات الأصلية نفسها تظل محفوظة محليًا على هذا الجهاز.
         </p>
         <button type="button" onClick={() => void analyzeArchive()} disabled={isAnalyzing || !cases.length} className="shrink-0 rounded-xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-4 py-2.5 text-xs font-black text-white flex items-center justify-center gap-2">
           {isAnalyzing ? <><Loader2 className="w-4 h-4 animate-spin" /> أمين يدرس الأرشيف...</> : <><BookOpenCheck className="w-4 h-4" /> تحليل القضايا واستخلاص الخبرة</>}
