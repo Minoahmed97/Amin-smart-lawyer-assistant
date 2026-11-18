@@ -42,15 +42,7 @@ export async function recordLearningCorrection(input: {
       throw new Error(data?.error || 'تعذر تسجيل تصحيح المحامي.');
     }
 
-    // Extraction only creates a proposed memory; approval remains a separate lawyer action.
-    const extraction = await fetch('/api/learning/memory', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ action: 'extract-event', eventId: data.event.id }),
-    });
-    if (!extraction.ok) {
-      console.warn('The lawyer correction was saved, but automatic learning extraction is still pending.');
-    }
+    // The vault processes pending events serially when its review queue is opened.
   } catch (error) {
     // Learning is optional and must never interrupt editing or legal work.
     console.warn('The lawyer correction could not be added to learning memory:', error);
