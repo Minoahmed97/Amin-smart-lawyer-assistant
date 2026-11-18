@@ -30,7 +30,7 @@ import { saveLegalVaultOriginalFile, getLegalVaultOriginalFiles, downloadLegalVa
 interface LegalVaultViewProps {
   userId: string;
   onUseModelInDrafting?: (modelContent: string) => void;
-  onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'packages' | 'vault') => void;
+  onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
   onModelsCountChanged?: (count: number) => void;
 }
 
