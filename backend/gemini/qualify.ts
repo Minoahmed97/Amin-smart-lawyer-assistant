@@ -16,7 +16,7 @@ export default async function handler(req: any, res: any) {
         body = JSON.parse(body);
       } catch {}
     }
-    const { disputeDetails, clientGoals } = body || {};
+    const { disputeDetails, clientGoals, caseRef } = body || {};
 
     if (!disputeDetails || !disputeDetails.trim()) {
       return res.status(400).json({ error: 'يرجى تقديم تفاصيل النزاع.' });
@@ -24,7 +24,7 @@ export default async function handler(req: any, res: any) {
 
     rateLimit(req, 'gemini-qualify', 8, 10 * 60 * 1000);
     const { session } = await enforceAiCooldown(req);
-    const learningInstruction = await getApprovedLearningInstruction(session.userId, 'qualify');
+    const learningInstruction = await getApprovedLearningInstruction(session.userId, 'qualify', caseRef);
 
     limitBodyString(disputeDetails, 150000, 'تفاصيل النزاع');
     limitBodyString(clientGoals, 10000, 'الهدف');
