@@ -13,13 +13,12 @@ import type { LearningTaskType } from './types.ts';
 export async function getApprovedLearningInstruction(
   userId: string,
   taskType: LearningTaskType,
+  caseRef?: string | null,
 ): Promise<string> {
   try {
-    const memories = await listApprovedProfessionalMemories(userId, 120);
-    const globalMemories = memories.filter((memory) =>
-      memory.scope === 'global' && memory.status === 'approved'
-    );
-    const context = formatApprovedMemoryContext(globalMemories, {
+    const memories = await listApprovedProfessionalMemories(userId, 200, caseRef);
+    const context = formatApprovedMemoryContext(memories, {
+      caseRef,
       taskType,
       maxCharacters: 9000,
     });
