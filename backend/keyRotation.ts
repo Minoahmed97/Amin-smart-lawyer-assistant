@@ -697,7 +697,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       }, preferredModels, _ignoredClientFallbackKey, false, {
         ...executionOptions,
         deadlineAt,
-        providerAttempt: 'openrouter-fallback',
+        providerAttempt: 'groq-fallback',
         previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
       });
       return;
