@@ -38,7 +38,6 @@ import { getLegalDocTemplates, LegalDocTemplate } from '../utils/legalTemplateSe
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
-import { LearningDecisionCapture } from './LearningDecisionCapture.tsx';
 
 const sanitizeDraftJobUserId = (value: string | null | undefined): string =>
   String(value || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -300,13 +299,14 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     if (beforeText && afterText && beforeText !== afterText) {
       void recordLearningCorrection({
         taskType: 'draft',
-        caseRef: activeLearningCaseRef,
+        caseRef: analysisCaseRef,
         beforeText,
         afterText,
       });
     }
   };
   const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
+  const [analysisCaseRef, setAnalysisCaseRef] = useState<string>('');
 
   // Recover an in-flight server-side job after refresh, app backgrounding, or reopening.
   useEffect(() => {
@@ -363,6 +363,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
     const operationId = ++resultOperationRef.current;
     setIsLoading(true);
+    setAnalysisCaseRef(activeLearningCaseRef);
     setRefineNote('');
     setDraftError('');
     setGeneratedBrief('');
@@ -1204,8 +1205,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           </div>
         </div>
       </div>
-      {generatedBrief && <LearningDecisionCapture taskType="draft" caseRef={activeLearningCaseRef} analysisContext={generatedBrief} />}
-      {generatedBrief && <LegalFollowupChat taskType="draft" userId={userId} caseRef={activeLearningCaseRef} originalContext={JSON.stringify(formData)} result={generatedBrief} onResultChange={(nextResult) => { setGeneratedBrief(nextResult); persistentStorage.setItem('amin_judicial_draft_result', nextResult); }} />}
+      {generatedBrief && <LegalFollowupChat taskType="draft" userId={userId} caseRef={analysisCaseRef || activeLearningCaseRef} originalContext={JSON.stringify(formData)} result={generatedBrief} onResultChange={(nextResult) => { setGeneratedBrief(nextResult); persistentStorage.setItem('amin_judicial_draft_result', nextResult); }} />}
     </div>
   );
 };
