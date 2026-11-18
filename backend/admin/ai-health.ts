@@ -61,9 +61,9 @@ async function testGeminiGeneration() {
   const maxGenerationAttempts = 4;
   const preferredModelNames = [
     'models/gemini-3.8-flash',
+    'models/gemini-3.5-flash-lite',
     'models/gemini-3.6-flash',
     'models/gemini-3.5-flash',
-    'models/gemini-3.5-flash-lite',
   ];
 
   for (const key of keys.slice(0, 3)) {
