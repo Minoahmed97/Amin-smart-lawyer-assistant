@@ -150,11 +150,30 @@ export async function markLearningEventProcessed(
   return requireReturnedRow<LearningEventRecord>(rows, 'سجل التعلم غير موجود أو سبق مراجعته.');
 }
 
+async function assertSourceEventsBelongToUser(userId: string, eventIds: string[]): Promise<void> {
+  if (!eventIds.length) return;
+  const uniqueIds = [...new Set(eventIds)];
+  const query = queryString({
+    select: 'id',
+    user_id: 'eq.' + userId,
+    id: 'in.(' + uniqueIds.join(',') + ')',
+  });
+  const rows = await supabaseRequest<Array<{ id: string }>>('amin_learning_events?' + query);
+  if (!Array.isArray(rows) || rows.length !== uniqueIds.length) {
+    const error: any = new Error('بعض سجلات التعلم المرتبطة غير موجودة ضمن حسابك.');
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
 export async function createProfessionalMemoryCandidate(
   userIdInput: string,
   input: ProfessionalMemoryInput,
 ): Promise<ProfessionalMemoryRecord> {
   const userId = assertUserId(userIdInput);
+  const sourceEventIds = input.sourceEventIds || [];
+  await assertSourceEventsBelongToUser(userId, sourceEventIds);
+
   const payload = {
     user_id: userId,
     scope: input.scope,
@@ -164,7 +183,7 @@ export async function createProfessionalMemoryCandidate(
     content: input.content,
     conditions: input.conditions || {},
     exceptions: input.exceptions || {},
-    source_event_ids: input.sourceEventIds || [],
+    source_event_ids: sourceEventIds,
     confidence: Number.isFinite(input.confidence) ? Math.max(0, Math.min(1, Number(input.confidence))) : 0.5,
     status: 'proposed',
   };
@@ -206,6 +225,22 @@ export async function reviewProfessionalMemory(
     },
   );
   return requireReturnedRow<ProfessionalMemoryRecord>(rows, 'مقترح الخبرة غير موجود أو سبق مراجعته.');
+}
+
+export async function listProposedProfessionalMemories(
+  userIdInput: string,
+  limit = 50,
+): Promise<ProfessionalMemoryRecord[]> {
+  const userId = assertUserId(userIdInput);
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const query = queryString({
+    select: '*',
+    user_id: 'eq.' + userId,
+    status: 'eq.proposed',
+    order: 'created_at.desc',
+    limit: String(safeLimit),
+  });
+  return await supabaseRequest<ProfessionalMemoryRecord[]>('amin_professional_memories?' + query);
 }
 
 export async function listApprovedProfessionalMemories(
