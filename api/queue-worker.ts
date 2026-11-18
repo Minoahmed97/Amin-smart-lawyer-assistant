@@ -1,9 +1,10 @@
-import { handleCallback } from '@vercel/queue';
+import { QueueClient } from '@vercel/queue';
 import { runDurableQueuedJob } from '../backend/gemini/jobs.ts';
 
 export const config = { api: { bodyParser: false } };
 
-const queueCallback = handleCallback(async (message: any) => {
+const queue = new QueueClient();
+const queueCallback = queue.handleNodeCallback(async (message: any) => {
   const jobId = String(message?.jobId || '').trim();
   if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
     throw new Error('Invalid AI job identifier in durable queue message.');
@@ -11,36 +12,18 @@ const queueCallback = handleCallback(async (message: any) => {
   await runDurableQueuedJob(jobId);
 });
 
-// Adapt the Node request used by Vercel's api/*.ts functions to the Web Request
-// expected by handleCallback.
+// Use the SDK's native Node.js callback for Vercel's api/*.ts runtime.
+// The raw CloudEvent body is buffered because bodyParser is intentionally disabled.
 export default async function handler(req: any, res: any) {
   try {
-    const headers = new Headers();
-    for (const [name, rawValue] of Object.entries(req.headers || {})) {
-      if (rawValue === undefined || rawValue === null) continue;
-      headers.set(name, Array.isArray(rawValue) ? rawValue.join(', ') : String(rawValue));
-    }
-
-    const host = String(req.headers?.host || 'localhost');
-    const requestUrl = new URL(String(req.url || '/api/queue-worker'), `https://${host}`);
-    const method = String(req.method || 'POST').toUpperCase();
-    const chunks: Uint8Array[] = [];
-    if (method !== 'GET' && method !== 'HEAD') {
+    if (req.body === undefined) {
+      const chunks: Buffer[] = [];
       for await (const chunk of req) {
-        chunks.push(chunk instanceof Uint8Array ? chunk : Buffer.from(chunk));
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
+      req.body = Buffer.concat(chunks);
     }
-    const body = chunks.length ? Buffer.concat(chunks) : undefined;
-    const webRequest = new Request(requestUrl, {
-      method,
-      headers,
-      ...(body ? { body } : {}),
-    });
-
-    const response = await queueCallback(webRequest);
-    res.statusCode = response.status;
-    response.headers.forEach((value, name) => res.setHeader(name, value));
-    res.end(await response.text());
+    await queueCallback(req, res);
   } catch (error: any) {
     console.error('Durable queue callback failed:', error?.message || error);
     if (!res.headersSent) {
