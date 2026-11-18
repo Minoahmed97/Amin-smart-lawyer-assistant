@@ -14,6 +14,48 @@ async function throttleRequests(): Promise<void> {
   lastRequestTimestamp = Date.now();
 }
 
+export async function recordLearningCorrection(input: {
+  taskType: 'deconstruct' | 'qualify' | 'draft';
+  caseRef?: string;
+  beforeText: string;
+  afterText: string;
+}): Promise<void> {
+  if (!input.beforeText.trim() || !input.afterText.trim() || input.beforeText === input.afterText) return;
+  try {
+    const headers = getRequestHeaders();
+    const response = await fetch('/api/learning/memory', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        action: 'record-correction',
+        taskType: input.taskType,
+        caseRef: input.caseRef || '',
+        beforeText: input.beforeText,
+        afterText: input.afterText,
+        reason: '',
+        context: { source: 'lawyer-direct-editor' },
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.event?.id) {
+      throw new Error(data?.error || 'تعذر تسجيل تصحيح المحامي.');
+    }
+
+    // Extraction only creates a proposed memory; approval remains a separate lawyer action.
+    const extraction = await fetch('/api/learning/memory', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'extract-event', eventId: data.event.id }),
+    });
+    if (!extraction.ok) {
+      console.warn('The lawyer correction was saved, but automatic learning extraction is still pending.');
+    }
+  } catch (error) {
+    // Learning is optional and must never interrupt editing or legal work.
+    console.warn('The lawyer correction could not be added to learning memory:', error);
+  }
+}
+
 export function getRequestHeaders(): Record<string, string> {
   // Gemini credentials stay exclusively on the central server.
   // The AI endpoints require the user's existing central session token.
