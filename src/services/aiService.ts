@@ -634,7 +634,7 @@ async function callDirectGeminiApi(_prompt: string, _systemInstruction = EGYPTIA
   throw new Error('تعذر الاتصال بالخادم المركزي للذكاء الاصطناعي.');
 }
 
-export async function deconstructBrief( params: { opponentBriefText: string; courtType?: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
+export async function deconstructBrief( params: { opponentBriefText: string; courtType?: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; userId?: string; caseRef?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: params.courtType,
@@ -650,6 +650,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
     ourPosition: params.ourPosition || '',
     additionalFacts: params.additionalFacts || '',
     vaultContext: lawyerVaultContext,
+    caseRef: params.caseRef || '',
   };
 
   try {
@@ -660,7 +661,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   }
 }
 
-export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
+export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; userId?: string; caseRef?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const effectiveWorkType =
     params.customJudicialWorkType?.trim()
@@ -680,6 +681,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
       ...requestParams,
       effectiveWorkType,
       vaultContext: lawyerVaultContext,
+      caseRef: params.caseRef || '',
     }, onChunk, params.userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
@@ -687,7 +689,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
   }
 }
 
-export async function qualifyLegalCase( disputeDetails: string, clientGoals?: string, onChunk?: (text: string) => void, userId?: string ): Promise<string> {
+export async function qualifyLegalCase( disputeDetails: string, clientGoals?: string, onChunk?: (text: string) => void, userId?: string, caseRef?: string ): Promise<string> {
   await throttleRequests();
 
   try {
@@ -696,6 +698,7 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
     const result = await requestSavedJob('qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
+      caseRef: caseRef || '',
     }, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
