@@ -12,6 +12,7 @@ import {
   saveCaseMemory,
 } from './store.ts';
 import { formatApprovedMemoryContext } from './policy.ts';
+import { extractLearningFromEvent } from './extractor.ts';
 import {
   LEARNING_MEMORY_CATEGORIES,
   LEARNING_TASK_TYPES,
@@ -156,6 +157,12 @@ export default async function handler(req: any, res: any) {
         confidence: Number.isFinite(Number(body.confidence)) ? Number(body.confidence) : 0.5,
       });
       return res.status(201).json({ ok: true, memory });
+    }
+
+    if (action === 'extract-event') {
+      const eventId = validateMemoryId(body.eventId);
+      const result = await extractLearningFromEvent(session.userId, eventId);
+      return res.status(200).json({ ok: true, ...result });
     }
 
     if (action === 'review-memory') {
