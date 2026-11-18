@@ -1,3 +1,4 @@
+import { LearningCaseSelector } from './LearningCaseSelector.tsx';
 import React, { useState, useEffect, useRef } from 'react';
 import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
@@ -132,6 +133,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   };
 
   const [deconstructError, setDeconstructError] = useState<string>('');
+  const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
 
   // استرجاع مهمة ذكاء اصطناعي محفوظة مسبقاً إذا تم إعادة فتح الواجهة
   useEffect(() => {
@@ -184,6 +186,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
         ourPosition,
         additionalFacts,
         userId,
+        caseRef: activeLearningCaseRef,
       }, (chunk) => {
         if (operationId === resultOperationRef.current) setAnalysisResult((current) => current + chunk);
       });
@@ -328,6 +331,8 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
           </div>
         </div>
       </div>
+
+      <LearningCaseSelector userId={userId} value={activeLearningCaseRef} onChange={setActiveLearningCaseRef} />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
         {/* Input Panel (5 cols) */}
