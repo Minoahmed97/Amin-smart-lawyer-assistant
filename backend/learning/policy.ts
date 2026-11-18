@@ -44,7 +44,7 @@ export function buildLearningExtractionPrompt(event: LearningEventRecord): strin
     (isManualDecision ? 'سبب القرار الذي ذكره المحامي: ' : 'سبب التصحيح الذي ذكره المحامي: ') + (reason || 'لم يذكر سبباً صريحاً'),
     'السياق المقدم: ' + context,
     '',
-    'النص قبل التصحيح:',
+    isManualDecision ? 'سياق التحليل الذي راجعه المحامي:' : 'النص قبل التصحيح:',
     beforeText,
     '',
     isManualDecision ? 'القرار المهني الصريح الذي اتخذه المحامي:' : 'النص بعد تصحيح المحامي:',
