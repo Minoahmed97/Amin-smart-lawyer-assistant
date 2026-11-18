@@ -118,6 +118,10 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setOurPosition('');
     setAdditionalFacts('');
     setAnalysisResult('');
+    setAnalysisCaseRef('');
+    setLawyerDecision('');
+    setLawyerDecisionReason('');
+    setDecisionSaveState('idle');
     setUploadedDocName('');
     persistentStorage.removeItem('judicial_deconstruct_brief');
     persistentStorage.removeItem('judicial_deconstruct_worktype');
@@ -154,6 +158,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     }
   };
   const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
+  const [analysisCaseRef, setAnalysisCaseRef] = useState<string>('');
   const [lawyerDecision, setLawyerDecision] = useState('');
   const [lawyerDecisionReason, setLawyerDecisionReason] = useState('');
   const [decisionSaveState, setDecisionSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -163,7 +168,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setDecisionSaveState('saving');
     const saved = await recordLearningDecision({
       taskType: 'deconstruct',
-      caseRef: activeLearningCaseRef,
+      caseRef: analysisCaseRef,
       analysisContext: analysisResult,
       decision: lawyerDecision,
       reason: lawyerDecisionReason,
@@ -217,6 +222,10 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setIsLoading(true);
     setDeconstructError('');
     setAnalysisResult('');
+    setAnalysisCaseRef(activeLearningCaseRef);
+    setLawyerDecision('');
+    setLawyerDecisionReason('');
+    setDecisionSaveState('idle');
     try {
       const result = await deconstructBrief({
         opponentBriefText,
