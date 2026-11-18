@@ -763,7 +763,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
       for (let m = 0; m < keyModels.length; m++) {
         attemptedModelCount += 1;
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, Math.max(1000, deadlineAt - Date.now()))));
         let emittedAnyChunk = false;
         try {
           const stream = await action(ai, currentKey, keyModels[m]);
