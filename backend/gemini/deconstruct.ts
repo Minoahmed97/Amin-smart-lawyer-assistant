@@ -24,6 +24,7 @@ export default async function handler(req: any, res: any) {
       ourPosition,
       additionalFacts,
       vaultContext,
+      caseRef,
     } = body || {};
 
     if (!opponentBriefText || !opponentBriefText.trim()) {
@@ -32,7 +33,7 @@ export default async function handler(req: any, res: any) {
 
     rateLimit(req, 'gemini-deconstruct', 8, 10 * 60 * 1000);
     const { session } = await enforceAiCooldown(req);
-    const learningInstruction = await getApprovedLearningInstruction(session.userId, 'deconstruct');
+    const learningInstruction = await getApprovedLearningInstruction(session.userId, 'deconstruct', caseRef);
 
     limitBodyString(opponentBriefText, 200000, 'مذكرة الخصم');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
