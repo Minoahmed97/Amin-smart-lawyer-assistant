@@ -3,8 +3,9 @@ import { BookOpenCheck, BrainCircuit, CheckCircle2, Loader2, Plus, RefreshCw, Sh
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { getFileBatchItems } from '../utils/fileBatchStorage.ts';
 import { getRequestHeaders } from '../services/aiService.ts';
+import { getAllLawModels, type LawModelItem } from '../utils/legalVaultService.ts';
 
-type ArchiveCaseMeta = { id: string; title: string };
+type ArchiveCaseMeta = { id: string; title: string; modelIds?: string[] };
 type LearningProposal = {
   id: string;
   title: string;
@@ -49,6 +50,8 @@ export const CaseArchiveLearningView: React.FC<{ userId: string }> = ({ userId }
   const [error, setError] = useState('');
   const [resultNote, setResultNote] = useState('');
   const [proposals, setProposals] = useState<LearningProposal[]>([]);
+  const [vaultModels, setVaultModels] = useState<LawModelItem[]>(() => getAllLawModels(userId));
+  const [selectedVaultModelId, setSelectedVaultModelId] = useState('');
   const [analysisSummary, setAnalysisSummary] = useState<Array<{ title: string; summary: string; proposals: number }>>([]);
   const [globalProposalCount, setGlobalProposalCount] = useState(0);
 
@@ -57,6 +60,10 @@ export const CaseArchiveLearningView: React.FC<{ userId: string }> = ({ userId }
   useEffect(() => {
     try { localStorage.setItem(caseStorageKey(userId), JSON.stringify(cases)); } catch {}
   }, [cases, userId]);
+
+  useEffect(() => {
+    setVaultModels(getAllLawModels(userId));
+  }, [userId]);
 
   useEffect(() => {
     if (!activeCase) {
@@ -103,12 +110,27 @@ export const CaseArchiveLearningView: React.FC<{ userId: string }> = ({ userId }
       setError('يمكن تجهيز 8 قضايا كحد أقصى في هذه المجموعة.');
       return;
     }
-    const next = { id: createCaseId(), title: newCaseTitle.trim() || `قضية سابقة ${cases.length + 1}` };
+    const next = { id: createCaseId(), title: newCaseTitle.trim() || `قضية سابقة ${cases.length + 1}`, modelIds: [] as string[] };
     setCases((previous) => [...previous, next]);
     setActiveCaseId(next.id);
     setNewCaseTitle('');
     setDocuments([]);
     setError('');
+  };
+
+  const attachVaultModel = () => {
+    if (!activeCase || !selectedVaultModelId) return;
+    setCases((previous) => previous.map((item) => item.id === activeCase.id
+      ? { ...item, modelIds: [...new Set([...(item.modelIds || []), selectedVaultModelId])] }
+      : item));
+    setSelectedVaultModelId('');
+  };
+
+  const detachVaultModel = (modelId: string) => {
+    if (!activeCase) return;
+    setCases((previous) => previous.map((item) => item.id === activeCase.id
+      ? { ...item, modelIds: (item.modelIds || []).filter((id) => id !== modelId) }
+      : item));
   };
 
   const refreshActiveDocuments = async () => {
@@ -133,7 +155,14 @@ export const CaseArchiveLearningView: React.FC<{ userId: string }> = ({ userId }
         const extracted = rows
           .filter((row) => row.status === 'completed' && Boolean(row.extractedText?.trim()))
           .map((row) => ({ name: row.fileName, type: row.mimeType || 'غير محدد', text: String(row.extractedText || '') }));
+        const savedModels = vaultModels.filter((model) => (item.modelIds || []).includes(model.id));
+        extracted.push(...savedModels.map((model) => ({
+          name: model.title || model.fileName || 'نموذج محفوظ بالخزينة',
+          type: model.judicialWorkType || model.category || 'نموذج سابق',
+          text: String(model.content || ''),
+        })).filter((document) => document.text.trim()));
         if (!extracted.length) continue;
+        if (extracted.length > 30) throw new Error('تحتوي إحدى القضايا على أكثر من 30 مستندًا. قلّل المستندات المضافة لهذه القضية.');
         totalChars += extracted.reduce((sum, document) => sum + document.text.length, 0);
         if (totalChars > 500000) throw new Error('إجمالي النصوص تجاوز 500 ألف حرف. قسّم الأرشيف إلى مجموعات أصغر.');
         preparedCases.push({ caseRef: item.id, title: item.title, documents: extracted });
@@ -227,6 +256,28 @@ export const CaseArchiveLearningView: React.FC<{ userId: string }> = ({ userId }
                 <h4 className="text-xs font-bold text-white">مستندات: {activeCase.title}</h4>
                 <span className="text-[10px] text-slate-400">{documents.length} مستندات مكتملة الاستخراج</span>
               </div>
+              {vaultModels.length > 0 && (
+                <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-2 space-y-2">
+                  <label className="block text-[10px] font-bold text-slate-300">إضافة مذكرات ونماذج محفوظة بالفعل في الخزينة إلى هذه القضية:</label>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <select value={selectedVaultModelId} onChange={(event) => setSelectedVaultModelId(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-white">
+                      <option value="">اختر مستندًا محفوظًا</option>
+                      {vaultModels.map((model) => <option key={model.id} value={model.id}>{model.title}</option>)}
+                    </select>
+                    <button type="button" onClick={attachVaultModel} disabled={!selectedVaultModelId || (activeCase.modelIds || []).includes(selectedVaultModelId)} className="rounded-lg border border-emerald-700 px-3 py-2 text-[10px] font-bold text-emerald-200 disabled:opacity-50">إضافة للقضية</button>
+                  </div>
+                  {(activeCase.modelIds || []).length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {vaultModels.filter((model) => (activeCase.modelIds || []).includes(model.id)).map((model) => (
+                        <span key={model.id} className="inline-flex items-center gap-1 rounded-md border border-emerald-800 bg-emerald-950/50 px-2 py-1 text-[10px] text-emerald-200">
+                          {model.title}
+                          <button type="button" onClick={() => detachVaultModel(model.id)} aria-label="إزالة المستند من القضية"><XCircle className="h-3 w-3" /></button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <FileUploadZone
                 userId={userId}
                 recoveryScope={archiveScope(activeCase.id)}
