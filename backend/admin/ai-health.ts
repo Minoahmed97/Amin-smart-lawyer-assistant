@@ -1,6 +1,6 @@
 import { requireAdmin } from '../auth.ts';
 import { getVercelGeminiKeys, testGeminiKey } from '../keyRotation.ts';
-import { fetchServerCloudGeminiKeys } from '../supabaseSync.ts';
+import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGroqFallbackConfig } from '../supabaseSync.ts';
 
 function shortError(value: unknown): string {
   return String(value || 'سبب غير معروف').replace(/\s+/g, ' ').slice(0, 240);
@@ -12,8 +12,10 @@ function maskKey(key: string): string {
 }
 
 async function testGroqGeneration() {
-  const apiKey = String(process.env.GROQ_API_KEY || '').trim();
-  if (!apiKey) return { configured: false, ok: false, latencyMs: 0, message: 'احتياطي Groq غير مضبوط؛ أضف GROQ_API_KEY إلى متغيرات Vercel.' };
+  let stored: any = null;
+  try { stored = await fetchServerCloudOCRGroqFallbackConfig(); } catch {}
+  const apiKey = String((stored?.enabled && stored?.apiKey) || process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) return { configured: false, ok: false, latencyMs: 0, message: 'احتياطي Groq غير مضبوط؛ فعّل إعداد Groq الموجود في إعدادات OCR أو أضف GROQ_API_KEY إلى متغيرات Vercel.' };
   const startedAt = Date.now();
   const model = String(process.env.GROQ_MODEL || 'openai/gpt-oss-120b').trim();
   try {
@@ -162,7 +164,9 @@ export default async function handler(req: any, res: any) {
     requireAdmin(req);
     const verifyMetadataRequested = req.method === 'POST' || String(req.headers?.['x-ai-health-check'] || '') === 'metadata' || String(req.query?.verify || '') === '1';
     if (req.method === 'GET' && !verifyMetadataRequested) {
-      const groqConfigured = Boolean(process.env.GROQ_API_KEY?.trim());
+      let storedGroq: any = null;
+      try { storedGroq = await fetchServerCloudOCRGroqFallbackConfig(); } catch {}
+      const groqConfigured = Boolean((storedGroq?.enabled && storedGroq?.apiKey) || process.env.GROQ_API_KEY?.trim());
       let geminiKeys = getVercelGeminiKeys();
       let cloudKeysReadable = true;
       try {
@@ -184,7 +188,9 @@ export default async function handler(req: any, res: any) {
 
     if (req.method === 'GET' || req.method === 'POST') {
       const startedAt = Date.now();
-      const groqConfigured = Boolean(process.env.GROQ_API_KEY?.trim());
+      let storedGroq: any = null;
+      try { storedGroq = await fetchServerCloudOCRGroqFallbackConfig(); } catch {}
+      const groqConfigured = Boolean((storedGroq?.enabled && storedGroq?.apiKey) || process.env.GROQ_API_KEY?.trim());
       let geminiKeys = getVercelGeminiKeys();
       let cloudKeysReadable = true;
       try {
