@@ -104,12 +104,12 @@ function reserveStartIndex(count: number, pool: 'general' | 'ocr'): number {
   return start;
 }
 
-function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, maxModels = MAX_MODELS_PER_KEY_PER_REQUEST, ): string[] {
+function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, maxModels = MAX_MODELS_PER_KEY_PER_REQUEST, retryCoolingPairs = false, ): string[] {
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
   const available = models.filter((model) =>
-    !isCooling(modelCooldowns, model, now) &&
-    !isCooling(pairCooldowns, rotationPairKey(key, model), now) &&
+    (retryCoolingPairs || !isCooling(modelCooldowns, model, now)) &&
+    (retryCoolingPairs || !isCooling(pairCooldowns, rotationPairKey(key, model), now)) &&
     !avoidPairs?.has(`${key}::${model}`)
   );
   return available.slice(0, Math.max(0, maxModels));
@@ -614,7 +614,7 @@ export async function executeWithKeyRotation<T>(
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length);
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length, cycle > 0);
 
       for (let m = 0; m < keyModels.length; m++) {
         attemptedModelCount += 1;
@@ -759,7 +759,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length);
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length, cycle > 0);
 
       for (let m = 0; m < keyModels.length; m++) {
         attemptedModelCount += 1;
