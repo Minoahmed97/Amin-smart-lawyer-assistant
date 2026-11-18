@@ -19,6 +19,7 @@ export async function recordLearningCorrection(input: {
   caseRef?: string;
   beforeText: string;
   afterText: string;
+  reason?: string;
 }): Promise<void> {
   if (!input.beforeText.trim() || !input.afterText.trim() || input.beforeText === input.afterText) return;
   try {
@@ -32,8 +33,8 @@ export async function recordLearningCorrection(input: {
         caseRef: input.caseRef || '',
         beforeText: input.beforeText,
         afterText: input.afterText,
-        reason: '',
-        context: { source: 'lawyer-direct-editor' },
+        reason: String(input.reason || '').slice(0, 8000),
+        context: { source: input.reason ? 'lawyer-chat-directed-edit' : 'lawyer-direct-editor' },
       }),
     });
     const data = await response.json().catch(() => ({}));
