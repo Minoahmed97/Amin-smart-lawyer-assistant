@@ -5,6 +5,7 @@ import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import {
   refineDraftText,
+  recordLearningCorrection,
   draftCounterBrief,
   resumeDraftCounterBrief,
 } from '../services/aiService.ts';
@@ -284,6 +285,26 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   };
 
   const [draftError, setDraftError] = useState<string>('');
+  const editBaselineRef = useRef('');
+  const toggleLiveEditing = () => {
+    if (!isLiveEditing) {
+      editBaselineRef.current = generatedBrief;
+      setIsLiveEditing(true);
+      return;
+    }
+    setIsLiveEditing(false);
+    const beforeText = editBaselineRef.current;
+    const afterText = generatedBrief;
+    editBaselineRef.current = '';
+    if (beforeText && afterText && beforeText !== afterText) {
+      void recordLearningCorrection({
+        taskType: 'draft',
+        caseRef: activeLearningCaseRef,
+        beforeText,
+        afterText,
+      });
+    }
+  };
   const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
 
   // Recover an in-flight server-side job after refresh, app backgrounding, or reopening.
@@ -1045,7 +1066,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => setIsLiveEditing(!isLiveEditing)}
+                    onClick={toggleLiveEditing}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
                       isLiveEditing
                         ? 'bg-amber-600 text-white shadow'
