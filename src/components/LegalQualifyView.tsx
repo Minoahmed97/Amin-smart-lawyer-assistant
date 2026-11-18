@@ -5,6 +5,7 @@ import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
+import { LearningDecisionCapture } from './LearningDecisionCapture.tsx';
 import {
   Compass,
   Scale,
@@ -605,6 +606,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
           </div>
         </div>
       </div>
+      {qualificationResult && <LearningDecisionCapture taskType="qualify" caseRef={activeLearningCaseRef} analysisContext={qualificationResult} />}
       {qualificationResult && <LegalFollowupChat taskType="qualify" userId={userId} caseRef={activeLearningCaseRef} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} onResultChange={(nextResult) => { setQualificationResult(nextResult); persistentStorage.setItem('judicial_qualify_result', nextResult); }} />}
     </div>
   );
