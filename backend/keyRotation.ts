@@ -54,6 +54,7 @@ const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
 const MAX_MODELS_PER_KEY_PER_REQUEST = 3;
+const GENERAL_MAX_ROTATION_CYCLES = 2;
 
 function rotationPairKey(key: string, model: string): string {
   return `${key}:${model}`;
@@ -103,7 +104,7 @@ function reserveStartIndex(count: number, pool: 'general' | 'ocr'): number {
   return start;
 }
 
-function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, ): string[] {
+function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, maxModels = MAX_MODELS_PER_KEY_PER_REQUEST, ): string[] {
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
   const available = models.filter((model) =>
@@ -111,7 +112,7 @@ function selectModelsForKey( models: string[], key: string, pool: 'general' | 'o
     !isCooling(pairCooldowns, rotationPairKey(key, model), now) &&
     !avoidPairs?.has(`${key}::${model}`)
   );
-  return available.slice(0, MAX_MODELS_PER_KEY_PER_REQUEST);
+  return available.slice(0, Math.max(0, maxModels));
 }
 
 function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
@@ -599,23 +600,21 @@ export async function executeWithKeyRotation<T>(
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
 
-  const MAX_ROTATION_CYCLES = 1;
   let lastError: any = null;
   let attemptedModelCount = 0;
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   const keyFailureKinds = new Map<string, string>();
 
-  for (let cycle = 0; cycle < MAX_ROTATION_CYCLES; cycle++) {
+  const startIdx = reserveStartIndex(keys.length, 'general');
+  for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
     if (cycle > 0) {
       await new Promise((r) => setTimeout(r, 2000));
     }
-
-    const startIdx = reserveStartIndex(keys.length, 'general');
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length);
 
       for (let m = 0; m < keyModels.length; m++) {
         attemptedModelCount += 1;
@@ -754,12 +753,13 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   let lastGeminiError: any = null;
   let lastFailedModel = '';
   let lastFailedKeyIndex = 0;
-  for (let cycle = 0; cycle < 1; cycle++) {
-    const startIdx = reserveStartIndex(keys.length, 'general');
+  const startIdx = reserveStartIndex(keys.length, 'general');
+  for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
+    if (cycle > 0) await new Promise((r) => setTimeout(r, 2000));
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length);
 
       for (let m = 0; m < keyModels.length; m++) {
         attemptedModelCount += 1;
