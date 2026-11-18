@@ -49,6 +49,37 @@ export async function recordLearningCorrection(input: {
   }
 }
 
+export async function recordLearningDecision(input: {
+  taskType: 'deconstruct';
+  caseRef?: string;
+  analysisContext: string;
+  decision: string;
+  reason: string;
+}): Promise<boolean> {
+  if (!input.analysisContext.trim() || !input.decision.trim() || !input.reason.trim()) return false;
+  try {
+    const response = await fetch('/api/learning/memory', {
+      method: 'POST',
+      headers: getRequestHeaders(),
+      body: JSON.stringify({
+        action: 'record-decision',
+        taskType: input.taskType,
+        caseRef: input.caseRef || '',
+        beforeText: input.analysisContext.slice(0, 140000),
+        decision: input.decision.slice(0, 8000),
+        reason: input.reason.slice(0, 8000),
+        context: { source: 'lawyer-explicit-strategy-decision', decisionStage: 'deconstruction-review' },
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.event?.id) throw new Error(data?.error || 'تعذر تسجيل قرار المحامي.');
+    return true;
+  } catch (error) {
+    console.warn('The lawyer decision could not be added to learning memory:', error);
+    return false;
+  }
+}
+
 export function getRequestHeaders(): Record<string, string> {
   // Gemini credentials stay exclusively on the central server.
   // The AI endpoints require the user's existing central session token.
