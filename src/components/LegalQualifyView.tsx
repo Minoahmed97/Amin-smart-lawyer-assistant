@@ -170,6 +170,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
 
     const operationId = ++resultOperationRef.current;
     setIsLoading(true);
+    setAnalysisCaseRef(activeLearningCaseRef);
     setQualifyError('');
     setQualificationResult('');
     try {
