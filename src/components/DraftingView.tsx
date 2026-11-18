@@ -1,3 +1,4 @@
+import { LearningCaseSelector } from './LearningCaseSelector.tsx';
 import React, { useState, useEffect, useRef } from 'react';
 import { DraftingFormData } from '../types.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
@@ -283,6 +284,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   };
 
   const [draftError, setDraftError] = useState<string>('');
+  const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
 
   // Recover an in-flight server-side job after refresh, app backgrounding, or reopening.
   useEffect(() => {
@@ -351,6 +353,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           ? (formData.customJudicialWorkType || '').trim()
           : formData.briefType,
         userId,
+        caseRef: activeLearningCaseRef,
       }, (chunk) => {
         if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
       });
@@ -484,6 +487,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           </button>
         </div>
       </div>
+
+      <LearningCaseSelector userId={userId} value={activeLearningCaseRef} onChange={setActiveLearningCaseRef} />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
         {/* Input Panel (5 cols) */}
