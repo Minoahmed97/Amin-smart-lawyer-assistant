@@ -5,7 +5,6 @@ import { FileUploadZone } from './FileUploadZone.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
-import { LearningDecisionCapture } from './LearningDecisionCapture.tsx';
 import {
   Compass,
   Scale,
@@ -127,13 +126,14 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     if (beforeText && afterText && beforeText !== afterText) {
       void recordLearningCorrection({
         taskType: 'qualify',
-        caseRef: activeLearningCaseRef,
+        caseRef: analysisCaseRef,
         beforeText,
         afterText,
       });
     }
   };
   const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
+  const [analysisCaseRef, setAnalysisCaseRef] = useState<string>('');
 
   useEffect(() => {
     let active = true;
@@ -143,6 +143,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     try { jobId = localStorage.getItem(`amin_ai_job_qualify_${storageUser}`) || ''; } catch {}
     if (!jobId) return () => { active = false; };
     setIsLoading(true);
+    setAnalysisCaseRef(activeLearningCaseRef);
     setQualifyError('');
     void resumeSavedAiTask('qualify', jobId, (chunk) => {
       if (active && operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
@@ -606,8 +607,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
           </div>
         </div>
       </div>
-      {qualificationResult && <LearningDecisionCapture taskType="qualify" caseRef={activeLearningCaseRef} analysisContext={qualificationResult} />}
-      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={userId} caseRef={activeLearningCaseRef} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} onResultChange={(nextResult) => { setQualificationResult(nextResult); persistentStorage.setItem('judicial_qualify_result', nextResult); }} />}
+      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={userId} caseRef={analysisCaseRef || activeLearningCaseRef} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} onResultChange={(nextResult) => { setQualificationResult(nextResult); persistentStorage.setItem('judicial_qualify_result', nextResult); }} />}
     </div>
   );
 };
