@@ -131,14 +131,6 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
   return 'other';
 }
 
-function shouldFallbackFromOpenRouter(error: any): boolean {
-  const status = Number(error?.status || error?.statusCode || error?.response?.status);
-  const message = String(error?.message || error?.error?.message || '').toLowerCase();
-  return status === 401 || status === 402 || status === 403 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 ||
-    (status === 400 && /max_tokens|context.?length|model|unsupported|parameter/.test(message)) ||
-    /quota|rate.?limit|free.*(limit|unavailable|exhaust)|no free models|temporarily unavailable|service unavailable|timed out|timeout/.test(message);
-}
-
 const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
 let inMemoryDynamicKeys: string[] = [];
 
@@ -507,6 +499,24 @@ type KeyRotationExecutionOptions = {
   avoidPairs?: string[];
 };
 
+async function getDirectGroqConfig() {
+  let stored: any = null;
+  try {
+    stored = await fetchServerCloudOCRGroqFallbackConfig();
+  } catch {
+    // A missing OCR-specific setting must not prevent use of a server env key.
+  }
+  const apiKey = String((stored?.enabled && stored?.apiKey) || process.env.GROQ_API_KEY || '').trim();
+  const model = String(process.env.GROQ_MODEL || 'openai/gpt-oss-120b').trim();
+  if (!apiKey) {
+    const error: any = new Error('احتياطي Groq غير مضبوط؛ فعّل إعداد Groq الموجود في إعدادات OCR أو أضف GROQ_API_KEY إلى متغيرات Vercel.');
+    error.status = 503;
+    error.statusCode = 503;
+    throw error;
+  }
+  return { apiKey, model };
+}
+
 export async function executeWithKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -561,17 +571,11 @@ export async function executeWithKeyRotation<T>(
   }
 
   if (!_forceGeminiFallback) {
-    const apiKey = String(process.env.GROQ_API_KEY || '').trim();
-    const model = String(process.env.GROQ_MODEL || 'openai/gpt-oss-120b').trim();
-    if (!apiKey) {
-      const missingKeyError: any = new Error('احتياطي Groq غير مضبوط؛ أضف GROQ_API_KEY إلى متغيرات Vercel.');
-      missingKeyError.status = 503;
-      missingKeyError.statusCode = 503;
-      if (executionOptions?.ocrMode) {
-        return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
-      }
-      throw missingKeyError;
-    }
+    const { apiKey, model } = await getDirectGroqConfig().catch((error: any) => {
+      if (executionOptions?.ocrMode) return { apiKey: '', model: '' };
+      throw error;
+    });
+    if (!apiKey) return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
     try {
       const client = withAdaptiveAnswerLength(
         createOpenRouterCompatibleClient(15000, deadlineAt, 'https://api.groq.com/openai/v1', apiKey),
@@ -666,7 +670,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const totalBudget = Math.max(0, deadlineAt - Date.now());
     const groqReserveMs = Math.min(60_000, Math.max(45_000, Math.floor(totalBudget * 0.18)));
-    const geminiDeadlineAt = deadlineAt - groqReserveMs
+    const geminiDeadlineAt = deadlineAt - groqReserveMs;
     let geminiError: any = null;
     let geminiEmittedText = false;
 
@@ -714,14 +718,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
 
   if (!_forceGeminiFallback && executionOptions?.providerAttempt === 'groq-fallback' && !executionOptions?.ocrMode) {
-    const apiKey = String(process.env.GROQ_API_KEY || '').trim();
-    const model = String(process.env.GROQ_MODEL || 'openai/gpt-oss-120b').trim();
-    if (!apiKey) {
-      const missingKeyError: any = new Error('احتياطي Groq غير مضبوط؛ أضف GROQ_API_KEY إلى متغيرات Vercel.');
-      missingKeyError.status = 503;
-      missingKeyError.statusCode = 503;
-      throw missingKeyError;
-    }
+    const { apiKey, model } = await getDirectGroqConfig();
     const ai = withAdaptiveAnswerLength(
       createOpenRouterCompatibleClient(15000, deadlineAt, 'https://api.groq.com/openai/v1', apiKey),
     ) as unknown as GoogleGenAI;
