@@ -151,7 +151,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     if (beforeText && afterText && beforeText !== afterText) {
       void recordLearningCorrection({
         taskType: 'deconstruct',
-        caseRef: activeLearningCaseRef,
+        caseRef: analysisCaseRef,
         beforeText,
         afterText,
       });
