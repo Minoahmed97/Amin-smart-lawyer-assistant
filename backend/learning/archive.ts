@@ -155,7 +155,7 @@ export async function analyzeLegalCaseArchive(
     const analysis = await generateJson(buildCaseAnalysisPrompt(input), 6500, deadlineAt);
     const event = await recordLearningEvent(userId, {
       caseRef: input.caseRef,
-      taskType: 'other' as LearningTaskType,
+      taskType: 'other',
       eventType: 'manual_note',
       beforeText: combinedSource,
       afterText: JSON.stringify(analysis),
