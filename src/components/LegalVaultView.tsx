@@ -23,6 +23,7 @@ import {
   clearAllLawModels,
 } from '../utils/legalVaultService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
+import { CaseArchiveLearningView } from './CaseArchiveLearningView.tsx';
 import { saveLegalDocTemplate, getLegalDocTemplates, deleteLegalDocTemplate, classifyLegalDocument, LegalDocTemplate } from '../utils/legalTemplateService.ts';
 import { saveLegalVaultOriginalFile, getLegalVaultOriginalFiles, downloadLegalVaultOriginalFile, deleteLegalVaultOriginalFile, LegalVaultOriginalFile } from '../utils/legalVaultOriginalFiles.ts';
 
@@ -318,6 +319,8 @@ export const LegalVaultView: React.FC<LegalVaultViewProps> = ({
           </div>
         )}
       </div>
+
+      <CaseArchiveLearningView userId={userId} />
 
       {/* Manual Add Form */}
       {isAddingNew && (
