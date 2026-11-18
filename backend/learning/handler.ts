@@ -183,6 +183,24 @@ export default async function handler(req: any, res: any) {
       return res.status(201).json({ ok: true, event });
     }
 
+    if (action === 'record-decision') {
+      const taskType = String(body.taskType || 'other') as LearningTaskType;
+      if (!LEARNING_TASK_TYPES.includes(taskType)) {
+        return res.status(400).json({ error: 'نوع المهمة غير صالح.' });
+      }
+      const input: LearningEventInput = {
+        caseRef: validateCaseRef(body.caseRef),
+        taskType,
+        eventType: 'manual_note',
+        beforeText: requireText(body.beforeText, 150000, 'السياق السابق للقرار'),
+        afterText: requireText(body.decision, 8000, 'قرار المحامي'),
+        reason: requireText(body.reason, 8000, 'سبب القرار'),
+        context: requireRecord(body.context, 16000, 'سياق القرار'),
+      };
+      const event = await recordLearningEvent(session.userId, input);
+      return res.status(201).json({ ok: true, event });
+    }
+
     if (action === 'create-memory-candidate') {
       const scope = body.scope === 'case' ? 'case' : body.scope === 'global' ? 'global' : '';
       if (!scope) return res.status(400).json({ error: 'نطاق الخبرة غير صالح.' });
