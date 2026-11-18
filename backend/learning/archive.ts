@@ -117,7 +117,7 @@ export async function analyzeLegalCaseArchive(
   const analyzed: Array<{ caseRef: string; title: string; analysis: Record<string, any>; eventId: string }> = [];
   const responseCases: Array<Record<string, unknown>> = [];
   let totalProposals = 0;
-  const deadlineAt = Date.now() + 270000;
+  const deadlineAt = Date.now() + 240000;
 
   for (const input of inputCases) {
     const combinedSource = input.documents.map((doc, index) =>
