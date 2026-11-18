@@ -87,14 +87,32 @@ export const CaseArchiveLearningView: React.FC<{ userId: string }> = ({ userId }
   const loadReviewQueue = async () => {
     setIsLoadingQueue(true);
     try {
-      const response = await fetch('/api/learning/memory', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ action: 'list-review-queue' }),
-        cache: 'no-store',
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data?.error || 'تعذر تحميل مقترحات الخبرة.');
+      const loadQueue = async () => {
+        const response = await fetch('/api/learning/memory', {
+          method: 'POST',
+          headers: getRequestHeaders(),
+          body: JSON.stringify({ action: 'list-review-queue' }),
+          cache: 'no-store',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data?.error || 'تعذر تحميل مقترحات الخبرة.');
+        return data;
+      };
+
+      let data = await loadQueue();
+      const pendingEvents = Array.isArray(data?.events) ? data.events.slice(0, 5) : [];
+      let extractedAny = false;
+      for (const event of pendingEvents) {
+        if (!event?.id) continue;
+        const extraction = await fetch('/api/learning/memory', {
+          method: 'POST',
+          headers: getRequestHeaders(),
+          body: JSON.stringify({ action: 'extract-event', eventId: event.id }),
+        });
+        if (!extraction.ok) break;
+        extractedAny = true;
+      }
+      if (extractedAny) data = await loadQueue();
       setProposals(Array.isArray(data?.proposedMemories) ? data.proposedMemories : []);
     } catch (loadError: any) {
       setError(loadError?.message || 'تعذر تحميل مقترحات الخبرة.');
