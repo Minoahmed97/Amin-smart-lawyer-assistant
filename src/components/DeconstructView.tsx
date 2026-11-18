@@ -862,7 +862,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
           </div>
         </div>
       </div>
-      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} caseRef={activeLearningCaseRef} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisResult} onResultChange={(nextResult) => { setAnalysisResult(nextResult); persistentStorage.setItem('judicial_deconstruct_result', nextResult); }} />}
+      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} caseRef={analysisCaseRef || activeLearningCaseRef} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisResult} onResultChange={(nextResult) => { setAnalysisResult(nextResult); persistentStorage.setItem('judicial_deconstruct_result', nextResult); }} />}
     </div>
   );
 };
