@@ -206,8 +206,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     let segmentResult: any;
     try {
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
-        activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
-        activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
+        activePair = key === 'groq' ? `groq::${model}` : `${key}::${model}`;
+        activePairLabel = `${key === 'groq' ? 'Groq' : 'Gemini'} / ${model}`;
         const providerSearchEnabled = options.legalResearch && key !== 'groq' && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
         const response = await ai.models.generateContent({
           model,
