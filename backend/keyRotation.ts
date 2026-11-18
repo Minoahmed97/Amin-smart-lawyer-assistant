@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
-import { createOpenRouterCompatibleClient } from './openrouterAdapter.ts';
+import { createOpenAICompatibleClient } from './openaiCompatibleAdapter.ts';
 import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys, fetchServerCloudOCRGroqFallbackConfig } from './supabaseSync.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
@@ -293,8 +293,8 @@ async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, mod
   
   const remainingMs = Math.max(1000, deadlineAt - Date.now());
   
-  // الاتصال المباشر بخوادم Groq لمنع أخطاء الـ 402 الخاصة بـ OpenRouter
-  const client = createOpenRouterCompatibleClient(
+  // الاتصال المباشر بخوادم Groq عبر واجهة OpenAI المتوافقة
+  const client = createOpenAICompatibleClient(
     Math.min(60000, remainingMs), 
     deadlineAt, 
     'https://api.groq.com/openai/v1', 
@@ -578,7 +578,7 @@ export async function executeWithKeyRotation<T>(
     if (!apiKey) return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
     try {
       const client = withAdaptiveAnswerLength(
-        createOpenRouterCompatibleClient(15000, deadlineAt, 'https://api.groq.com/openai/v1', apiKey),
+        createOpenAICompatibleClient(15000, deadlineAt, 'https://api.groq.com/openai/v1', apiKey),
       ) as unknown as GoogleGenAI;
       const result = await action(client, 'groq', model);
       if (Date.now() >= deadlineAt) throw timeoutError();
@@ -720,7 +720,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   if (!_forceGeminiFallback && executionOptions?.providerAttempt === 'groq-fallback' && !executionOptions?.ocrMode) {
     const { apiKey, model } = await getDirectGroqConfig();
     const ai = withAdaptiveAnswerLength(
-      createOpenRouterCompatibleClient(15000, deadlineAt, 'https://api.groq.com/openai/v1', apiKey),
+      createOpenAICompatibleClient(15000, deadlineAt, 'https://api.groq.com/openai/v1', apiKey),
     ) as unknown as GoogleGenAI;
     let emittedGroqText = false;
     try {
