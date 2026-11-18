@@ -103,7 +103,7 @@ function buildCrossCasePrompt(cases: Array<{ caseRef: string; title: string; ana
     'افصل التفضيل المهني المتكرر عن القاعدة القانونية. لا تصغ أي خبرة كقاعدة قانونية ملزمة أو بديل عن فحص أوراق القضية الجديدة.',
     'إذا كان الاختلاف بين القضيتين بسبب اختلاف الوقائع أو المرحلة الإجرائية، فاذكره في conditions/exceptions بدل تعميم قاعدة واحدة.',
     'لا تخترع دوافع غير موجودة في التحليلات. إذا كانت الأدلة غير كافية، لا تستخرج خبرة عامة.',
-    'أعد JSON فقط بالشكل: globalLessons (array of objects: category, title, content, conditions, exceptions, confidence, supportingCaseCount, reasoning). الحد الأقصى 12 مقترحًا. لا تخرج إلا خبرات مدعومة بقضيتين مستقلتين على الأقل.',
+    'أعد JSON فقط بالشكل: globalLessons (array of objects: category, title, content, conditions, exceptions, confidence, supportingCaseRefs (array يحتوي المراجع الداخلية للقضايا التي تسند الخبرة), reasoning). الحد الأقصى 12 مقترحًا. لا تخرج إلا خبرات مدعومة بقضيتين مستقلتين على الأقل، ولا تذكر مرجع قضية لا يدعمها التحليل.',
     '',
     'تحليلات القضايا المستقلة:',
     JSON.stringify(cases.map((item) => ({ caseRef: item.caseRef, title: item.title, analysis: item.analysis }))),
@@ -243,7 +243,11 @@ export async function analyzeLegalCaseArchive(
       const category = String(lesson?.category || '') as MemoryCategory;
       const title = cleanText(lesson?.title, 240);
       const content = cleanText(lesson?.content, 8000);
-      const supportingCaseCount = Number(lesson?.supportingCaseCount || 0);
+      const supportingRefs = Array.isArray(lesson?.supportingCaseRefs)
+        ? [...new Set(lesson.supportingCaseRefs.map((value: unknown) => String(value)))].filter((ref: string) => analyzed.some((item) => item.caseRef === ref))
+        : [];
+      const supportingItems = analyzed.filter((item) => supportingRefs.includes(item.caseRef));
+      const supportingCaseCount = supportingItems.length;
       if (!ALLOWED_CATEGORIES.includes(category) || !title || !content || supportingCaseCount < 2) continue;
       const memory = await createProfessionalMemoryCandidate(userId, {
         scope: 'global',
@@ -256,7 +260,7 @@ export async function analyzeLegalCaseArchive(
           reasoning: cleanText(lesson.reasoning, 2000),
         },
         exceptions: cleanObject(lesson.exceptions),
-        sourceEventIds: analyzed.map((item) => item.eventId).concat(globalEvent.id),
+        sourceEventIds: supportingItems.map((item) => item.eventId).concat(globalEvent.id),
         confidence: Number.isFinite(Number(lesson.confidence))
           ? Math.max(0, Math.min(1, Number(lesson.confidence)))
           : 0.4,
