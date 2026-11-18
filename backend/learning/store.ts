@@ -246,16 +246,27 @@ export async function listProposedProfessionalMemories(
 export async function listApprovedProfessionalMemories(
   userIdInput: string,
   limit = 100,
+  caseRefInput?: string | null,
 ): Promise<ProfessionalMemoryRecord[]> {
   const userId = assertUserId(userIdInput);
+  const caseRef = String(caseRefInput || '').trim().toLowerCase();
+  if (caseRef && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(caseRef)) {
+    const error: any = new Error('معرّف القضية المرتبط بذاكرة أمين غير صالح.');
+    error.statusCode = 400;
+    throw error;
+  }
   const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
-  const query = queryString({
+  const queryValues: Record<string, string> = {
     select: '*',
     user_id: 'eq.' + userId,
     status: 'eq.approved',
     order: 'confidence.desc,updated_at.desc',
     limit: String(safeLimit),
-  });
+  };
+  queryValues.or = caseRef
+    ? '(scope.eq.global,and(scope.eq.case,case_ref.eq.' + caseRef + '))'
+    : '(scope.eq.global)';
+  const query = queryString(queryValues);
   return await supabaseRequest<ProfessionalMemoryRecord[]>('amin_professional_memories?' + query);
 }
 
