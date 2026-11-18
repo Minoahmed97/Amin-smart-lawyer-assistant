@@ -183,7 +183,7 @@ export async function createProfessionalMemoryCandidate(
     content: input.content,
     conditions: input.conditions || {},
     exceptions: input.exceptions || {},
-    source_event_ids: sourceEventIds,
+    source_event_ids: [...new Set(sourceEventIds)],
     confidence: Number.isFinite(input.confidence) ? Math.max(0, Math.min(1, Number(input.confidence))) : 0.5,
     status: 'proposed',
   };
@@ -271,6 +271,7 @@ export async function saveCaseMemory(
     title: input.title || '',
     case_state: input.caseState,
     source_metadata: input.sourceMetadata || {},
+    updated_at: new Date().toISOString(),
   };
   const rows = await supabaseRequest<CaseMemoryRecord[]>(
     'amin_case_memory?' + query,
