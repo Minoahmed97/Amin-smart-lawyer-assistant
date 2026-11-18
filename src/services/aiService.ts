@@ -50,7 +50,7 @@ export async function recordLearningCorrection(input: {
 }
 
 export async function recordLearningDecision(input: {
-  taskType: 'deconstruct';
+  taskType: 'deconstruct' | 'qualify' | 'draft';
   caseRef?: string;
   analysisContext: string;
   decision: string;
