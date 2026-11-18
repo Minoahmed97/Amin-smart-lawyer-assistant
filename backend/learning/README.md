@@ -31,7 +31,7 @@ Run `learning_memory_migration.sql` manually in the existing Supabase project af
 
 ## Remaining application integration
 
-The authenticated archive-analysis API and correction-learning API are available on the backend. The vault now includes a case-archive workspace. It reuses the existing PDF/Word/image text-extraction component and lets the lawyer associate previously saved vault models with a case. The archive workspace sends extracted text to the authenticated learning endpoint. Existing drafting/deconstruction/qualification tasks still do not retrieve learning context automatically; that is a separate integration step after archive analysis is verified.
+The authenticated archive-analysis API and correction-learning API are available on the backend. The vault now includes a case-archive workspace. It reuses the existing PDF/Word/image text-extraction component and lets the lawyer associate previously saved vault models with a case. The archive workspace sends extracted text to the authenticated learning endpoint. Live deconstruction, qualification, drafting, and ordinary legal-chat replies now retrieve only approved global professional memories on the server. Retrieval is additive and fails open: if the learning store is unavailable, the existing legal task continues without the extra context. Case-scoped memories are not yet injected into live tasks because the current task screens do not identify an active archive case; they remain isolated until an explicit active-case selector and opaque `caseRef` are connected. Live-task correction capture is also still pending.
 
 ## API route now registered
 
