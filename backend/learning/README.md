@@ -11,7 +11,7 @@ This folder is an isolated backend foundation for the personal legal-learning la
 
 ## Learning lifecycle
 
-1. A later integration may record a lawyer-reviewed before/after correction as a pending learning event.
+1. The application records lawyer-reviewed text corrections and explicit post-analysis professional decisions as pending learning events.
 2. A learning extractor may turn that event into a proposed memory. `policy.ts` contains the extraction instruction; it does not call a model or update model weights.
 3. A proposed memory is unusable until the lawyer explicitly approves it.
 4. Retrieval returns only approved memories. Global memories may apply across cases; case-scoped memories require an exact matching internal `case_ref`.
