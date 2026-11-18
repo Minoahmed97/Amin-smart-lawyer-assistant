@@ -214,7 +214,7 @@ export default async function handler(req: any, res: any) {
         tested: false,
         checkType: 'metadata',
         aiReachable,
-        routing: { primary: 'gemini', fallback: 'openrouter' },
+        routing: { primary: 'gemini', fallback: 'groq' },
         latencyMs: Date.now() - startedAt,
         cloudKeysReadable,
         checkedKeys: geminiKeyResults.length,
@@ -254,7 +254,7 @@ export default async function handler(req: any, res: any) {
       latencyMs: Math.max(groq.latencyMs, gemini.latencyMs),
       providers: { groq, gemini },
       message: groq.ok && gemini.ok
-        ? 'نجح التوليد الفعلي من OpenRouter وGemini.'
+        ? 'نجح التوليد الفعلي من Gemini وGroq Direct.'
          : groq.ok
           ? (gemini.temporary
             ? 'Gemini مشغول مؤقتًا؛ نجح اختبار Groq Direct الاحتياطي.'
