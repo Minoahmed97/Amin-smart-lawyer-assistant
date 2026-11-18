@@ -4,8 +4,8 @@ This folder is an isolated backend foundation for the personal legal-learning la
 
 ## Current boundary
 
-- The module is intentionally not registered in `api/index.ts` yet.
-- No existing screen, AI prompt, legal workflow, authentication flow, credits, plans, OCR, file extraction, or deployment configuration is changed.
+- The module is registered through the existing central `api/index.ts` route; it does not add a separate Vercel function.
+- Existing screens, AI prompts, legal workflows, authentication, credits, plans, OCR, and document extraction are not modified by the learning module.
 - `handler.ts` uses the application's existing signed session through `requireActiveSession`. The user ID must always come from that verified session, never from the request body.
 - The Supabase service credential stays on the server. The new tables deny direct access to `anon` and `authenticated` roles.
 
@@ -23,15 +23,15 @@ This folder is an isolated backend foundation for the personal legal-learning la
 - `amin_professional_memories`: reusable or case-scoped professional experience and approval state.
 - `amin_case_memory`: structured case context keyed by an opaque internal reference.
 
-Do not use a case number, client name, or other identifying text as `case_ref`. The eventual application integration must supply a stable opaque case identifier and must keep documents and case facts scoped to their own case.
+Do not use a case number, client name, or other identifying text as `case_ref`. The archive endpoint requires a stable opaque case identifier and keeps each case analysis and its case-scoped memories isolated.
 
 ## Manual database setup
 
 Run `learning_memory_migration.sql` manually in the existing Supabase project after the current `platform_users` table exists. The migration is additive and creates only the three learning tables and their indexes/permissions.
 
-## Later integration point
+## Remaining application integration
 
-When the module is ready to connect to the existing app, register its handler in the central API router and add a client service that submits corrections only after the lawyer chooses to save/review them. Then connect the case-context adapter to the current file/vault inputs. Do not replace the existing legal prompts or workflows as part of that connection.
+The authenticated archive-analysis API and correction-learning API are available on the backend. The remaining step is a small user-facing archive selector and an adapter that passes text already extracted by the existing PDF/Word/image/ZIP pipeline. Do not duplicate or replace the existing extraction pipeline. Existing legal tasks still do not retrieve learning context automatically; that will be connected only after this archive flow is verified.
 
 ## API route now registered
 
@@ -39,6 +39,7 @@ The central router exposes `POST /api/learning/memory`. Every action requires th
 
 Supported actions:
 
+- `analyze-case-archive`: analyzes extracted text from one or more prior cases, stores each case analysis, and creates case-specific proposals. With two or more cases, a separate cross-case pass may propose general professional memories supported by at least two identified cases.
 - `record-correction`: stores before/after text and an optional explicit reason as a pending event.
 - `extract-event`: runs the existing Gemini key-rotation path and converts one pending event into either no candidate or one proposed memory. It never approves a memory.
 - `list-review-queue`: returns pending correction events and proposed memories for the authenticated account.
@@ -88,7 +89,7 @@ Example:
 }
 ```
 
-Limits: 1–8 cases per request, 1–30 documents per case, 120,000 characters per document, and 500,000 characters total. Each case is analyzed independently and its structured analysis is saved in `amin_case_memory`; a source event is retained in `amin_learning_events`; case-specific lesson candidates are created as proposed memories. When at least two independent cases are supplied, a separate comparison pass may create global professional-memory proposals only when the same pattern is supported by at least two cases. No proposed memory is automatically approved.
+Limits: 1–8 cases per request, 1–30 documents per case, 120,000 characters per document, and 500,000 characters total. All model calls in a batch share a 270-second deadline. Each case is analyzed independently and its structured analysis is saved in `amin_case_memory`; a source event is retained in `amin_learning_events`; case-specific lesson candidates are created as proposed memories. When at least two independent cases are supplied, a separate comparison pass may create global professional-memory proposals only when the same pattern is supported by at least two cases. No proposed memory is automatically approved.
 
 The model must distinguish document facts from inferences, reconstruct chronology and lawyer decisions, identify what was added/omitted/referred to, assess opponent/court/expert responses, and state uncertainty. A case outcome alone is not treated as proof that every strategy was correct.
 
