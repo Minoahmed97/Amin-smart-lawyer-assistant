@@ -314,6 +314,7 @@ export default async function handler(req: any, res: any) {
       requests,
       customInstructions,
       vaultContext,
+      caseRef,
     } = body || {};
 
     if (!facts || !facts.trim()) {
@@ -322,7 +323,7 @@ export default async function handler(req: any, res: any) {
 
     rateLimit(req, 'gemini-counter-brief', 8, 10 * 60 * 1000);
     const { session } = await enforceAiCooldown(req);
-    const learningInstruction = await getApprovedLearningInstruction(session.userId, 'draft');
+    const learningInstruction = await getApprovedLearningInstruction(session.userId, 'draft', caseRef);
 
     limitBodyString(facts, 200000, 'الوقائع');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
