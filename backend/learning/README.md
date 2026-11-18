@@ -44,7 +44,8 @@ The central router exposes `POST /api/learning/memory`. Every action requires th
 Supported actions:
 
 - `analyze-case-archive`: analyzes extracted text from one or more prior cases, stores each case analysis, and creates case-specific proposals. With two or more cases, a separate cross-case pass may propose general professional memories supported by at least two identified cases.
-- `record-correction`: stores before/after text and an optional explicit reason as a pending event.
+- `record-correction`: stores before/after text and an optional explicit reason as a pending correction event.
+- `record-decision`: stores the lawyer's explicit post-analysis decision and mandatory reason as a pending `manual_note` event; it does not treat the AI's recommendation as the lawyer's choice.
 - `extract-event`: runs the existing Gemini key-rotation path and converts one pending event into either no candidate or one proposed memory. It never approves a memory.
 - `list-review-queue`: returns pending correction events and proposed memories for the authenticated account.
 - `review-memory`: approves or rejects one proposed memory.
@@ -68,7 +69,7 @@ Example correction payload:
 
 Then call `extract-event` with the returned event ID. The result is a proposed memory and remains excluded from retrieval until an explicit `review-memory` action approves it.
 
-The case-archive workspace calls this route for archive analysis and proposal review. Existing legal AI tasks do not yet automatically record corrections or retrieve approved learning context; that integration remains separate.
+The deconstruction screen can separately record the lawyer's explicit decision and reason after reviewing the analysis. The pending decision event is processed through the same extractor/review queue; case-linked decisions default to case-scoped proposals, and no proposal is automatically approved. The AI's suggested strategy is never recorded as the lawyer's decision unless the lawyer explicitly submits it.
 
 
 ## Learning from a prior-case archive
