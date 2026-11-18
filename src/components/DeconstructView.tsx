@@ -1,6 +1,6 @@
 import { LearningCaseSelector } from './LearningCaseSelector.tsx';
 import React, { useState, useEffect, useRef } from 'react';
-import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
+import { deconstructBrief, resumeSavedAiTask, recordLearningCorrection } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { StyleTemplateSelector } from './StyleTemplateSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -133,6 +133,26 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   };
 
   const [deconstructError, setDeconstructError] = useState<string>('');
+  const editBaselineRef = useRef('');
+  const toggleLiveEditing = () => {
+    if (!isLiveEditing) {
+      editBaselineRef.current = analysisResult;
+      setIsLiveEditing(true);
+      return;
+    }
+    setIsLiveEditing(false);
+    const beforeText = editBaselineRef.current;
+    const afterText = analysisResult;
+    editBaselineRef.current = '';
+    if (beforeText && afterText && beforeText !== afterText) {
+      void recordLearningCorrection({
+        taskType: 'deconstruct',
+        caseRef: activeLearningCaseRef,
+        beforeText,
+        afterText,
+      });
+    }
+  };
   const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
 
   // استرجاع مهمة ذكاء اصطناعي محفوظة مسبقاً إذا تم إعادة فتح الواجهة
@@ -686,7 +706,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => setIsLiveEditing(!isLiveEditing)}
+                    onClick={toggleLiveEditing}
                     className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                       isLiveEditing ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-300 border border-slate-700'
                     }`}
