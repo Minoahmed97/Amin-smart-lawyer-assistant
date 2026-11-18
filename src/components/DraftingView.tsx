@@ -390,7 +390,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     try {
       const refined = await refineDraftText(previousDraft, type, (chunk) => {
         if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
-      }, userId);
+      }, userId, activeLearningCaseRef);
       if (refined && operationId === resultOperationRef.current) {
         setGeneratedBrief(refined);
         persistentStorage.setItem('amin_judicial_draft_result', refined);
