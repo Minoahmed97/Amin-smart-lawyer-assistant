@@ -5,7 +5,7 @@ This folder is an isolated backend foundation for the personal legal-learning la
 ## Current boundary
 
 - The module is registered through the existing central `api/index.ts` route; it does not add a separate Vercel function.
-- Existing screens, AI prompts, legal workflows, authentication, credits, plans, OCR, and document extraction are not modified by the learning module.
+- The existing legal vault receives one isolated archive-learning section; its existing models, upload workflow, and other screens are otherwise unchanged. Existing AI prompts, legal workflows, authentication, credits, plans, OCR, and document extraction are not replaced.
 - `handler.ts` uses the application's existing signed session through `requireActiveSession`. The user ID must always come from that verified session, never from the request body.
 - The Supabase service credential stays on the server. The new tables deny direct access to `anon` and `authenticated` roles.
 
@@ -89,7 +89,7 @@ Example:
 }
 ```
 
-Limits: 1–8 cases per request, 1–30 documents per case, 120,000 characters per document, and 500,000 characters total. All model calls in a batch share a 270-second deadline. Each case is analyzed independently and its structured analysis is saved in `amin_case_memory`; a source event is retained in `amin_learning_events`; case-specific lesson candidates are created as proposed memories. When at least two independent cases are supplied, a separate comparison pass may create global professional-memory proposals only when the same pattern is supported by at least two cases. No proposed memory is automatically approved.
+Limits: 1–8 cases per request, 1–30 documents per case, 120,000 characters per document, and 500,000 characters total. All model calls in a batch share a 240-second deadline, leaving time for database persistence within the existing 300-second API function limit. Each case is analyzed independently and its structured analysis is saved in `amin_case_memory`; a source event is retained in `amin_learning_events`; case-specific lesson candidates are created as proposed memories. When at least two independent cases are supplied, a separate comparison pass may create global professional-memory proposals only when the same pattern is supported by at least two cases. No proposed memory is automatically approved.
 
 The model must distinguish document facts from inferences, reconstruct chronology and lawyer decisions, identify what was added/omitted/referred to, assess opponent/court/expert responses, and state uncertainty. A case outcome alone is not treated as proof that every strategy was correct.
 
