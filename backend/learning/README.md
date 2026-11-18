@@ -31,7 +31,7 @@ Run `learning_memory_migration.sql` manually in the existing Supabase project af
 
 ## Remaining application integration
 
-The authenticated archive-analysis API and correction-learning API are available on the backend. The remaining step is a small user-facing archive selector and an adapter that passes text already extracted by the existing PDF/Word/image/ZIP pipeline. Do not duplicate or replace the existing extraction pipeline. Existing legal tasks still do not retrieve learning context automatically; that will be connected only after this archive flow is verified.
+The authenticated archive-analysis API and correction-learning API are available on the backend. The vault now includes a case-archive workspace. It reuses the existing PDF/Word/image text-extraction component and lets the lawyer associate previously saved vault models with a case. The archive workspace sends extracted text to the authenticated learning endpoint. Existing drafting/deconstruction/qualification tasks still do not retrieve learning context automatically; that is a separate integration step after archive analysis is verified.
 
 ## API route now registered
 
@@ -64,7 +64,7 @@ Example correction payload:
 
 Then call `extract-event` with the returned event ID. The result is a proposed memory and remains excluded from retrieval until an explicit `review-memory` action approves it.
 
-No frontend currently calls this route. No existing AI task automatically records or retrieves learning data yet; that integration remains a separate controlled step after the endpoint and storage migration are tested.
+The case-archive workspace calls this route for archive analysis and proposal review. Existing legal AI tasks do not yet automatically record corrections or retrieve approved learning context; that integration remains separate.
 
 
 ## Learning from a prior-case archive
@@ -93,4 +93,4 @@ Limits: 1–8 cases per request, 1–30 documents per case, 120,000 characters p
 
 The model must distinguish document facts from inferences, reconstruct chronology and lawyer decisions, identify what was added/omitted/referred to, assess opponent/court/expert responses, and state uncertainty. A case outcome alone is not treated as proof that every strategy was correct.
 
-This is a backend endpoint only. A user-facing archive picker and adapter to the existing upload/OCR/document extraction flow are still required before the lawyer can select and submit files directly from the app. Keep that adapter separate from existing OCR and legal-task behavior.
+The user-facing archive workspace is embedded in the legal vault. It reuses the existing upload/OCR/document extraction flow, stores extracted source files locally in IndexedDB under per-case scopes, and sends only extracted text to the learning API. Keep this adapter separate from existing legal-task behavior.
