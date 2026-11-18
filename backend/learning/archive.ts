@@ -1,11 +1,13 @@
+import { createHash } from 'node:crypto';
 import { executeWithKeyRotation } from '../keyRotation.ts';
 import {
   createProfessionalMemoryCandidate,
+  getCaseMemory,
   markLearningEventProcessed,
   recordLearningEvent,
   saveCaseMemory,
 } from './store.ts';
-import type { LearningTaskType, MemoryCategory } from './types.ts';
+import type { MemoryCategory } from './types.ts';
 
 type ArchiveDocument = { name: string; type: string; text: string };
 type ArchiveCase = { caseRef: string; title: string; documents: ArchiveDocument[] };
@@ -52,7 +54,7 @@ function cleanList(value: unknown, maxItems = 12): string[] {
   return value.slice(0, maxItems).map((item) => cleanText(item, 1200)).filter(Boolean);
 }
 
-async function generateJson(prompt: string, maxOutputTokens = 5000): Promise<Record<string, any>> {
+async function generateJson(prompt: string, maxOutputTokens = 5000, deadlineAt = Date.now() + 240000): Promise<Record<string, any>> {
   return executeWithKeyRotation(async (ai, _key, model) => {
     const response = await ai.models.generateContent({
       model,
@@ -64,7 +66,7 @@ async function generateJson(prompt: string, maxOutputTokens = 5000): Promise<Rec
       },
     });
     return parseModelJson(response?.text);
-  });
+  }, undefined, undefined, false, { deadlineAt });
 }
 
 function buildCaseAnalysisPrompt(input: ArchiveCase): string {
@@ -115,12 +117,42 @@ export async function analyzeLegalCaseArchive(
   const analyzed: Array<{ caseRef: string; title: string; analysis: Record<string, any>; eventId: string }> = [];
   const responseCases: Array<Record<string, unknown>> = [];
   let totalProposals = 0;
+  const deadlineAt = Date.now() + 270000;
 
   for (const input of inputCases) {
     const combinedSource = input.documents.map((doc, index) =>
       '\n\n===== مستند ' + (index + 1) + ': ' + doc.name + ' (' + doc.type + ') =====\n' + doc.text
     ).join('');
-    const analysis = await generateJson(buildCaseAnalysisPrompt(input), 6500);
+    const fingerprint = createHash('sha256').update(JSON.stringify(input.documents)).digest('hex');
+    const previousCase = await getCaseMemory(userId, input.caseRef);
+    const previousState = previousCase?.case_state && typeof previousCase.case_state === 'object'
+      ? previousCase.case_state as Record<string, any>
+      : {};
+    const previousMetadata = previousCase?.source_metadata && typeof previousCase.source_metadata === 'object'
+      ? previousCase.source_metadata as Record<string, any>
+      : {};
+    const isAlreadyAnalyzed = previousMetadata.archiveFingerprint === fingerprint
+      && typeof previousMetadata.archiveEventId === 'string'
+      && previousState.archiveAnalysis && typeof previousState.archiveAnalysis === 'object';
+    if (isAlreadyAnalyzed) {
+      const analysis = previousState.archiveAnalysis as Record<string, any>;
+      const caseProposalCount = Number(previousMetadata.caseProposalCount || 0);
+      analyzed.push({ caseRef: input.caseRef, title: input.title, analysis, eventId: previousMetadata.archiveEventId });
+      responseCases.push({
+        caseRef: input.caseRef,
+        title: input.title,
+        caseSummary: cleanText(analysis.caseSummary, 5000),
+        chronology: cleanList(analysis.chronology, 30),
+        decisionCount: Array.isArray(analysis.lawyerDecisions) ? analysis.lawyerDecisions.length : 0,
+        caseMemoryProposals: caseProposalCount,
+        gapsAndUncertainties: cleanList(analysis.gapsAndUncertainties, 20),
+        reusedExistingAnalysis: true,
+      });
+      totalProposals += caseProposalCount;
+      continue;
+    }
+
+    const analysis = await generateJson(buildCaseAnalysisPrompt(input), 6500, deadlineAt);
     const event = await recordLearningEvent(userId, {
       caseRef: input.caseRef,
       taskType: 'other' as LearningTaskType,
@@ -132,20 +164,6 @@ export async function analyzeLegalCaseArchive(
         sourceType: 'case_archive_analysis',
         title: input.title,
         documentCount: input.documents.length,
-        documentNames: input.documents.map((doc) => doc.name),
-      },
-    });
-
-    await saveCaseMemory(userId, {
-      caseRef: input.caseRef,
-      title: input.title,
-      caseState: {
-        archiveAnalysis: analysis,
-        analyzedAt: new Date().toISOString(),
-        documentCount: input.documents.length,
-      },
-      sourceMetadata: {
-        sourceType: 'case_archive',
         documentNames: input.documents.map((doc) => doc.name),
       },
     });
@@ -173,6 +191,22 @@ export async function analyzeLegalCaseArchive(
       caseProposalCount++;
     }
     await markLearningEventProcessed(userId, event.id, 'processed');
+    await saveCaseMemory(userId, {
+      caseRef: input.caseRef,
+      title: input.title,
+      caseState: {
+        archiveAnalysis: analysis,
+        analyzedAt: new Date().toISOString(),
+        documentCount: input.documents.length,
+      },
+      sourceMetadata: {
+        sourceType: 'case_archive',
+        documentNames: input.documents.map((doc) => doc.name),
+        archiveFingerprint: fingerprint,
+        archiveEventId: event.id,
+        caseProposalCount,
+      },
+    });
     totalProposals += caseProposalCount;
     analyzed.push({ caseRef: input.caseRef, title: input.title, analysis, eventId: event.id });
     responseCases.push({
@@ -190,7 +224,7 @@ export async function analyzeLegalCaseArchive(
   if (analyzed.length >= 2) {
     const crossCase = await generateJson(buildCrossCasePrompt(
       analyzed.map(({ caseRef, title, analysis }) => ({ caseRef, title, analysis })),
-    ), 5000);
+    ), 5000, deadlineAt);
     const globalEvent = await recordLearningEvent(userId, {
       taskType: 'other',
       eventType: 'manual_note',
