@@ -579,7 +579,7 @@ export async function executeWithKeyRotation<T>(
     if (!apiKey) return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
     try {
       const client = withAdaptiveAnswerLength(
-        createOpenAICompatibleClient(15000, deadlineAt, 'https://api.groq.com/openai/v1', apiKey),
+        createOpenAICompatibleClient(60000, deadlineAt, 'https://api.groq.com/openai/v1', apiKey),
       ) as unknown as GoogleGenAI;
       const result = await action(client, 'groq', model);
       if (Date.now() >= deadlineAt) throw timeoutError();
