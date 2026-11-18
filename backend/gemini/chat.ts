@@ -65,7 +65,6 @@ export default async function handler(req: any, res: any) {
 
     rateLimit(req, 'gemini-legal-chat', 20, 10 * 60 * 1000);
     const { session } = await enforceAiCooldown(req);
-    const learningInstruction = await getApprovedLearningInstruction(session.userId, 'chat');
 
     const taskLabel =
       taskType === 'deconstruct'
@@ -194,6 +193,7 @@ export default async function handler(req: any, res: any) {
 
       /* * المحادثة القانونية العادية: * الحفاظ على نفس الوظيفة السابقة. */
 
+      const learningInstruction = await getApprovedLearningInstruction(session.userId, 'chat');
       const prompt = `${learningInstruction ? `${learningInstruction}\n\n` : ''}أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}). أجب على طلب أو سؤال المحامي التالي في الشات مباشرة. إذا طلب عرض المذكرة أو جزء منها في الشات، اعرض المطلوب في الشات. لا تقم بتعديل المستند الأساسي. [النتيجة الحالية للمستند للاطلاع والاستعانة بها] ${result} [طلب أو سؤال المحامي] ${latestUserMessage}`;
 
       const rawAnswer = await generateDeepLegalResponse(prompt);
