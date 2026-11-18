@@ -1,6 +1,6 @@
 import { LearningCaseSelector } from './LearningCaseSelector.tsx';
 import React, { useState, useEffect, useRef } from 'react';
-import { deconstructBrief, resumeSavedAiTask, recordLearningCorrection, recordLearningDecision } from '../services/aiService.ts';
+import { deconstructBrief, resumeSavedAiTask, recordLearningCorrection } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { StyleTemplateSelector } from './StyleTemplateSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -8,6 +8,7 @@ import { StyleTemplate, DEFAULT_STYLE_TEMPLATES } from '../data/styleTemplates.t
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
+import { LearningDecisionCapture } from './LearningDecisionCapture.tsx';
 import {
   ShieldAlert,
   Loader2,
@@ -119,9 +120,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setAdditionalFacts('');
     setAnalysisResult('');
     setAnalysisCaseRef('');
-    setLawyerDecision('');
-    setLawyerDecisionReason('');
-    setDecisionSaveState('idle');
     setUploadedDocName('');
     persistentStorage.removeItem('judicial_deconstruct_brief');
     persistentStorage.removeItem('judicial_deconstruct_worktype');
@@ -159,26 +157,6 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   };
   const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
   const [analysisCaseRef, setAnalysisCaseRef] = useState<string>('');
-  const [lawyerDecision, setLawyerDecision] = useState('');
-  const [lawyerDecisionReason, setLawyerDecisionReason] = useState('');
-  const [decisionSaveState, setDecisionSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-
-  const saveLawyerDecision = async () => {
-    if (!lawyerDecision.trim() || !lawyerDecisionReason.trim() || !analysisResult.trim() || decisionSaveState === 'saving') return;
-    setDecisionSaveState('saving');
-    const saved = await recordLearningDecision({
-      taskType: 'deconstruct',
-      caseRef: analysisCaseRef,
-      analysisContext: analysisResult,
-      decision: lawyerDecision,
-      reason: lawyerDecisionReason,
-    });
-    setDecisionSaveState(saved ? 'saved' : 'error');
-    if (saved) {
-      setLawyerDecision('');
-      setLawyerDecisionReason('');
-    }
-  };
 
   // استرجاع مهمة ذكاء اصطناعي محفوظة مسبقاً إذا تم إعادة فتح الواجهة
   useEffect(() => {
