@@ -255,7 +255,7 @@ export default async function handler(req: any, res: any) {
       aiReachable: groq.ok || gemini.ok,
       routing: {
         primary: 'gemini',
-        fallback: 'openrouter',
+        fallback: 'groq',
       },
       latencyMs: Math.max(groq.latencyMs, gemini.latencyMs),
       providers: { groq, gemini },
