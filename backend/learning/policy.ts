@@ -10,9 +10,9 @@ import type {
  * lawyer approves it; this function does not train or update a model.
  */
 export function buildLearningExtractionPrompt(event: LearningEventRecord): string {
-  const task = String(event.taskType || 'other');
-  const beforeText = String(event.beforeText || '');
-  const afterText = String(event.afterText || '');
+  const task = String(event.task_type || 'other');
+  const beforeText = String(event.before_text || '');
+  const afterText = String(event.after_text || '');
   const reason = String(event.reason || '');
   const context = event.context && typeof event.context === 'object'
     ? JSON.stringify(event.context)
@@ -31,7 +31,7 @@ export function buildLearningExtractionPrompt(event: LearningEventRecord): strin
     'القواعد المستخلصة تظل مقترحات غير معتمدة حتى يوافق المحامي عليها صراحة.',
     '',
     'نوع المهمة: ' + task,
-    'مرجع القضية الداخلي: ' + String(event.caseRef || 'غير محدد'),
+    'مرجع القضية الداخلي: ' + String(event.case_ref || 'غير محدد'),
     'سبب التصحيح الذي ذكره المحامي: ' + (reason || 'لم يذكر سبباً صريحاً'),
     'السياق المقدم: ' + context,
     '',
