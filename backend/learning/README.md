@@ -93,4 +93,4 @@ Limits: 1–8 cases per request, 1–30 documents per case, 120,000 characters p
 
 The model must distinguish document facts from inferences, reconstruct chronology and lawyer decisions, identify what was added/omitted/referred to, assess opponent/court/expert responses, and state uncertainty. A case outcome alone is not treated as proof that every strategy was correct.
 
-The user-facing archive workspace is embedded in the legal vault. It reuses the existing upload/OCR/document extraction flow, stores extracted source files locally in IndexedDB under per-case scopes, and sends only extracted text to the learning API. Keep this adapter separate from existing legal-task behavior.
+The user-facing archive workspace is embedded in the legal vault. It reuses the existing upload/OCR/document extraction flow. Original file bytes remain in local IndexedDB; extracted document text, structured analysis, and learning events are retained in the user's Supabase learning tables. Text is sent to Gemini for analysis. Keep this adapter separate from existing legal-task behavior.
