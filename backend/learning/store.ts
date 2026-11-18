@@ -298,3 +298,18 @@ export async function getCaseMemory(
   const rows = await supabaseRequest<CaseMemoryRecord[]>('amin_case_memory?' + query);
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
 }
+
+export async function getLearningEvent(
+  userIdInput: string,
+  eventId: string,
+): Promise<LearningEventRecord | null> {
+  const userId = assertUserId(userIdInput);
+  const query = queryString({
+    select: '*',
+    user_id: 'eq.' + userId,
+    id: 'eq.' + eventId,
+    limit: '1',
+  });
+  const rows = await supabaseRequest<LearningEventRecord[]>('amin_learning_events?' + query);
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
