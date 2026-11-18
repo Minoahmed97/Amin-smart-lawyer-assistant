@@ -3,9 +3,9 @@ import { getSessionToken } from '../services/authService.ts';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
-interface Props { taskType: 'deconstruct' | 'qualify' | 'draft'; userId?: string | null; originalContext: string; result: string; onResultChange?: (nextResult: string) => void }
+interface Props { taskType: 'deconstruct' | 'qualify' | 'draft'; userId?: string | null; caseRef?: string; originalContext: string; result: string; onResultChange?: (nextResult: string) => void }
 
-export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalContext, result, onResultChange }) => {
+export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, caseRef, originalContext, result, onResultChange }) => {
   // A context-specific key preserves a conversation on refresh but isolates different cases.
   const contextFingerprint = (() => {
     let hash = 2166136261;
@@ -15,7 +15,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
     }
     return (hash >>> 0).toString(36);
   })();
-  const storageKey = `amin_legal_followup_${taskType}_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}_${contextFingerprint}`;
+  const storageKey = `amin_legal_followup_${taskType}_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}_${String(caseRef || 'no-case').replace(/[^a-zA-Z0-9_-]/g, '_')}_${contextFingerprint}`;
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const saved = localStorage.getItem(storageKey);
@@ -212,6 +212,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
               originalContext: requestOriginalContext,
               result: requestResult,
               messages: [{ role: 'user', content: question }],
+              caseRef: caseRef || '',
             },
             }),
           });
