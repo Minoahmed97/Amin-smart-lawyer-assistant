@@ -111,7 +111,8 @@ function createTimeoutError(timeoutMs: number, beforeFirstText = false) {
 async function request(options: any, model: string, stream: boolean, provider: { baseUrl: string; apiKey: string; name: string }): Promise<CompatibleProviderRequest> {
   const apiKey = String(provider.apiKey || '').trim();
   const providerName = provider.name || 'AI provider';
-  const endpoint = `${(provider.baseUrl || 'https://ai-provider.ai/api/v1').replace(/\/$/, '')}/chat/completions`;
+  const endpoint = `${String(provider.baseUrl || '').replace(/\/$/, '')}/chat/completions`;
+  if (!provider.baseUrl) throw new Error('عنوان مزود الذكاء الاصطناعي غير مضبوط.');
   if (!apiKey) {
     const error: any = new Error(`مفتاح ${providerName} غير مضبوط.`);
     error.statusCode = 503;
@@ -207,7 +208,7 @@ export function createOpenAICompatibleClient(defaultTimeoutMs = 120000, requestD
     models: {
       generateContent: async (options: any) => {
         const timedOptions = applyDefaultTimeout(options);
-        let pending: AI providerRequest | null = null;
+        let pending: CompatibleProviderRequest | null = null;
         try {
           pending = await request(timedOptions, timedOptions.model, false, provider);
           const data: any = await pending.response.json();
