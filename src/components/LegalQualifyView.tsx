@@ -1,3 +1,4 @@
+import { LearningCaseSelector } from './LearningCaseSelector.tsx';
 import React, { useState, useEffect, useRef } from 'react';
 import { qualifyLegalCase, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
@@ -111,6 +112,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
 
 
   const [qualifyError, setQualifyError] = useState<string>('');
+  const [activeLearningCaseRef, setActiveLearningCaseRef] = useState<string>('');
 
   useEffect(() => {
     let active = true;
@@ -151,7 +153,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     try {
       const result = await qualifyLegalCase(disputeDetails, clientGoals, (chunk) => {
         if (operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
-      }, userId);
+      }, userId, activeLearningCaseRef);
       if (result && operationId === resultOperationRef.current) {
         setQualificationResult(result);
         persistentStorage.setItem('judicial_qualify_result', result);
@@ -225,6 +227,8 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
           </div>
         </div>
       </div>
+
+      <LearningCaseSelector userId={userId} value={activeLearningCaseRef} onChange={setActiveLearningCaseRef} />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
         {/* Input Panel (5 cols) */}
