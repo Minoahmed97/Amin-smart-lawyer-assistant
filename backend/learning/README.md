@@ -98,3 +98,9 @@ Limits: 1–8 cases per request, 1–30 documents per case, 120,000 characters p
 The model must distinguish document facts from inferences, reconstruct chronology and lawyer decisions, identify what was added/omitted/referred to, assess opponent/court/expert responses, and state uncertainty. A case outcome alone is not treated as proof that every strategy was correct.
 
 The user-facing archive workspace is embedded in the legal vault. It reuses the existing upload/OCR/document extraction flow. Original file bytes remain in local IndexedDB; extracted document text, structured analysis, and learning events are retained in the user's Supabase learning tables. Text is sent to Gemini for analysis. Keep this adapter separate from existing legal-task behavior.
+
+## ربط تاريخ القضية بالمهام الحية
+
+عند اختيار قضية من محدد القضايا في التفنيد أو التكييف أو الصياغة أو تدقيق المسودة أو المحادثة اللاحقة، تسترجع الخدمة سجل `amin_case_memory` الخاص بالمستخدم والقضية المحددة، وتقرأ `case_state.archiveAnalysis` فقط. يُنسّق السياق بحد أقصى يقارب 6,500 حرف، ويقتصر على ملخص القضية ومواقف الأطراف وطلباتهم والتسلسل الزمني وقرارات المحامي وردود الخصم/الخبير/المحكمة والنتيجة والفجوات.
+
+هذا الملخص سياق تاريخي مساعد وليس مستنداً أصلياً أو دليلاً أو مصدراً قانونياً. يتعين على النموذج مطابقته مع مدخلات ومستندات المهمة الحالية، وتحديد ما استجد وما تغير، وعدم نقل طلبات أو دفوع قديمة باعتبارها ما زالت قائمة. لا توجد قاعدة ثابتة تلزم بالرد الشامل أو الرد المحدود أو الإحالة إلى مذكرة سابقة؛ يحدد نطاق الرد بحسب القضية والمرحلة والطلبات الحالية. عند عدم اختيار قضية أو تعذر استرجاع سجلها، تستمر المهمة دون هذا السياق ودون تعطيل الخدمة.
