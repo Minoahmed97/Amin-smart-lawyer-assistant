@@ -5,6 +5,7 @@ import {
   getCaseMemory,
   listApprovedProfessionalMemories,
   listLearningEvents,
+  listProposedProfessionalMemories,
   markLearningEventProcessed,
   recordLearningEvent,
   reviewProfessionalMemory,
@@ -208,11 +209,11 @@ export default async function handler(req: any, res: any) {
     }
 
     if (action === 'list-review-queue') {
-      const [events, memories] = await Promise.all([
+      const [events, proposedMemories] = await Promise.all([
         listLearningEvents(session.userId, 'pending_review', 50),
-        listApprovedProfessionalMemories(session.userId, 1),
+        listProposedProfessionalMemories(session.userId, 50),
       ]);
-      return res.status(200).json({ ok: true, events, approvedMemoryCount: memories.length });
+      return res.status(200).json({ ok: true, events, proposedMemories });
     }
 
     return res.status(400).json({ error: 'إجراء ذاكرة أمين غير معروف.' });
