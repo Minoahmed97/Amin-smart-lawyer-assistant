@@ -404,7 +404,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, maxContinuations: 10, continuationContextChars: 12000 });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, maxContinuations: 5, continuationContextChars: 12000 });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -420,7 +420,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, maxContinuations: 10, continuationContextChars: 12000 });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, maxContinuations: 5, continuationContextChars: 12000 });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
