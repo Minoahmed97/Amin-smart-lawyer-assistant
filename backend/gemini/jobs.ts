@@ -360,7 +360,10 @@ function isRetryableLegalTaskFailure(taskType: string, statusCode: number, error
   if (/safety|recitation|blocklist|spii|blockedresponse|قيد محتوى|توقف النموذج بسبب|مفتاح.{0,20}(?:غير صالح|ملغى)|api key.{0,20}(?:invalid|revoked)|no valid.{0,20}key|لم يتم العثور على مفتاح gemini صالح|not configured|غير مضبوط|بيانات المهمة.{0,20}غير صالحة/.test(message)) return false;
   if (statusCode === 413) return /tpm|tokens per minute|request too large|حجم الطلب/.test(message);
   if ([408, 425, 429, 500, 502, 503, 504].includes(statusCode)) return true;
-  return /resource_exhausted|quota|rate.?limit|too many requests|timeout|timed out|fetch failed|econnreset|econnrefused|network|انتهت المهلة|استنفدت حصص|حد الاستخدام|تعذر الاتصال|انقطع الاتصال|tokens per minute|tpm|لم يصل نص|استجابة فارغة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة|تعذر إكمال المهمة/.test(message);
+  // Streaming handlers keep HTTP 200 after headers are sent; classify an
+  // incomplete generated document by its error text so the durable worker
+  // resumes from partial_result instead of marking the job as terminally failed.
+  return /resource_exhausted|quota|rate.?limit|too many requests|timeout|timed out|fetch failed|econnreset|econnrefused|network|انتهت المهلة|استنفدت حصص|حد الاستخدام|تعذر الاتصال|انقطع الاتصال|tokens per minute|tpm|لم يصل نص|استجابة فارغة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة|تعذر إكمال المهمة|لم تكتمل الإجابة بعد\\s*\\d+\\s*محاولات استكمال|انتهى الوقت المتاح قبل اكتمال المستند/.test(message);
 }
 
 /** Requeue transient legal-AI failures without losing streamed text or the original request. */
