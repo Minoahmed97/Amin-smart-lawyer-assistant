@@ -426,9 +426,13 @@ async function requeueLegalAiTask(
   // A Vercel execution-window continuation is not a provider quota failure:
   // resume it quickly from the saved text instead of applying long exponential backoff.
   const executionWindowContinuation = /انتهى الوقت المتاح قبل اكتمال المستند|لم تكتمل الإجابة بعد .*محاولات استكمال|execution time limit|function timed out/i.test(String(error || ''));
-  const delaySeconds = executionWindowContinuation
+  const baseDelaySeconds = executionWindowContinuation
     ? 5
     : Math.min(3600, 30 * (2 ** Math.min(7, retryCount - 1)));
+  const draftDeadlineAt = taskType === 'counter-brief' ? Number(payload._deadlineAt) : NaN;
+  const delaySeconds = Number.isFinite(draftDeadlineAt) && draftDeadlineAt > 0
+    ? Math.min(baseDelaySeconds, Math.max(1, Math.floor((draftDeadlineAt - Date.now()) / 1000)))
+    : baseDelaySeconds;
 
   try {
     await patchJob(jobId, userId, {
