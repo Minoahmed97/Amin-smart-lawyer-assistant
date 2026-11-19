@@ -119,7 +119,7 @@ export default async function handler(req: any, res: any) {
         undefined,
         undefined,
         false,
-        { fullGeminiRetryPass: true },
+        { fullGeminiRetryPass: true, rotationAttemptedPairs: req?.rotationAttemptedPairs },
       );
 
       let editData: any;
@@ -201,7 +201,7 @@ export default async function handler(req: any, res: any) {
       const caseHistoryInstruction = await getCaseHistoryInstruction(session.userId, caseRef);
       const prompt = `${caseHistoryInstruction ? `${caseHistoryInstruction}\n\n` : ''}${learningInstruction ? `${learningInstruction}\n\n` : ''}أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}). أجب على طلب أو سؤال المحامي التالي في الشات مباشرة. إذا طلب عرض المذكرة أو جزء منها في الشات، اعرض المطلوب في الشات. لا تقم بتعديل المستند الأساسي. [النتيجة الحالية للمستند للاطلاع والاستعانة بها] ${result} [طلب أو سؤال المحامي] ${latestUserMessage}`;
 
-      const rawAnswer = await generateDeepLegalResponse(prompt, undefined, { fullGeminiRetryPass: true });
+      const rawAnswer = await generateDeepLegalResponse(prompt, undefined, { fullGeminiRetryPass: true, rotationAttemptedPairs: req?.rotationAttemptedPairs });
 
       answer = rawAnswer
         .replace(/^```(?:text|markdown|json)?\s*/i, '')
