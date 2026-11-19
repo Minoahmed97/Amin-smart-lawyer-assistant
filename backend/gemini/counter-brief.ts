@@ -31,7 +31,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; fullGeminiRetryPass?: boolean; initialAccumulatedText?: string; rotationAttemptedPairs?: string[]; persistRotationProgress?: (pairs: string[]) => Promise<void> } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; fullGeminiRetryPass?: boolean; initialAccumulatedText?: string; rotationAttemptedPairs?: string[]; persistRotationProgress?: (pairs: string[]) => Promise<void>; maxContinuations?: number; continuationContextChars?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -41,7 +41,11 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
-  const maxContinuations = 5;
+  // Drafting can require more output segments than analysis tasks. Keep the
+  // execution deadline bounded by the worker window, but allow the caller to
+  // request additional short continuation segments within that same window.
+  const maxContinuations = Math.max(5, Math.min(12, Math.floor(options.maxContinuations ?? 5)));
+  const continuationContextChars = Math.max(6000, Math.min(16000, Math.floor(options.continuationContextChars ?? 12000)));
   const usedPairs = new Set<string>();
   const rotationAttemptedPairs = options.rotationAttemptedPairs || [];
   const deadlineAt = Date.now() + 270000;
@@ -52,7 +56,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let nextProviderAttempt: 'gemini-primary' | 'groq-fallback' | undefined;
 
   const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
+    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو الجزء الأخير من النص الذي تم توليده بالفعل، وهو جزء من المستند نفسه؛ اعتبر ما سبقه من النص محفوظاً ولا تعِد كتابته:\n${accumulatedText.slice(-continuationContextChars)}\n\nتابع مباشرة من آخر موضع ظاهر أعلاه دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
     : optimizedPrompt;
 
   if (onChunk) {
@@ -400,7 +404,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, maxContinuations: 10, continuationContextChars: 12000 });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -416,7 +420,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, maxContinuations: 10, continuationContextChars: 12000 });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
