@@ -74,6 +74,14 @@ function recordRotationProgress(options: KeyRotationExecutionOptions | undefined
   if (!progress.includes(id)) progress.push(id);
 }
 
+function clearRotationProgress(options: KeyRotationExecutionOptions | undefined, key: string, model: string) {
+  const progress = options?.rotationAttemptedPairs;
+  if (!progress) return;
+  const id = rotationProgressPairId(key, model);
+  const index = progress.indexOf(id);
+  if (index >= 0) progress.splice(index, 1);
+}
+
 function isCooling(map: Map<string, number>, id: string, now = Date.now()): boolean {
   const until = map.get(id) || 0;
   if (until <= now) {
@@ -680,6 +688,7 @@ export async function executeWithKeyRotation<T>(
         try {
           const result = await action(ai, currentKey, model);
           if (Date.now() >= deadlineAt) throw timeoutError();
+          clearRotationProgress(executionOptions, currentKey, model);
           activeKeyIndex = currentKeyIndex;
           return result;
         } catch (err: any) {
@@ -886,6 +895,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
             }
           }
           activeKeyIndex = currentKeyIndex;
+          clearRotationProgress(executionOptions, currentKey, model);
           return;
         } catch (err: any) {
           lastGeminiError = err;
