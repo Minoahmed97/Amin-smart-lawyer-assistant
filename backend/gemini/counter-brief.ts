@@ -150,7 +150,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             onChunk(addition);
           }
           segmentPrefixResolved = true;
-        }, undefined, undefined, false, {
+        }, undefined, undefined, nextProviderAttempt === 'gemini-primary', {
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
           ...(nextProviderAttempt ? { providerAttempt: nextProviderAttempt } : {}),
