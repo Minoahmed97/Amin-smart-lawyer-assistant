@@ -353,10 +353,10 @@ const RETRYABLE_LEGAL_TASKS = new Set(['counter-brief', 'deconstruct', 'qualify'
 function isRetryableLegalTaskFailure(taskType: string, statusCode: number, error: string) {
   if (!RETRYABLE_LEGAL_TASKS.has(taskType)) return false;
   const message = String(error || '').toLowerCase();
-  if (/safety|recitation|blocklist|spii|blockedresponse|مفتاح.{0,20}(?:غير صالح|ملغى)|api key.{0,20}(?:invalid|revoked)|no valid.{0,20}key|لم يتم العثور على مفتاح gemini صالح|not configured|غير مضبوط|بيانات المهمة.{0,20}غير صالحة/.test(message)) return false;
+  if (/safety|recitation|blocklist|spii|blockedresponse|قيد محتوى|توقف النموذج بسبب|مفتاح.{0,20}(?:غير صالح|ملغى)|api key.{0,20}(?:invalid|revoked)|no valid.{0,20}key|لم يتم العثور على مفتاح gemini صالح|not configured|غير مضبوط|بيانات المهمة.{0,20}غير صالحة/.test(message)) return false;
   if (statusCode === 413) return /tpm|tokens per minute|request too large|حجم الطلب/.test(message);
   if ([408, 425, 429, 500, 502, 503, 504].includes(statusCode)) return true;
-  return /resource_exhausted|quota|rate.?limit|too many requests|timeout|timed out|fetch failed|econnreset|econnrefused|network|انتهت المهلة|استنفدت حصص|حد الاستخدام|تعذر الاتصال|انقطع الاتصال|tokens per minute|tpm/.test(message);
+  return /resource_exhausted|quota|rate.?limit|too many requests|timeout|timed out|fetch failed|econnreset|econnrefused|network|انتهت المهلة|استنفدت حصص|حد الاستخدام|تعذر الاتصال|انقطع الاتصال|tokens per minute|tpm|لم يصل نص|استجابة فارغة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة|تعذر إكمال المهمة/.test(message);
 }
 
 /** Requeue transient legal-AI failures without losing streamed text or the original request. */
@@ -377,15 +377,14 @@ async function requeueLegalAiTask(
   if (partialResult.trim() && taskType !== 'legal-chat') nextPayload._resumeText = partialResult;
   const delaySeconds = Math.min(3600, 30 * (2 ** Math.min(7, retryCount - 1)));
 
-  await patchJob(jobId, userId, {
-    status: 'queued',
-    error: String(error || 'تعذر إكمال المهمة؛ ستتم إعادة المحاولة تلقائيًا.').slice(0, 1000),
-    partial_result: partialResult,
-    payload: nextPayload,
-    completed_at: null,
-  });
-
   try {
+    await patchJob(jobId, userId, {
+      status: 'queued',
+      error: String(error || 'تعذر إكمال المهمة؛ ستتم إعادة المحاولة تلقائيًا.').slice(0, 1000),
+      partial_result: partialResult,
+      payload: nextPayload,
+      completed_at: null,
+    });
     await send('amin-ai-jobs', { jobId }, {
       idempotencyKey: `${jobId}:retry:${retryCount}`,
       delaySeconds,
@@ -802,6 +801,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       }
       await sendCompletionPush(userId, jobId, taskType, 'failed', payload.fileName || '');
     } catch (persistError: any) {
+      if (persistError?.queueRetryRequired) throw persistError;
       console.error('AI job failure could not be persisted:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(persistError?.message || persistError) }));
     }
   } finally {
