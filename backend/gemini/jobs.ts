@@ -702,8 +702,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   let phase = 'start';
   
   const heartbeat = setInterval(() => {
-    const persistedPayload = { ...payload, _rotationAttemptedPairs: JSON.stringify(rotationAttemptedPairs) };
-    void patchJob(jobId, userId, { payload: persistedPayload }).catch(() => {});
+    void patchJob(jobId, userId, {}).catch(() => {});
   }, 30_000);
 
   const fakeRes: any = {
