@@ -756,6 +756,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       headers: { ...(originalReq?.headers || {}), authorization: `Bearer ${token}` },
       rotationAttemptedPairs,
       persistRotationProgress,
+      isDurableAiWorker: true,
       body: { ...payload, stream: true },
     };
     phase = 'run-handler';
