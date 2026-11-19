@@ -805,7 +805,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       const currentKey = keys[currentKeyIndex];
       if (permanentlyInvalidKeys.has(currentKey)) continue;
       const keyModels = cycle === 0
-        ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length)
+        ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length, exhaustiveGeminiPasses)
         : exhaustiveGeminiPasses
           ? preferredModels.filter((model) => !avoidedPairs.has(`${currentKey}::${model}`))
           : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
