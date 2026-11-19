@@ -158,7 +158,9 @@ function isAiRateLimitExempt(session: { userId: string; username?: string }): bo
  */
 export async function enforceAiCooldown(req: any, validatedSession?: { userId: string; username?: string }) {
   const session = validatedSession || (await requireActiveSession(req)).session;
-  if (!isAiRateLimitExempt(session)) {
+  // A queued task is one user operation, even when its server worker must resume it many times.
+  // Keep the original request/account checks, but do not charge every background retry as a new request.
+  if (req?.isDurableAiWorker !== true && !isAiRateLimitExempt(session)) {
     await consumePersistentRateLimit('ai-global-10m', session.userId, 5, 10 * 60 * 1000, req);
     await consumePersistentRateLimit('ai-global-24h', session.userId, 50, 24 * 60 * 60 * 1000, req);
   }
