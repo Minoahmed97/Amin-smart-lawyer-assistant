@@ -67,11 +67,21 @@ function rotationProgressPairId(key: string, model: string): string {
   return `${keyFingerprint}:${model}`;
 }
 
-function recordRotationProgress(options: KeyRotationExecutionOptions | undefined, key: string, model: string) {
+async function recordRotationProgress(options: KeyRotationExecutionOptions | undefined, key: string, model: string) {
   const progress = options?.rotationAttemptedPairs;
   if (!progress) return;
   const id = rotationProgressPairId(key, model);
   if (!progress.includes(id)) progress.push(id);
+  try {
+    await options?.persistRotationProgress?.([...progress]);
+  } catch (error: any) {
+    clearRotationProgress(options, key, model);
+    const persistError: any = new Error('تعذر حفظ موضع تدوير مفاتيح Gemini على الخادم قبل بدء المحاولة. ستتم إعادة جدولة المهمة.');
+    persistError.status = 503;
+    persistError.statusCode = 503;
+    persistError.cause = error;
+    throw persistError;
+  }
 }
 
 function clearRotationProgress(options: KeyRotationExecutionOptions | undefined, key: string, model: string) {
@@ -532,6 +542,8 @@ type KeyRotationExecutionOptions = {
   fullGeminiRetryPass?: boolean;
   /** Hashed Gemini key/model pairs already attempted by this durable job. Mutated as attempts begin. */
   rotationAttemptedPairs?: string[];
+  /** Durably save the attempted-pair set before sending a provider request. */
+  persistRotationProgress?: (pairs: string[]) => Promise<void>;
 };
 
 async function getDirectGroqConfig() {
@@ -676,7 +688,7 @@ export async function executeWithKeyRotation<T>(
         const pair = rotationPairKey(currentKey, model);
         if (cycle > 0) retryablePairs.delete(pair);
         attemptedModelCount += 1;
-        recordRotationProgress(executionOptions, currentKey, model);
+        await recordRotationProgress(executionOptions, currentKey, model);
         const cycleDeadlineAt = cycle === 0 ? firstCycleDeadlineAt : deadlineAt;
         const remainingMs = cycleDeadlineAt - Date.now();
         if (remainingMs < 1000) {
@@ -882,7 +894,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           break geminiKeyLoop;
         }
         attemptedModelCount += 1;
-        recordRotationProgress(executionOptions, currentKey, model);
+        await recordRotationProgress(executionOptions, currentKey, model);
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, Math.max(1000, remainingMs))));
         let emittedAnyChunk = false;
         try {
