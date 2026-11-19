@@ -94,20 +94,7 @@ function removeRotationProgress(options: KeyRotationExecutionOptions | undefined
   return { progress, id, index };
 }
 
-async function clearRotationProgress(options: KeyRotationExecutionOptions | undefined, key: string, model: string) {
-  const removed = removeRotationProgress(options, key, model);
-  if (!removed) return;
-  try {
-    await options?.persistRotationProgress?.([...removed.progress]);
-  } catch (error: any) {
-    removed.progress.splice(removed.index, 0, removed.id);
-    const persistError: any = new Error('تعذر تحديث تقدم تدوير مفاتيح Gemini بعد نجاح المحاولة.');
-    persistError.status = 503;
-    persistError.statusCode = 503;
-    persistError.cause = error;
-    throw persistError;
-  }
-}
+
 
 function isCooling(map: Map<string, number>, id: string, now = Date.now()): boolean {
   const until = map.get(id) || 0;
@@ -717,7 +704,6 @@ export async function executeWithKeyRotation<T>(
         try {
           const result = await action(ai, currentKey, model);
           if (Date.now() >= deadlineAt) throw timeoutError();
-          await clearRotationProgress(executionOptions, currentKey, model);
           activeKeyIndex = currentKeyIndex;
           return result;
         } catch (err: any) {
@@ -924,7 +910,6 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
             }
           }
           activeKeyIndex = currentKeyIndex;
-          await clearRotationProgress(executionOptions, currentKey, model);
           return;
         } catch (err: any) {
           lastGeminiError = err;
