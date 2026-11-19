@@ -593,7 +593,11 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   if (!job) return;
   const initialPayload = toPayload(job.payload);
   const initialTaskType = initialPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
-  if (await failExpiredDraftJob(jobId, String(job.user_id || ''), initialTaskType, initialPayload, String(job.partial_result || ''))) return;
+  const lastActivityAt = Date.parse(String(job.updated_at || ''));
+  const staleRunningJob = job.status === 'running' &&
+    (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS);
+  if ((job.status === 'queued' || staleRunningJob) &&
+    await failExpiredDraftJob(jobId, String(job.user_id || ''), initialTaskType, initialPayload, String(job.partial_result || ''))) return;
 
   // Recover a job whose previous function invocation was terminated by its
   // platform execution limit. A live worker refreshes updated_at every 30s,
@@ -1131,10 +1135,14 @@ export default async function handler(req: any, res: any) {
       let job = Array.isArray(rows) ? rows[0] : null;
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
 
-      // Enforce the drafting deadline even if a worker was interrupted and its queue retry is delayed.
+      // Enforce the drafting deadline for queued jobs or genuinely stale workers.
       const statusPayload = toPayload(job.payload);
       const statusTaskType = statusPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
-      if (await failExpiredDraftJob(id, session.userId, statusTaskType, statusPayload, String(job.partial_result || ''))) {
+      const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
+      const staleRunningJob = job.status === 'running' && Number.isFinite(lastActivityAt) &&
+        Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS;
+      if ((job.status === 'queued' || staleRunningJob) &&
+        await failExpiredDraftJob(id, session.userId, statusTaskType, statusPayload, String(job.partial_result || ''))) {
         const refreshed = await supabase(jobPath);
         const refreshedRows = await refreshed.json().catch(() => []);
         job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
@@ -1143,7 +1151,6 @@ export default async function handler(req: any, res: any) {
       // PDF OCR keeps the original Mino-ocr dispatcher; image OCR uses Vercel Queues.
       const isPdfJob = isPdfOcrPayload('ocr', toPayload(job.payload));
 
-      const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
         // Do not convert an interrupted background task into a terminal failure.
         // Return it to the durable queue so the same stored payload can resume.
