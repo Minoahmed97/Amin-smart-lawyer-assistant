@@ -353,7 +353,7 @@ const RETRYABLE_LEGAL_TASKS = new Set(['counter-brief', 'deconstruct', 'qualify'
 function isRetryableLegalTaskFailure(taskType: string, statusCode: number, error: string) {
   if (!RETRYABLE_LEGAL_TASKS.has(taskType)) return false;
   const message = String(error || '').toLowerCase();
-  if (/safety|recitation|blocklist|spii|blockedresponse|مفتاح.{0,20}(?:غير صالح|ملغى)|api key.{0,20}(?:invalid|revoked)|not configured|غير مضبوط|بيانات المهمة.{0,20}غير صالحة/.test(message)) return false;
+  if (/safety|recitation|blocklist|spii|blockedresponse|مفتاح.{0,20}(?:غير صالح|ملغى)|api key.{0,20}(?:invalid|revoked)|no valid.{0,20}key|لم يتم العثور على مفتاح gemini صالح|not configured|غير مضبوط|بيانات المهمة.{0,20}غير صالحة/.test(message)) return false;
   if (statusCode === 413) return /tpm|tokens per minute|request too large|حجم الطلب/.test(message);
   if ([408, 425, 429, 500, 502, 503, 504].includes(statusCode)) return true;
   return /resource_exhausted|quota|rate.?limit|too many requests|timeout|timed out|fetch failed|econnreset|econnrefused|network|انتهت المهلة|استنفدت حصص|حد الاستخدام|تعذر الاتصال|انقطع الاتصال|tokens per minute|tpm/.test(message);
