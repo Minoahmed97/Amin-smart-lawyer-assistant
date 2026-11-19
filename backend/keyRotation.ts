@@ -71,7 +71,8 @@ async function recordRotationProgress(options: KeyRotationExecutionOptions | und
   const progress = options?.rotationAttemptedPairs;
   if (!progress) return;
   const id = rotationProgressPairId(key, model);
-  if (!progress.includes(id)) progress.push(id);
+  if (progress.includes(id)) return;
+  progress.push(id);
   try {
     await options?.persistRotationProgress?.([...progress]);
   } catch (error: any) {
