@@ -31,7 +31,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; fullGeminiRetryPass?: boolean; initialAccumulatedText?: string; rotationAttemptedPairs?: string[]; persistRotationProgress?: (pairs: string[]) => Promise<void>; maxContinuations?: number; continuationContextChars?: number; deadlineAt?: number } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; singleGeminiRotationPass?: boolean; initialAccumulatedText?: string; rotationAttemptedPairs?: string[]; persistRotationProgress?: (pairs: string[]) => Promise<void>; maxContinuations?: number; continuationContextChars?: number; deadlineAt?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -160,7 +160,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
           ...(nextProviderAttempt ? { providerAttempt: nextProviderAttempt } : {}),
-          fullGeminiRetryPass: options.fullGeminiRetryPass === true,
+          singleGeminiRotationPass: options.singleGeminiRotationPass === true,
           rotationAttemptedPairs,
           persistRotationProgress: options.persistRotationProgress,
         });
@@ -275,7 +275,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       }, undefined, undefined, false, {
         deadlineAt,
         avoidPairs: Array.from(usedPairs),
-        fullGeminiRetryPass: options.fullGeminiRetryPass === true,
+        singleGeminiRotationPass: options.singleGeminiRotationPass === true,
         rotationAttemptedPairs,
         persistRotationProgress: options.persistRotationProgress,
       });
@@ -406,7 +406,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, deadlineAt: Number(body?._deadlineAt) || undefined });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, singleGeminiRotationPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, deadlineAt: Number(body?._deadlineAt) || undefined });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -422,7 +422,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, deadlineAt: Number(body?._deadlineAt) || undefined });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, singleGeminiRotationPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, deadlineAt: Number(body?._deadlineAt) || undefined });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
