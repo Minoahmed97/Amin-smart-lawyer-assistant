@@ -81,9 +81,11 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               model,
               contents: segmentPrompt,
               config: {
-                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                systemInstruction: key === 'groq' ? GROQ_LEGAL_SYSTEM_INSTRUCTION : EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
                 temperature: 0.15,
-                maxOutputTokens: 32768,
+                // Keep Groq as a last-resort fallback with a bounded segment;
+                // the existing continuation loop requests subsequent segments.
+                maxOutputTokens: key === 'groq' ? 2048 : 32768,
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
               },
