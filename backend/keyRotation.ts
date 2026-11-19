@@ -546,6 +546,8 @@ type KeyRotationExecutionOptions = {
   avoidPairs?: string[];
   /** Force two complete Gemini key/model passes before direct Groq fallback. */
   fullGeminiRetryPass?: boolean;
+  /** Match the reference's single complete Gemini key/model rotation for drafting. */
+  singleGeminiRotationPass?: boolean;
   /** Hashed Gemini key/model pairs already attempted by this durable job. Mutated as attempts begin. */
   rotationAttemptedPairs?: string[];
   /** Durably save the attempted-pair set before sending a provider request. */
@@ -668,7 +670,8 @@ export async function executeWithKeyRotation<T>(
     : deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
   let completedGeminiPasses = 0;
 
-  for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
+  const maxRotationCycles = executionOptions?.singleGeminiRotationPass === true ? 1 : GENERAL_MAX_ROTATION_CYCLES;
+  for (let cycle = 0; cycle < maxRotationCycles; cycle++) {
     if (cycle > 0) {
       if ((!exhaustiveGeminiPasses && retryablePairs.size === 0) || Date.now() >= deadlineAt) break;
       await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(0, deadlineAt - Date.now()))));
