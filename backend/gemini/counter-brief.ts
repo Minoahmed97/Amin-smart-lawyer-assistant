@@ -375,16 +375,16 @@ export default async function handler(req: any, res: any) {
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
-    const prompt = `${caseHistoryInstruction ? `${caseHistoryInstruction}\\n\\n` : ''}${learningInstruction ? `${learningInstruction}\\n\\n` : ''}[مهمة الصياغة القانونية]
+    const prompt = `${caseHistoryInstruction ? `${caseHistoryInstruction}\n\n` : ''}${learningInstruction ? `${learningInstruction}\n\n` : ''}[مهمة الصياغة القانونية]
 أعد المستند القضائي المطلوب للمحامي المصري اعتماداً على بيانات القضية الحالية وحدها، مع الالتزام بنوع العمل والطلبات التي حددها المحامي.
 ${workTypeInstruction}
 [بيانات القضية]
-المحكمة: ${courtType || 'المحكمة المختصة}؛ الدائرة: ${circuit || ''}؛ صفة الموكل: ${clientRole || 'غير محددة صراحةً؛ لا تفترضها'}؛ الموكل: ${clientName || 'غير محدد'}؛ الخصم: ${opponentName || 'غير محدد'}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}.
+المحكمة: ${courtType || 'المحكمة المختصة'}؛ الدائرة: ${circuit || ''}؛ صفة الموكل: ${clientRole || 'غير محددة صراحةً؛ لا تفترضها'}؛ الموكل: ${clientName || 'غير محدد'}؛ الخصم: ${opponentName || 'غير محدد'}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}.
 
 [وقائع الدعوى والمعلومات الحالية]
 ${facts}
 
-${defenses ? `\\n[الدفوع وأوجه الدفاع التي حددها المحامي]\\n${defenses}\\n` : ''}${requests ? `[الطلبات التي حددها المحامي]\\n${requests}\\n` : ''}${customInstructions ? `[تعليمات المحامي الإضافية]\\n${customInstructions}\\n` : ''}
+${defenses ? `\n[الدفوع وأوجه الدفاع التي حددها المحامي]\n${defenses}\n` : ''}${requests ? `[الطلبات التي حددها المحامي]\n${requests}\n` : ''}${customInstructions ? `[تعليمات المحامي الإضافية]\n${customInstructions}\n` : ''}
 [خزانة المحامي — البصمة والأسلوب والبنية فقط]
 ${vaultContext}
 
