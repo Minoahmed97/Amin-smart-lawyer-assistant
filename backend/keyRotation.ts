@@ -80,6 +80,7 @@ async function recordRotationProgress(options: KeyRotationExecutionOptions | und
     const persistError: any = new Error('تعذر حفظ موضع تدوير مفاتيح Gemini على الخادم قبل بدء المحاولة. ستتم إعادة جدولة المهمة.');
     persistError.status = 503;
     persistError.statusCode = 503;
+    persistError.rotationProgressPersistenceFailed = true;
     persistError.cause = error;
     throw persistError;
   }
@@ -600,7 +601,7 @@ export async function executeWithKeyRotation<T>(
       });
     } catch (error: any) {
       geminiError = error;
-      if (error?.geminiPassesIncomplete) throw error;
+      if (error?.geminiPassesIncomplete || error?.rotationProgressPersistenceFailed) throw error;
     }
 
     if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
@@ -789,7 +790,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       return;
     } catch (error: any) {
       geminiError = error;
-      if (error?.geminiPassesIncomplete) throw error;
+      if (error?.geminiPassesIncomplete || error?.rotationProgressPersistenceFailed) throw error;
       // Never restart the same document with another provider after text was shown.
       if (geminiEmittedText) throw error;
     }
