@@ -667,7 +667,9 @@ export async function executeWithKeyRotation<T>(
   const exhaustiveGeminiPasses = executionOptions?.fullGeminiRetryPass === true;
   const firstCycleDeadlineAt = exhaustiveGeminiPasses
     ? Date.now() + Math.floor(totalGeminiBudget / 2)
-    : deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
+    : executionOptions?.singleGeminiRotationPass === true
+      ? deadlineAt
+      : deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
   let completedGeminiPasses = 0;
 
   const maxRotationCycles = executionOptions?.singleGeminiRotationPass === true ? 1 : GENERAL_MAX_ROTATION_CYCLES;
