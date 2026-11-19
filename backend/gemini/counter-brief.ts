@@ -389,7 +389,7 @@ ${defenses ? `\n[الدفوع وأوجه الدفاع التي حددها الم
 ${vaultContext}
 
 [ضوابط المخرج]
-اكتب بالعربية القانونية، وطبّق بصمة المحامي وبنية نموذجه، وإذا لم يوجد نموذج من النوع نفسه فاستخدم أقرب نموذج بحسب نوع المستند والفرع القانوني وجهة القضاء، دون نقل أي واقعة أو اسم أو رقم أو تاريخ يخص قضية أخرى. ابدأ مباشرة بالديباجة المناسبة، وأخرج المستند المطلوب نفسه دون مقدمة أو تعليق محادثي. التزم بنطاق الطلبات المحددة ولا تضف طلباً قضائياً جديداً. لا تكتب كلمات أو تعليمات تنسيق بالإنجليزية داخل المستند. لا تضف تنبيهاً خارج المستند إلا عند وجود نقطة قانونية محددة يلزم التحقق منها.`;
+اكتب بالعربية القانونية، وطبّق بصمة المحامي وبنية نموذجه، وإذا لم يوجد نموذج من النوع نفسه فاستخدم أقرب نموذج بحسب نوع المستند والفرع القانوني وجهة القضاء، دون نقل أي واقعة أو اسم أو رقم أو تاريخ يخص قضية أخرى. ابدأ مباشرة بالديباجة المناسبة، وأخرج المستند المطلوب نفسه دون مقدمة أو تعليق محادثي. التزم بنطاق الطلبات المحددة ولا تضف طلباً قضائياً جديداً. لا تكتب كلمات أو تعليمات تنسيق بالإنجليزية داخل المستند. لا تضف تنبيهاً خارج المستند إلا عند وجود نقطة قانونية محددة يلزم التحقق منها. لا تتوقف عند الخلاصة أو منتصف الحجة؛ أتمم جميع الأقسام اللازمة لنوع المستند، وعالج الوقائع والدفوع والطلبات المحددة كلها. إذا لم يتسع الجزء الأول، تابع تلقائياً في أجزاء متتابعة من آخر موضع دون إعادة أو إسقاط أي فقرة، ولا تضع علامة اكتمال المستند إلا بعد إنهاء آخر قسم والطلبات الختامية.`;
 
     if (body?.stream === true) {
       res.statusCode = 200;
@@ -419,7 +419,7 @@ ${vaultContext}
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, maxContinuations: 12 });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -435,7 +435,7 @@ ${vaultContext}
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress, maxContinuations: 12 });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
