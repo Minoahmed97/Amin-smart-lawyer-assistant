@@ -559,6 +559,7 @@ export async function executeWithKeyRotation<T>(
       });
     } catch (error: any) {
       geminiError = error;
+      if (error?.geminiPassesIncomplete) throw error;
     }
 
     if (deadlineAt - Date.now() < 10000) throw geminiError || timeoutError();
@@ -633,7 +634,7 @@ export async function executeWithKeyRotation<T>(
       const currentKey = keys[currentKeyIndex];
       if ((!exhaustiveGeminiPasses && isCooling(keyCooldownUntil, currentKey)) || permanentlyInvalidKeys.has(currentKey)) continue;
       const keyModels = cycle === 0
-        ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length)
+        ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length, exhaustiveGeminiPasses)
         : exhaustiveGeminiPasses
           ? preferredModels.filter((model) => !avoidedPairs.has(`${currentKey}::${model}`))
           : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
@@ -667,7 +668,11 @@ export async function executeWithKeyRotation<T>(
     }
   }
 
-  if (exhaustiveGeminiPasses && Date.now() >= deadlineAt) throw timeoutError();
+  if (exhaustiveGeminiPasses && Date.now() >= deadlineAt) {
+    const incompletePassError: any = timeoutError();
+    incompletePassError.geminiPassesIncomplete = true;
+    throw incompletePassError;
+  }
 
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
     if (executionOptions?.providerAttempt === 'gemini-primary') {
@@ -715,6 +720,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       return;
     } catch (error: any) {
       geminiError = error;
+      if (error?.geminiPassesIncomplete) throw error;
       // Never restart the same document with another provider after text was shown.
       if (geminiEmittedText) throw error;
     }
