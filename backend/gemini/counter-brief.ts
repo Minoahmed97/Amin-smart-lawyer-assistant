@@ -49,7 +49,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
   let nextProviderAttempt: 'gemini-primary' | 'groq-fallback' | undefined;
-  let providerRetryCount = 0;
 
   const makeContinuationPrompt = () => accumulatedText
     ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
@@ -168,7 +167,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       // without producing another segment.
       if (segmentError && segmentBuffer.trim()) {
         nextProviderAttempt = activePair.startsWith('groq::') ? 'groq-fallback' : 'gemini-primary';
-        providerRetryCount = 0;
       } else if (segmentError && !segmentBuffer.trim() && nextProviderAttempt === 'gemini-primary') {
         nextProviderAttempt = 'groq-fallback';
         if (activePair) usedPairs.add(activePair);
