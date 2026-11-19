@@ -670,6 +670,10 @@ export async function executeWithKeyRotation<T>(
           if (cycle === 0 && isRetryableRotationFailure(err)) retryablePairs.add(pair);
           activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
           if (permanentlyInvalidKeys.has(currentKey)) break;
+          if (exhaustiveGeminiPasses && Date.now() >= cycleDeadlineAt) {
+            passCompleted = false;
+            break geminiKeyLoop;
+          }
         }
       }
     }
@@ -870,6 +874,10 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
             throw err;
           }
           if (permanentlyInvalidKeys.has(currentKey)) break;
+          if (exhaustiveGeminiPasses && Date.now() >= cycleDeadlineAt) {
+            passCompleted = false;
+            break geminiKeyLoop;
+          }
         }
       }
     }
