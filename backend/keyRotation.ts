@@ -506,6 +506,8 @@ type KeyRotationExecutionOptions = {
   providerAttempt?: 'gemini-primary' | 'groq-fallback';
   /** Previously used key/model pairs are avoided first during continuation. */
   avoidPairs?: string[];
+  /** Force two complete Gemini key/model passes before direct Groq fallback. */
+  fullGeminiRetryPass?: boolean;
 };
 
 async function getDirectGroqConfig() {
@@ -616,20 +618,25 @@ export async function executeWithKeyRotation<T>(
   const totalGeminiBudget = Math.max(0, deadlineAt - Date.now());
   // Keep a small, explicit window for one retry pass; the rest remains available
   // for the first pass and normal model response time.
-  const firstCycleDeadlineAt = deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
+  const exhaustiveGeminiPasses = executionOptions?.fullGeminiRetryPass === true;
+  const firstCycleDeadlineAt = exhaustiveGeminiPasses
+    ? Date.now() + Math.floor(totalGeminiBudget / 2)
+    : deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
 
   for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
     if (cycle > 0) {
-      if (retryablePairs.size === 0 || Date.now() >= deadlineAt) break;
-      await new Promise((r) => setTimeout(r, Math.min(2000, Math.max(0, deadlineAt - Date.now()))));
+      if ((!exhaustiveGeminiPasses && retryablePairs.size === 0) || Date.now() >= deadlineAt) break;
+      await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(0, deadlineAt - Date.now()))));
     }
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
-      if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
+      if ((!exhaustiveGeminiPasses && isCooling(keyCooldownUntil, currentKey)) || permanentlyInvalidKeys.has(currentKey)) continue;
       const keyModels = cycle === 0
         ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length)
-        : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
+        : exhaustiveGeminiPasses
+          ? preferredModels.filter((model) => !avoidedPairs.has(`${currentKey}::${model}`))
+          : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
 
       for (let m = 0; m < keyModels.length; m++) {
         const model = keyModels[m];
@@ -659,6 +666,8 @@ export async function executeWithKeyRotation<T>(
       }
     }
   }
+
+  if (exhaustiveGeminiPasses && Date.now() >= deadlineAt) throw timeoutError();
 
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
     if (executionOptions?.providerAttempt === 'gemini-primary') {
@@ -775,19 +784,25 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   let lastFailedKeyIndex = 0;
   const startIdx = reserveStartIndex(keys.length, 'general');
   const totalGeminiBudget = Math.max(0, deadlineAt - Date.now());
-  const firstCycleDeadlineAt = deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
+  const exhaustiveGeminiPasses = executionOptions?.fullGeminiRetryPass === true;
+  const firstCycleDeadlineAt = exhaustiveGeminiPasses
+    ? Date.now() + Math.floor(totalGeminiBudget / 2)
+    : deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
 
   for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
     if (cycle > 0) {
-      if (retryablePairs.size === 0 || Date.now() >= deadlineAt) break;
-      await new Promise((r) => setTimeout(r, Math.min(2000, Math.max(0, deadlineAt - Date.now()))));
+      if ((!exhaustiveGeminiPasses && retryablePairs.size === 0) || Date.now() >= deadlineAt) break;
+      await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(0, deadlineAt - Date.now()))));
     }
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
+      if (permanentlyInvalidKeys.has(currentKey)) continue;
       const keyModels = cycle === 0
         ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length)
-        : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
+        : exhaustiveGeminiPasses
+          ? preferredModels.filter((model) => !avoidedPairs.has(`${currentKey}::${model}`))
+          : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
 
       for (let m = 0; m < keyModels.length; m++) {
         const model = keyModels[m];
@@ -832,6 +847,8 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       }
     }
   }
+  if (exhaustiveGeminiPasses && Date.now() >= deadlineAt) throw timeoutError();
+
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
     if (executionOptions?.providerAttempt === 'gemini-primary') {
       throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
