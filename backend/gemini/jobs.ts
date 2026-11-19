@@ -187,6 +187,10 @@ function safePayload(input: any, taskType: string) {
       payload[key] = String(value);
     }
   }
+  // These fields are worker-owned state and must not be accepted from a browser request.
+  delete payload._retryCount;
+  delete payload._resumeText;
+  delete payload._rotationAttemptedPairs;
 
   if (taskType === 'legal-chat') {
     const chatType = String(input?.taskType || '');
@@ -496,6 +500,16 @@ function toPayload(value: unknown): Record<string, string> {
   );
 }
 
+function parseRotationAttemptedPairs(value: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(value || '[]'));
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter((item) => typeof item === 'string' && /^[a-f0-9]{24}:.{1,120}$/i.test(item)))].slice(-300);
+  } catch {
+    return [];
+  }
+}
+
 function startClaimedJob(job: any) {
   const userId = String(job?.user_id || '');
   const jobId = String(job?.id || '');
@@ -674,6 +688,7 @@ async function handleWorkerRequest(req: any, res: any) {
 
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
   let fullText = String(payload._resumeText || '');
+  const rotationAttemptedPairs = parseRotationAttemptedPairs(payload._rotationAttemptedPairs);
   let pendingWrite = Promise.resolve();
   let persistedLength = fullText.length;
   let streamError = '';
@@ -681,7 +696,8 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   let phase = 'start';
   
   const heartbeat = setInterval(() => {
-    void patchJob(jobId, userId, {}).catch(() => {});
+    const persistedPayload = { ...payload, _rotationAttemptedPairs: JSON.stringify(rotationAttemptedPairs) };
+    void patchJob(jobId, userId, { payload: persistedPayload }).catch(() => {});
   }, 30_000);
 
   const fakeRes: any = {
@@ -733,6 +749,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       ...originalReq,
       method: 'POST',
       headers: { ...(originalReq?.headers || {}), authorization: `Bearer ${token}` },
+      rotationAttemptedPairs,
       body: { ...payload, stream: true },
     };
     phase = 'run-handler';
@@ -753,6 +770,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
       phase = 'persist-handler-failure';
       console.error('AI job handler returned failure:', JSON.stringify({ jobId, taskType, phase, statusCode: fakeRes.statusCode, error: safeDiagnosticMessage(error), hasPartialResult: Boolean(fullText.trim()) }));
+      payload._rotationAttemptedPairs = JSON.stringify(rotationAttemptedPairs);
       if (await requeueLegalAiTask(jobId, userId, taskType, payload, fullText, error, fakeRes.statusCode)) return;
       if (taskType === 'ocr') {
         const finalized = await finalizeOcrJob(jobId, userId, {
@@ -789,6 +807,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (err?.queueRetryRequired) throw err;
     console.error('AI job processing failed:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(message), hasPartialResult: Boolean(fullText.trim()) }));
     try {
+      payload._rotationAttemptedPairs = JSON.stringify(rotationAttemptedPairs);
       if (await requeueLegalAiTask(jobId, userId, taskType, payload, fullText, message, Number(err?.statusCode || err?.status) || 0)) return;
       phase = 'persist-caught-failure';
       if (taskType === 'ocr') {
