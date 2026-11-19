@@ -419,7 +419,7 @@ ${vaultContext}
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress,  });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -435,7 +435,7 @@ ${vaultContext}
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress,  });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true, initialAccumulatedText: String(body?._resumeText || ''), rotationAttemptedPairs: req?.rotationAttemptedPairs, persistRotationProgress: req?.persistRotationProgress });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
