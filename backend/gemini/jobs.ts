@@ -379,7 +379,12 @@ async function requeueLegalAiTask(
   const nextPayload: Record<string, string> = { ...payload, _retryCount: String(retryCount) };
   if (taskType === 'legal-chat') nextPayload._actualTaskType = 'legal-chat';
   if (partialResult.trim() && taskType !== 'legal-chat') nextPayload._resumeText = partialResult;
-  const delaySeconds = Math.min(3600, 30 * (2 ** Math.min(7, retryCount - 1)));
+  // A Vercel execution-window continuation is not a provider quota failure:
+  // resume it quickly from the saved text instead of applying long exponential backoff.
+  const executionWindowContinuation = /انتهى الوقت المتاح قبل اكتمال المستند|لم تكتمل الإجابة بعد .*محاولات استكمال|execution time limit|function timed out/i.test(String(error || ''));
+  const delaySeconds = executionWindowContinuation
+    ? 5
+    : Math.min(3600, 30 * (2 ** Math.min(7, retryCount - 1)));
 
   try {
     await patchJob(jobId, userId, {
