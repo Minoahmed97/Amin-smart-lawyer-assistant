@@ -162,15 +162,15 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         lastError = error;
       }
 
-      // If Gemini stopped after emitting part of this segment, the next request
-      // must send the accumulated text to Groq as a continuation, not restart it.
-      // If Groq cannot produce a token, give the remaining Gemini pairs one retry.
+      // Preserve partial output and continue the same document. If Gemini emitted
+      // text before a connection failure, retry the continuation through Gemini's
+      // remaining key/model pairs first; Groq is only selected after that pass fails
+      // without producing another segment.
       if (segmentError && segmentBuffer.trim()) {
-        nextProviderAttempt = activePair.startsWith('groq::') ? 'gemini-primary' : 'groq-fallback';
+        nextProviderAttempt = activePair.startsWith('groq::') ? 'groq-fallback' : 'gemini-primary';
         providerRetryCount = 0;
-      } else if (segmentError && !segmentBuffer.trim() && nextProviderAttempt === 'groq-fallback' && providerRetryCount < 1) {
-        nextProviderAttempt = 'gemini-primary';
-        providerRetryCount += 1;
+      } else if (segmentError && !segmentBuffer.trim() && nextProviderAttempt === 'gemini-primary') {
+        nextProviderAttempt = 'groq-fallback';
         if (activePair) usedPairs.add(activePair);
         continue;
       }
