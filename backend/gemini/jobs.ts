@@ -549,12 +549,26 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   if (job.status === 'running') {
     const updatedAt = Date.parse(String(job.updated_at || ''));
     if (!Number.isFinite(updatedAt) || Date.now() - updatedAt < JOB_STALE_TIMEOUT_MS) return;
+    const recoveryPayload = toPayload(job.payload);
+    const recoveredText = String(job.partial_result || '');
+    const recoveredTaskType = recoveryPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
+    // Resume from the last durable stream snapshot instead of restarting from
+    // the original request after Vercel terminates a long-running invocation.
+    if (recoveredText.trim() && RETRYABLE_LEGAL_TASKS.has(recoveredTaskType) && recoveredTaskType !== 'legal-chat') {
+      const previousText = String(recoveryPayload._resumeText || '');
+      if (recoveredText.length > previousText.length) recoveryPayload._resumeText = recoveredText;
+    }
     const requeued = await supabase(
       `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&status=eq.running&updated_at=lt.${encodeURIComponent(new Date(Date.now() - JOB_STALE_TIMEOUT_MS).toISOString())}`,
       {
         method: 'PATCH',
         headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({ status: 'queued', error: null, updated_at: new Date().toISOString() }),
+        body: JSON.stringify({
+          status: 'queued',
+          error: null,
+          payload: recoveryPayload,
+          updated_at: new Date().toISOString(),
+        }),
       },
     );
     if (!requeued.ok) throw new Error(`تعذر استعادة المهمة المتوقفة (${requeued.status}).`);
@@ -590,7 +604,7 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
 }
 
 async function loadQueueJob(jobId: string) {
-  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status,updated_at&id=eq.${encodeURIComponent(jobId)}&limit=1`);
+  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,partial_result,status,updated_at&id=eq.${encodeURIComponent(jobId)}&limit=1`);
   if (!response.ok) throw new Error(`تعذر قراءة المهمة من الطابور (${response.status}).`);
   const rows = await response.json();
   return Array.isArray(rows) ? rows[0] || null : null;
@@ -728,7 +742,9 @@ async function processJob(jobId: string, userId: string, token: string, taskType
           const event = JSON.parse(candidate);
           if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
-            if (fullText.length - persistedLength >= 800) {
+            // Persist smaller stream checkpoints so a platform timeout loses
+            // less work and the next worker can resume from a recent snapshot.
+            if (fullText.length - persistedLength >= 320) {
               persistedLength = fullText.length;
               const snapshot = fullText;
               pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
@@ -1067,12 +1083,24 @@ export default async function handler(req: any, res: any) {
         // Do not convert an interrupted background task into a terminal failure.
         // Return it to the durable queue so the same stored payload can resume.
         try {
+          const recoveryPayload = toPayload(job.payload);
+          const recoveredText = String(job.partial_result || '');
+          const recoveredTaskType = recoveryPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
+          if (recoveredText.trim() && RETRYABLE_LEGAL_TASKS.has(recoveredTaskType) && recoveredTaskType !== 'legal-chat') {
+            const previousText = String(recoveryPayload._resumeText || '');
+            if (recoveredText.length > previousText.length) recoveryPayload._resumeText = recoveredText;
+          }
           const requeued = await supabase(
             `${JOB_TABLE}?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&status=eq.running&updated_at=lt.${encodeURIComponent(new Date(Date.now() - JOB_STALE_TIMEOUT_MS).toISOString())}`,
             {
               method: 'PATCH',
               headers: { Prefer: 'return=representation' },
-              body: JSON.stringify({ status: 'queued', error: null, updated_at: new Date().toISOString() }),
+              body: JSON.stringify({
+                status: 'queued',
+                error: null,
+                payload: recoveryPayload,
+                updated_at: new Date().toISOString(),
+              }),
             },
           );
           const changedRows = requeued.ok ? await requeued.json() : [];
