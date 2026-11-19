@@ -192,6 +192,7 @@ function safePayload(input: any, taskType: string) {
   delete payload._retryCount;
   delete payload._resumeText;
   delete payload._rotationAttemptedPairs;
+  delete payload._deadlineAt;
 
   if (taskType === 'legal-chat') {
     const chatType = String(input?.taskType || '');
@@ -416,7 +417,7 @@ async function requeueLegalAiTask(
   if (!isRetryableLegalTaskFailure(taskType, statusCode, error)) return false;
   if (taskType === 'counter-brief') {
     const deadlineAt = Number(payload._deadlineAt);
-    if (Number.isFinite(deadlineAt) && deadlineAt > 0 && Date.now() >= deadlineAt) return false;
+    if (!Number.isFinite(deadlineAt) || deadlineAt <= 0 || Date.now() >= deadlineAt) return false;
   }
 
   const retryCount = Math.max(0, Number(payload._retryCount) || 0) + 1;
