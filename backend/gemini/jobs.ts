@@ -363,7 +363,7 @@ function isRetryableLegalTaskFailure(taskType: string, statusCode: number, error
   // Streaming handlers keep HTTP 200 after headers are sent; classify an
   // incomplete generated document by its error text so the durable worker
   // resumes from partial_result instead of marking the job as terminally failed.
-  return /resource_exhausted|quota|rate.?limit|too many requests|timeout|timed out|fetch failed|econnreset|econnrefused|network|انتهت المهلة|استنفدت حصص|حد الاستخدام|تعذر الاتصال|انقطع الاتصال|tokens per minute|tpm|لم يصل نص|استجابة فارغة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة|تعذر إكمال المهمة|لم تكتمل الإجابة بعد\\s*\\d+\\s*محاولات استكمال|انتهى الوقت المتاح قبل اكتمال المستند/.test(message);
+  return /resource_exhausted|quota|rate.?limit|too many requests|timeout|timed out|fetch failed|econnreset|econnrefused|network|انتهت المهلة|استنفدت حصص|حد الاستخدام|تعذر الاتصال|انقطع الاتصال|tokens per minute|tpm|لم يصل نص|استجابة فارغة|لم تنتج خدمة الذكاء الاصطناعي نتيجة صالحة|تعذر إكمال المهمة|لم تكتمل الإجابة بعد\s*\d+\s*محاولات استكمال|انتهى الوقت المتاح قبل اكتمال المستند/.test(message);
 }
 
 /** Requeue transient legal-AI failures without losing streamed text or the original request. */
