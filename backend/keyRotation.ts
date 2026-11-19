@@ -588,7 +588,7 @@ export async function executeWithKeyRotation<T>(
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const totalBudget = Math.max(0, deadlineAt - Date.now());
-    const groqReserveMs = Math.min(60_000, Math.max(45_000, Math.floor(totalBudget * 0.18)));
+    const groqReserveMs = Math.floor(totalBudget * 0.1);
     const geminiDeadlineAt = deadlineAt - groqReserveMs;
     let geminiError: any = null;
 
@@ -772,7 +772,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
   if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
     const totalBudget = Math.max(0, deadlineAt - Date.now());
-    const groqReserveMs = Math.min(60_000, Math.max(45_000, Math.floor(totalBudget * 0.18)));
+    const groqReserveMs = Math.floor(totalBudget * 0.1);
     const geminiDeadlineAt = deadlineAt - groqReserveMs;
     let geminiError: any = null;
     let geminiEmittedText = false;
