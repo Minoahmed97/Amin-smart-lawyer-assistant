@@ -165,6 +165,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       // text before a connection failure, retry the continuation through Gemini's
       // remaining key/model pairs first; Groq is only selected after that pass fails
       // without producing another segment.
+      if (segmentError?.geminiPassesIncomplete) throw segmentError;
       if (segmentError && segmentBuffer.trim()) {
         nextProviderAttempt = activePair.startsWith('groq::') ? 'groq-fallback' : 'gemini-primary';
       } else if (segmentError && !segmentBuffer.trim() && nextProviderAttempt === 'gemini-primary') {
