@@ -623,13 +623,19 @@ export async function executeWithKeyRotation<T>(
   const firstCycleDeadlineAt = exhaustiveGeminiPasses
     ? Date.now() + Math.floor(totalGeminiBudget / 2)
     : deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
+  let completedGeminiPasses = 0;
 
   for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
     if (cycle > 0) {
       if ((!exhaustiveGeminiPasses && retryablePairs.size === 0) || Date.now() >= deadlineAt) break;
       await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(0, deadlineAt - Date.now()))));
     }
+    let passCompleted = true;
     geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
+      if (exhaustiveGeminiPasses && cycle === 0 && Date.now() >= firstCycleDeadlineAt) {
+        passCompleted = false;
+        break geminiKeyLoop;
+      }
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if ((!exhaustiveGeminiPasses && isCooling(keyCooldownUntil, currentKey)) || permanentlyInvalidKeys.has(currentKey)) continue;
@@ -648,6 +654,7 @@ export async function executeWithKeyRotation<T>(
         const remainingMs = cycleDeadlineAt - Date.now();
         if (remainingMs < 1000) {
           lastError = timeoutError();
+          passCompleted = false;
           break geminiKeyLoop;
         }
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(30000, remainingMs)));
@@ -666,9 +673,14 @@ export async function executeWithKeyRotation<T>(
         }
       }
     }
+    if (exhaustiveGeminiPasses) {
+      if (cycle === 0 && Date.now() >= firstCycleDeadlineAt) passCompleted = false;
+      if (!passCompleted) break;
+      completedGeminiPasses += 1;
+    }
   }
 
-  if (exhaustiveGeminiPasses && Date.now() >= deadlineAt) {
+  if (exhaustiveGeminiPasses && completedGeminiPasses < 2) {
     const incompletePassError: any = timeoutError();
     incompletePassError.geminiPassesIncomplete = true;
     throw incompletePassError;
@@ -794,13 +806,19 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   const firstCycleDeadlineAt = exhaustiveGeminiPasses
     ? Date.now() + Math.floor(totalGeminiBudget / 2)
     : deadlineAt - Math.min(30000, Math.max(10000, Math.floor(totalGeminiBudget * 0.12)));
+  let completedGeminiPasses = 0;
 
   for (let cycle = 0; cycle < GENERAL_MAX_ROTATION_CYCLES; cycle++) {
     if (cycle > 0) {
       if ((!exhaustiveGeminiPasses && retryablePairs.size === 0) || Date.now() >= deadlineAt) break;
       await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(0, deadlineAt - Date.now()))));
     }
-    for (let offset = 0; offset < keys.length; offset++) {
+    let passCompleted = true;
+    geminiKeyLoop: for (let offset = 0; offset < keys.length; offset++) {
+      if (exhaustiveGeminiPasses && cycle === 0 && Date.now() >= firstCycleDeadlineAt) {
+        passCompleted = false;
+        break geminiKeyLoop;
+      }
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if (permanentlyInvalidKeys.has(currentKey)) continue;
@@ -816,7 +834,10 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         if (cycle > 0) retryablePairs.delete(pair);
         const cycleDeadlineAt = cycle === 0 ? firstCycleDeadlineAt : deadlineAt;
         const remainingMs = cycleDeadlineAt - Date.now();
-        if (remainingMs < 1000) break;
+        if (remainingMs < 1000) {
+          passCompleted = false;
+          break geminiKeyLoop;
+        }
         attemptedModelCount += 1;
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, Math.max(1000, remainingMs))));
         let emittedAnyChunk = false;
@@ -852,8 +873,17 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         }
       }
     }
+    if (exhaustiveGeminiPasses) {
+      if (cycle === 0 && Date.now() >= firstCycleDeadlineAt) passCompleted = false;
+      if (!passCompleted) break;
+      completedGeminiPasses += 1;
+    }
   }
-  if (exhaustiveGeminiPasses && Date.now() >= deadlineAt) throw timeoutError();
+  if (exhaustiveGeminiPasses && completedGeminiPasses < 2) {
+    const incompletePassError: any = timeoutError();
+    incompletePassError.geminiPassesIncomplete = true;
+    throw incompletePassError;
+  }
 
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
     if (executionOptions?.providerAttempt === 'gemini-primary') {
