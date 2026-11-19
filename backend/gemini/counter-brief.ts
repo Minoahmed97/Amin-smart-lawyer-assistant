@@ -31,7 +31,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; fullGeminiRetryPass?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -155,6 +155,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           deadlineAt,
           avoidPairs: Array.from(usedPairs),
           ...(nextProviderAttempt ? { providerAttempt: nextProviderAttempt } : {}),
+          fullGeminiRetryPass: options.fullGeminiRetryPass === true,
         });
       } catch (error: any) {
         segmentError = error;
@@ -267,6 +268,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       }, undefined, undefined, false, {
         deadlineAt,
         avoidPairs: Array.from(usedPairs),
+        fullGeminiRetryPass: options.fullGeminiRetryPass === true,
       });
     } catch (error: any) {
       lastError = error;
@@ -394,7 +396,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, fullGeminiRetryPass: true });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -410,7 +412,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, fullGeminiRetryPass: true });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
