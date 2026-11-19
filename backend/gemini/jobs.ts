@@ -689,6 +689,12 @@ async function handleWorkerRequest(req: any, res: any) {
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
   let fullText = String(payload._resumeText || '');
   const rotationAttemptedPairs = parseRotationAttemptedPairs(payload._rotationAttemptedPairs);
+  const persistRotationProgress = async (pairs: string[]) => {
+    const serialized = JSON.stringify(pairs.slice(-300));
+    const nextPayload = { ...payload, _rotationAttemptedPairs: serialized };
+    await patchJob(jobId, userId, { payload: nextPayload });
+    payload._rotationAttemptedPairs = serialized;
+  };
   let pendingWrite = Promise.resolve();
   let persistedLength = fullText.length;
   let streamError = '';
@@ -750,6 +756,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       method: 'POST',
       headers: { ...(originalReq?.headers || {}), authorization: `Bearer ${token}` },
       rotationAttemptedPairs,
+      persistRotationProgress,
       body: { ...payload, stream: true },
     };
     phase = 'run-handler';
