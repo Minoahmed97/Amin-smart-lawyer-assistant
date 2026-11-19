@@ -31,7 +31,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; fullGeminiRetryPass?: boolean; initialAccumulatedText?: string } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; fullGeminiRetryPass?: boolean; initialAccumulatedText?: string; rotationAttemptedPairs?: string[] } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -43,6 +43,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
   const maxContinuations = 5;
   const usedPairs = new Set<string>();
+  const rotationAttemptedPairs = options.rotationAttemptedPairs || [];
   const deadlineAt = Date.now() + 270000;
   let accumulatedText = String(options.initialAccumulatedText || '');
   let continuationCount = 0;
@@ -155,6 +156,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           avoidPairs: Array.from(usedPairs),
           ...(nextProviderAttempt ? { providerAttempt: nextProviderAttempt } : {}),
           fullGeminiRetryPass: options.fullGeminiRetryPass === true,
+          rotationAttemptedPairs,
         });
       } catch (error: any) {
         segmentError = error;
@@ -268,6 +270,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         deadlineAt,
         avoidPairs: Array.from(usedPairs),
         fullGeminiRetryPass: options.fullGeminiRetryPass === true,
+        rotationAttemptedPairs,
       });
     } catch (error: any) {
       lastError = error;
