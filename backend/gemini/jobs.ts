@@ -348,6 +348,66 @@ async function patchJob(id: string, userId: string, values: Record<string, unkno
   if (!res.ok) throw new Error(`تعذر تحديث حالة المهمة (${res.status}).`);
 }
 
+const RETRYABLE_LEGAL_TASKS = new Set(['counter-brief', 'deconstruct', 'qualify', 'legal-chat']);
+
+function isRetryableLegalTaskFailure(taskType: string, statusCode: number, error: string) {
+  if (!RETRYABLE_LEGAL_TASKS.has(taskType)) return false;
+  const message = String(error || '').toLowerCase();
+  if (/safety|recitation|blocklist|spii|blockedresponse|مفتاح.{0,20}(?:غير صالح|ملغى)|api key.{0,20}(?:invalid|revoked)|not configured|غير مضبوط|بيانات المهمة.{0,20}غير صالحة/.test(message)) return false;
+  if (statusCode === 413) return /tpm|tokens per minute|request too large|حجم الطلب/.test(message);
+  if ([408, 425, 429, 500, 502, 503, 504].includes(statusCode)) return true;
+  return /resource_exhausted|quota|rate.?limit|too many requests|timeout|timed out|fetch failed|econnreset|econnrefused|network|انتهت المهلة|استنفدت حصص|حد الاستخدام|تعذر الاتصال|انقطع الاتصال|tokens per minute|tpm/.test(message);
+}
+
+/** Requeue transient legal-AI failures without losing streamed text or the original request. */
+async function requeueLegalAiTask(
+  jobId: string,
+  userId: string,
+  taskType: string,
+  payload: Record<string, string>,
+  partialResult: string,
+  error: string,
+  statusCode: number,
+) {
+  if (!isRetryableLegalTaskFailure(taskType, statusCode, error)) return false;
+
+  const retryCount = Math.max(0, Number(payload._retryCount) || 0) + 1;
+  const nextPayload: Record<string, string> = { ...payload, _retryCount: String(retryCount) };
+  if (taskType === 'legal-chat') nextPayload._actualTaskType = 'legal-chat';
+  if (partialResult.trim() && taskType !== 'legal-chat') nextPayload._resumeText = partialResult;
+  const delaySeconds = Math.min(3600, 30 * (2 ** Math.min(7, retryCount - 1)));
+
+  await patchJob(jobId, userId, {
+    status: 'queued',
+    error: String(error || 'تعذر إكمال المهمة؛ ستتم إعادة المحاولة تلقائيًا.').slice(0, 1000),
+    partial_result: partialResult,
+    payload: nextPayload,
+    completed_at: null,
+  });
+
+  try {
+    await send('amin-ai-jobs', { jobId }, {
+      idempotencyKey: `${jobId}:retry:${retryCount}`,
+      delaySeconds,
+      retentionSeconds: 7 * 24 * 60 * 60,
+    });
+  } catch (publishError: any) {
+    const retryPublishError: any = new Error('تعذر جدولة استكمال المهمة؛ سيعيد الطابور محاولة تسليمها.');
+    retryPublishError.queueRetryRequired = true;
+    retryPublishError.cause = publishError;
+    throw retryPublishError;
+  }
+
+  console.warn('Legal AI task requeued after a recoverable provider failure:', {
+    jobId,
+    taskType,
+    retryCount,
+    delaySeconds,
+    hasPartialResult: Boolean(partialResult.trim()),
+  });
+  return true;
+}
+
 // OCR only: atomically claim the terminal transition. The database condition
 // makes cancellation and completion mutually exclusive, even when they race.
 async function finalizeOcrJob(
@@ -614,9 +674,9 @@ async function handleWorkerRequest(req: any, res: any) {
 }
 
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
-  let fullText = '';
+  let fullText = String(payload._resumeText || '');
   let pendingWrite = Promise.resolve();
-  let persistedLength = 0;
+  let persistedLength = fullText.length;
   let streamError = '';
   let handlerJson: any = null;
   let phase = 'start';
@@ -694,6 +754,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
       phase = 'persist-handler-failure';
       console.error('AI job handler returned failure:', JSON.stringify({ jobId, taskType, phase, statusCode: fakeRes.statusCode, error: safeDiagnosticMessage(error), hasPartialResult: Boolean(fullText.trim()) }));
+      if (await requeueLegalAiTask(jobId, userId, taskType, payload, fullText, error, fakeRes.statusCode)) return;
       if (taskType === 'ocr') {
         const finalized = await finalizeOcrJob(jobId, userId, {
           status: 'failed', error, partial_result: fullText, payload: {}, completed_at: new Date().toISOString(),
@@ -726,8 +787,10 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     await pendingWrite.catch(() => {});
     const message = String(err?.message || 'تعذر إكمال العملية.').slice(0, 1000);
+    if (err?.queueRetryRequired) throw err;
     console.error('AI job processing failed:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(message), hasPartialResult: Boolean(fullText.trim()) }));
     try {
+      if (await requeueLegalAiTask(jobId, userId, taskType, payload, fullText, message, Number(err?.statusCode || err?.status) || 0)) return;
       phase = 'persist-caught-failure';
       if (taskType === 'ocr') {
         const finalized = await finalizeOcrJob(jobId, userId, {
