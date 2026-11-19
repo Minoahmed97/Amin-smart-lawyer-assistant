@@ -27,6 +27,7 @@ const MAX_OCR_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_FACTS = 200_000;
 const MAX_CONTEXT = 30_000;
 const JOB_STALE_TIMEOUT_MS = 5 * 60 * 1000 + 20 * 1000;
+const DRAFT_JOB_MAX_RUNTIME_MS = 270_000;
 const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة الملف.';
 
 function safeDiagnosticMessage(value: unknown) {
@@ -352,6 +353,42 @@ async function patchJob(id: string, userId: string, values: Record<string, unkno
   if (!res.ok) throw new Error(`تعذر تحديث حالة المهمة (${res.status}).`);
 }
 
+async function failExpiredDraftJob(
+  jobId: string,
+  userId: string,
+  taskType: string,
+  payload: Record<string, string>,
+  partialResult: string,
+): Promise<boolean> {
+  if (taskType !== 'counter-brief') return false;
+  const deadlineAt = Number(payload._deadlineAt);
+  if (!Number.isFinite(deadlineAt) || deadlineAt <= 0 || Date.now() < deadlineAt) return false;
+
+  const error = 'انتهت المهلة الإجمالية المحددة للصياغة (270 ثانية) قبل اكتمال المستند. تم حفظ النص الذي وصل إليه دون اعتباره مستنداً مكتملاً.';
+  const response = await supabase(
+    `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&status=not.in.(completed,failed)`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({
+        status: 'failed',
+        error,
+        partial_result: partialResult,
+        payload: {},
+        updated_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`تعذر إنهاء مهمة الصياغة بعد انتهاء مهلتها (${response.status}).`);
+  const changedRows = await response.json().catch(() => []);
+  if (Array.isArray(changedRows) && changedRows.length) {
+    await sendCompletionPush(userId, jobId, taskType, 'failed');
+    return true;
+  }
+  return false;
+}
+
 const RETRYABLE_LEGAL_TASKS = new Set(['counter-brief', 'deconstruct', 'qualify', 'legal-chat']);
 
 function isRetryableLegalTaskFailure(taskType: string, statusCode: number, error: string) {
@@ -377,6 +414,10 @@ async function requeueLegalAiTask(
   statusCode: number,
 ) {
   if (!isRetryableLegalTaskFailure(taskType, statusCode, error)) return false;
+  if (taskType === 'counter-brief') {
+    const deadlineAt = Number(payload._deadlineAt);
+    if (Number.isFinite(deadlineAt) && deadlineAt > 0 && Date.now() >= deadlineAt) return false;
+  }
 
   const retryCount = Math.max(0, Number(payload._retryCount) || 0) + 1;
   const nextPayload: Record<string, string> = { ...payload, _retryCount: String(retryCount) };
@@ -550,6 +591,9 @@ function startClaimedJob(job: any) {
 export async function runDurableQueuedJob(jobId: string): Promise<void> {
   let job = await loadQueueJob(jobId);
   if (!job) return;
+  const initialPayload = toPayload(job.payload);
+  const initialTaskType = initialPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
+  if (await failExpiredDraftJob(jobId, String(job.user_id || ''), initialTaskType, initialPayload, String(job.partial_result || ''))) return;
 
   // Recover a job whose previous function invocation was terminated by its
   // platform execution limit. A live worker refreshes updated_at every 30s,
@@ -770,6 +814,10 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   try {
     phase = 'mark-running';
     await patchJob(jobId, userId, { status: 'running', error: null });
+    if (taskType === 'counter-brief' && !(Number(payload._deadlineAt) > 0)) {
+      payload._deadlineAt = String(Date.now() + DRAFT_JOB_MAX_RUNTIME_MS);
+      await patchJob(jobId, userId, { payload });
+    }
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     if (taskType === 'ocr' && payload.storagePath) {
       payload.base64Data = await downloadOcrObjectAsBase64(payload.storagePath);
@@ -1076,12 +1124,21 @@ export default async function handler(req: any, res: any) {
       }
       const id = String(req?.query?.id || '').trim();
       if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
-      const jobPath = `${JOB_TABLE}?select=id,status,payload,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
+      const jobPath = `${JOB_TABLE}?select=id,task_type,status,payload,partial_result,result,error,created_at,updated_at,completed_at&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&limit=1`;
       const result = await supabase(jobPath);
       if (!result.ok) return res.status(503).json({ error: 'تعذر استرجاع حالة المهمة.' });
       const rows = await result.json();
       let job = Array.isArray(rows) ? rows[0] : null;
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
+
+      // Enforce the drafting deadline even if a worker was interrupted and its queue retry is delayed.
+      const statusPayload = toPayload(job.payload);
+      const statusTaskType = statusPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
+      if (await failExpiredDraftJob(id, session.userId, statusTaskType, statusPayload, String(job.partial_result || ''))) {
+        const refreshed = await supabase(jobPath);
+        const refreshedRows = await refreshed.json().catch(() => []);
+        job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
+      }
 
       // PDF OCR keeps the original Mino-ocr dispatcher; image OCR uses Vercel Queues.
       const isPdfJob = isPdfOcrPayload('ocr', toPayload(job.payload));
