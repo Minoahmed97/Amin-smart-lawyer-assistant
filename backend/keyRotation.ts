@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { createHash } from 'node:crypto';
 import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
@@ -58,6 +59,19 @@ const GENERAL_MAX_ROTATION_CYCLES = 2;
 
 function rotationPairKey(key: string, model: string): string {
   return `${key}:${model}`;
+}
+
+// Persist only a one-way key fingerprint with the model; never store API keys in job payloads.
+function rotationProgressPairId(key: string, model: string): string {
+  const keyFingerprint = createHash('sha256').update(key).digest('hex').slice(0, 24);
+  return `${keyFingerprint}:${model}`;
+}
+
+function recordRotationProgress(options: KeyRotationExecutionOptions | undefined, key: string, model: string) {
+  const progress = options?.rotationAttemptedPairs;
+  if (!progress) return;
+  const id = rotationProgressPairId(key, model);
+  if (!progress.includes(id)) progress.push(id);
 }
 
 function isCooling(map: Map<string, number>, id: string, now = Date.now()): boolean {
@@ -508,6 +522,8 @@ type KeyRotationExecutionOptions = {
   avoidPairs?: string[];
   /** Force two complete Gemini key/model passes before direct Groq fallback. */
   fullGeminiRetryPass?: boolean;
+  /** Hashed Gemini key/model pairs already attempted by this durable job. Mutated as attempts begin. */
+  rotationAttemptedPairs?: string[];
 };
 
 async function getDirectGroqConfig() {
@@ -613,6 +629,7 @@ export async function executeWithKeyRotation<T>(
   let lastError: any = null;
   let attemptedModelCount = 0;
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  const attemptedBeforeRun = new Set(executionOptions?.rotationAttemptedPairs || []);
   const keyFailureKinds = new Map<string, string>();
   const retryablePairs = new Set<string>();
   const startIdx = reserveStartIndex(keys.length, 'general');
@@ -639,17 +656,19 @@ export async function executeWithKeyRotation<T>(
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if ((!exhaustiveGeminiPasses && isCooling(keyCooldownUntil, currentKey)) || permanentlyInvalidKeys.has(currentKey)) continue;
-      const keyModels = cycle === 0
+      const keyModels = (cycle === 0
         ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length, exhaustiveGeminiPasses)
         : exhaustiveGeminiPasses
           ? preferredModels.filter((model) => !avoidedPairs.has(`${currentKey}::${model}`))
-          : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
+          : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`)))
+        .filter((model) => !attemptedBeforeRun.has(rotationProgressPairId(currentKey, model)));
 
       for (let m = 0; m < keyModels.length; m++) {
         const model = keyModels[m];
         const pair = rotationPairKey(currentKey, model);
         if (cycle > 0) retryablePairs.delete(pair);
         attemptedModelCount += 1;
+        recordRotationProgress(executionOptions, currentKey, model);
         const cycleDeadlineAt = cycle === 0 ? firstCycleDeadlineAt : deadlineAt;
         const remainingMs = cycleDeadlineAt - Date.now();
         if (remainingMs < 1000) {
@@ -688,6 +707,15 @@ export async function executeWithKeyRotation<T>(
     const incompletePassError: any = timeoutError();
     incompletePassError.geminiPassesIncomplete = true;
     throw incompletePassError;
+  }
+
+  if (attemptedModelCount === 0 && attemptedBeforeRun.size > 0 && executionOptions?.rotationAttemptedPairs?.length && Date.now() < deadlineAt) {
+    const progress = executionOptions.rotationAttemptedPairs;
+    progress.splice(0, progress.length);
+    return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, _forceGeminiFallback, {
+      ...executionOptions,
+      rotationAttemptedPairs: progress,
+    });
   }
 
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
@@ -799,6 +827,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  const attemptedBeforeRun = new Set(executionOptions?.rotationAttemptedPairs || []);
   const retryablePairs = new Set<string>();
   let attemptedModelCount = 0;
   let lastGeminiError: any = null;
@@ -826,11 +855,12 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
       if (permanentlyInvalidKeys.has(currentKey)) continue;
-      const keyModels = cycle === 0
+      const keyModels = (cycle === 0
         ? selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, preferredModels.length, exhaustiveGeminiPasses)
         : exhaustiveGeminiPasses
           ? preferredModels.filter((model) => !avoidedPairs.has(`${currentKey}::${model}`))
-          : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`));
+          : preferredModels.filter((model) => retryablePairs.has(rotationPairKey(currentKey, model)) && !avoidedPairs.has(`${currentKey}::${model}`)))
+        .filter((model) => !attemptedBeforeRun.has(rotationProgressPairId(currentKey, model)));
 
       for (let m = 0; m < keyModels.length; m++) {
         const model = keyModels[m];
@@ -843,6 +873,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
           break geminiKeyLoop;
         }
         attemptedModelCount += 1;
+        recordRotationProgress(executionOptions, currentKey, model);
         const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, Math.max(1000, remainingMs))));
         let emittedAnyChunk = false;
         try {
@@ -891,6 +922,15 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     const incompletePassError: any = timeoutError();
     incompletePassError.geminiPassesIncomplete = true;
     throw incompletePassError;
+  }
+
+  if (attemptedModelCount === 0 && attemptedBeforeRun.size > 0 && executionOptions?.rotationAttemptedPairs?.length && Date.now() < deadlineAt) {
+    const progress = executionOptions.rotationAttemptedPairs;
+    progress.splice(0, progress.length);
+    return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, _forceGeminiFallback, {
+      ...executionOptions,
+      rotationAttemptedPairs: progress,
+    });
   }
 
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
