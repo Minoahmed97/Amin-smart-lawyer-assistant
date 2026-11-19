@@ -89,7 +89,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
                 temperature: 0.15,
                 // Keep Groq as a last-resort fallback with a bounded segment;
                 // the existing continuation loop requests subsequent segments.
-                maxOutputTokens: key === 'groq' ? 2048 : 32768,
+                maxOutputTokens: key === 'groq' ? 1024 : 32768,
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
               },
@@ -246,7 +246,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             temperature: 0.15,
             // Groq has a tighter on-demand TPM budget; the generator already
             // continues incomplete documents in subsequent segments.
-            maxOutputTokens: key === 'groq' ? 2048 : 32768,
+            maxOutputTokens: key === 'groq' ? 1024 : 32768,
             ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
           },
         });
