@@ -56,8 +56,9 @@ export function rateLimit(
   windowMs: number,
   options: { identity?: string; failure?: boolean } = {},
 ) {
-  // Signed personal-owner sessions are exempt from platform usage throttles.
-  if (isVerifiedPersonalOwnerRequest(req)) return;
+  // Trusted server-side durable workers do not consume a new user-request slot on every retry.
+  // This flag is set only on the in-process request object created by the job runner.
+  if (req?.isDurableAiWorker === true || isVerifiedPersonalOwnerRequest(req)) return;
   const ip = getClientIp(req);
   const identity = options.identity ? safeString(options.identity, 160) : '';
   const key = crypto.createHash('sha256').update(`${scope}|${ip}|${identity}`).digest('hex');
