@@ -379,7 +379,7 @@ async function requestSavedJob<T extends Record<string, any>>(
   const startedAt = Date.now();
   const NO_PROGRESS_TIMEOUT_MS = 4 * 60 * 1000 + 30 * 1000;
   let lastProgressAt = Date.now();
-  let lastUpdatedAt = '';
+  let serverDeadlineAt = 0;
   while (Date.now() - startedAt < 1000 * 60 * 20) {
     await cancelIfAborted();
     try {
@@ -412,11 +412,20 @@ async function requestSavedJob<T extends Record<string, any>>(
         }
       }
       const currentText = String(data?.partialResult || data?.result || '');
-      const updatedAt = String(data?.updatedAt || '');
-      if ((currentText.length > lastText.length) || (updatedAt && updatedAt !== lastUpdatedAt)) {
-        lastProgressAt = Date.now();
+      const receivedDeadlineAt = Number(data?.deadlineAt);
+      if (type === 'counter-brief' && Number.isFinite(receivedDeadlineAt) && receivedDeadlineAt > 0) {
+        serverDeadlineAt = receivedDeadlineAt;
       }
-      if (updatedAt) lastUpdatedAt = updatedAt;
+      // Heartbeat/updated_at changes only prove that the worker is alive; they
+      // are not generation progress. Only newly persisted text resets this timer.
+      if (currentText.length > lastText.length) lastProgressAt = Date.now();
+      if (type === 'counter-brief' && serverDeadlineAt > 0 && Date.now() >= serverDeadlineAt && !['completed', 'failed'].includes(String(data?.status || ''))) {
+        const failure: any = new Error('انتهت المهلة الإجمالية للصياغة. تم إيقاف متابعة المهمة والاحتفاظ بالنص المحفوظ.');
+        failure.terminalJobError = true;
+        failure.jobId = jobId;
+        clearJobReference();
+        throw failure;
+      }
       if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
