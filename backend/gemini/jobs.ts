@@ -610,11 +610,6 @@ function startClaimedJob(job: any) {
 export async function runDurableQueuedJob(jobId: string): Promise<void> {
   let job = await loadQueueJob(jobId);
   if (!job) return;
-  const initialPayload = toPayload(job.payload);
-  const initialTaskType = initialPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
-  const lastActivityAt = Date.parse(String(job.updated_at || ''));
-  const staleRunningJob = job.status === 'running' &&
-    (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS);
   // Recover a job whose previous function invocation was terminated by its
   // platform execution limit. A live worker refreshes updated_at every 30s,
   // so only a genuinely stale running record is eligible for reclamation.
@@ -858,10 +853,6 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     phase = 'flush-partial-result';
     await pendingWrite;
-    if (taskType === 'counter-brief' && Number(payload._deadlineAt) > 0 && Date.now() >= Number(payload._deadlineAt)) {
-      await resumeExpiredDraftJob(jobId, userId, taskType, payload, fullText);
-      return;
-    }
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
       fullText = handlerJson.text.trim();
     }
@@ -875,6 +866,10 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
       phase = 'persist-handler-failure';
       console.error('AI job handler returned failure:', JSON.stringify({ jobId, taskType, phase, statusCode: fakeRes.statusCode, error: safeDiagnosticMessage(error), hasPartialResult: Boolean(fullText.trim()) }));
+      if (taskType === 'counter-brief' && Number(payload._deadlineAt) > 0 && Date.now() >= Number(payload._deadlineAt)) {
+        await resumeExpiredDraftJob(jobId, userId, taskType, payload, fullText);
+        return;
+      }
       payload._rotationAttemptedPairs = JSON.stringify(rotationAttemptedPairs);
       if (await requeueLegalAiTask(jobId, userId, taskType, payload, fullText, error, fakeRes.statusCode)) return;
       if (taskType === 'ocr') {
