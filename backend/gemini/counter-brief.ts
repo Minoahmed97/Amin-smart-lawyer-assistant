@@ -89,7 +89,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
                 systemInstruction: key === 'groq' ? GROQ_LEGAL_SYSTEM_INSTRUCTION : EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
                 temperature: 0.15,
                 // Match the reference output allowance; the shared deadline controls the fallback window.
-                maxOutputTokens: 32768,
+                maxOutputTokens: key === 'groq' ? 4096 : 32768,
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
               },
@@ -245,7 +245,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
             systemInstruction: key === 'groq' ? GROQ_LEGAL_SYSTEM_INSTRUCTION : EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
             temperature: 0.15,
             // Match the reference output allowance; the shared deadline controls the fallback window.
-            maxOutputTokens: 32768,
+            maxOutputTokens: key === 'groq' ? 4096 : 32768,
             ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
           },
         });
