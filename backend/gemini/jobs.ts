@@ -598,11 +598,6 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   if (!job) return;
   const initialPayload = toPayload(job.payload);
   const initialTaskType = initialPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
-  if (initialTaskType === 'counter-brief' && !(Number(initialPayload._deadlineAt) > 0)) {
-    const createdAt = Date.parse(String(job.created_at || ''));
-    initialPayload._deadlineAt = String((Number.isFinite(createdAt) ? createdAt : Date.now()) + DRAFT_JOB_MAX_RUNTIME_MS);
-    await patchJob(jobId, String(job.user_id || ''), { payload: initialPayload });
-  }
   const lastActivityAt = Date.parse(String(job.updated_at || ''));
   const staleRunningJob = job.status === 'running' &&
     (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS);
@@ -1065,7 +1060,6 @@ export default async function handler(req: any, res: any) {
       }
       const taskType = String(requestBody?.taskType || 'counter-brief');
       const payload = safePayload(requestBody?.payload || requestBody, taskType);
-      if (taskType === 'counter-brief') payload._deadlineAt = String(Date.now() + DRAFT_JOB_MAX_RUNTIME_MS);
       
       scheduleBackground((async () => {
         try {
@@ -1156,11 +1150,6 @@ export default async function handler(req: any, res: any) {
       // Enforce the drafting deadline for queued jobs or genuinely stale workers.
       const statusPayload = toPayload(job.payload);
       const statusTaskType = statusPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
-      if (statusTaskType === 'counter-brief' && !(Number(statusPayload._deadlineAt) > 0)) {
-        const createdAt = Date.parse(String(job.created_at || ''));
-        statusPayload._deadlineAt = String((Number.isFinite(createdAt) ? createdAt : Date.now()) + DRAFT_JOB_MAX_RUNTIME_MS);
-        await patchJob(id, session.userId, { payload: statusPayload });
-      }
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       const staleRunningJob = job.status === 'running' && Number.isFinite(lastActivityAt) &&
         Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS;
