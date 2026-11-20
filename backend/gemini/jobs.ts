@@ -598,6 +598,11 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   if (!job) return;
   const initialPayload = toPayload(job.payload);
   const initialTaskType = initialPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
+  if (initialTaskType === 'counter-brief' && !(Number(initialPayload._deadlineAt) > 0)) {
+    const createdAt = Date.parse(String(job.created_at || ''));
+    initialPayload._deadlineAt = String((Number.isFinite(createdAt) ? createdAt : Date.now()) + DRAFT_JOB_MAX_RUNTIME_MS);
+    await patchJob(jobId, String(job.user_id || ''), { payload: initialPayload });
+  }
   const lastActivityAt = Date.parse(String(job.updated_at || ''));
   const staleRunningJob = job.status === 'running' &&
     (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS);
@@ -664,7 +669,7 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
 }
 
 async function loadQueueJob(jobId: string) {
-  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,partial_result,status,updated_at&id=eq.${encodeURIComponent(jobId)}&limit=1`);
+  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,partial_result,status,updated_at,created_at&id=eq.${encodeURIComponent(jobId)}&limit=1`);
   if (!response.ok) throw new Error(`تعذر قراءة المهمة من الطابور (${response.status}).`);
   const rows = await response.json();
   return Array.isArray(rows) ? rows[0] || null : null;
@@ -1151,6 +1156,11 @@ export default async function handler(req: any, res: any) {
       // Enforce the drafting deadline for queued jobs or genuinely stale workers.
       const statusPayload = toPayload(job.payload);
       const statusTaskType = statusPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
+      if (statusTaskType === 'counter-brief' && !(Number(statusPayload._deadlineAt) > 0)) {
+        const createdAt = Date.parse(String(job.created_at || ''));
+        statusPayload._deadlineAt = String((Number.isFinite(createdAt) ? createdAt : Date.now()) + DRAFT_JOB_MAX_RUNTIME_MS);
+        await patchJob(id, session.userId, { payload: statusPayload });
+      }
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       const staleRunningJob = job.status === 'running' && Number.isFinite(lastActivityAt) &&
         Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS;
