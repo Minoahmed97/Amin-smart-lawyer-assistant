@@ -54,7 +54,7 @@ const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
 const MAX_MODELS_PER_KEY_PER_REQUEST = 3;
-const GENERAL_MAX_ROTATION_CYCLES = 2;
+const GENERAL_MAX_ROTATION_CYCLES = 1;
 
 function rotationPairKey(key: string, model: string): string {
   return `${key}:${model}`;
@@ -904,7 +904,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         }
         attemptedModelCount += 1;
         await recordRotationProgress(executionOptions, currentKey, model);
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(120000, Math.max(1000, remainingMs))));
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
         let emittedAnyChunk = false;
         try {
           const stream = await action(ai, currentKey, model);
