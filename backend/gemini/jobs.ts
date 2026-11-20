@@ -601,8 +601,7 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   const lastActivityAt = Date.parse(String(job.updated_at || ''));
   const staleRunningJob = job.status === 'running' &&
     (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS);
-  if ((job.status === 'queued' || staleRunningJob) &&
-    await failExpiredDraftJob(jobId, String(job.user_id || ''), initialTaskType, initialPayload, String(job.partial_result || ''))) return;
+  if (await failExpiredDraftJob(jobId, String(job.user_id || ''), initialTaskType, initialPayload, String(job.partial_result || ''))) return;
 
   // Recover a job whose previous function invocation was terminated by its
   // platform execution limit. A live worker refreshes updated_at every 30s,
@@ -845,6 +844,10 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     phase = 'flush-partial-result';
     await pendingWrite;
+    if (taskType === 'counter-brief' && Number(payload._deadlineAt) > 0 && Date.now() >= Number(payload._deadlineAt)) {
+      await failExpiredDraftJob(jobId, userId, taskType, payload, fullText);
+      return;
+    }
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
       fullText = handlerJson.text.trim();
     }
@@ -895,6 +898,10 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (err?.queueRetryRequired) throw err;
     console.error('AI job processing failed:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(message), hasPartialResult: Boolean(fullText.trim()) }));
     try {
+      if (taskType === 'counter-brief' && Number(payload._deadlineAt) > 0 && Date.now() >= Number(payload._deadlineAt)) {
+        await failExpiredDraftJob(jobId, userId, taskType, payload, fullText);
+        return;
+      }
       payload._rotationAttemptedPairs = JSON.stringify(rotationAttemptedPairs);
       if (await requeueLegalAiTask(jobId, userId, taskType, payload, fullText, message, Number(err?.statusCode || err?.status) || 0)) return;
       phase = 'persist-caught-failure';
@@ -1053,6 +1060,7 @@ export default async function handler(req: any, res: any) {
       }
       const taskType = String(requestBody?.taskType || 'counter-brief');
       const payload = safePayload(requestBody?.payload || requestBody, taskType);
+      if (taskType === 'counter-brief') payload._deadlineAt = String(Date.now() + DRAFT_JOB_MAX_RUNTIME_MS);
       
       scheduleBackground((async () => {
         try {
@@ -1146,8 +1154,7 @@ export default async function handler(req: any, res: any) {
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       const staleRunningJob = job.status === 'running' && Number.isFinite(lastActivityAt) &&
         Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS;
-      if ((job.status === 'queued' || staleRunningJob) &&
-        await failExpiredDraftJob(id, session.userId, statusTaskType, statusPayload, String(job.partial_result || ''))) {
+      if (await failExpiredDraftJob(id, session.userId, statusTaskType, statusPayload, String(job.partial_result || ''))) {
         const refreshed = await supabase(jobPath);
         const refreshedRows = await refreshed.json().catch(() => []);
         job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
@@ -1201,6 +1208,8 @@ export default async function handler(req: any, res: any) {
         error: job.error || null,
         updatedAt: job.updated_at || null,
         completedAt: job.completed_at || null,
+        createdAt: job.created_at || null,
+        deadlineAt: Number(statusPayload._deadlineAt) || null,
       });
     }
 
