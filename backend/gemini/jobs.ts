@@ -354,7 +354,7 @@ async function patchJob(id: string, userId: string, values: Record<string, unkno
   if (!res.ok) throw new Error(`تعذر تحديث حالة المهمة (${res.status}).`);
 }
 
-async function failExpiredDraftJob(
+async function resumeExpiredDraftJob(
   jobId: string,
   userId: string,
   taskType: string,
@@ -365,29 +365,43 @@ async function failExpiredDraftJob(
   const deadlineAt = Number(payload._deadlineAt);
   if (!Number.isFinite(deadlineAt) || deadlineAt <= 0 || Date.now() < deadlineAt) return false;
 
-  const error = 'انتهت المهلة الإجمالية المحددة للصياغة (270 ثانية) قبل اكتمال المستند. تم حفظ النص الذي وصل إليه دون اعتباره مستنداً مكتملاً.';
-  const response = await supabase(
-    `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&status=not.in.(completed,failed)`,
-    {
-      method: 'PATCH',
-      headers: { Prefer: 'return=representation' },
-      body: JSON.stringify({
-        status: 'failed',
-        error,
-        partial_result: partialResult,
-        payload: {},
-        updated_at: new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-      }),
-    },
-  );
-  if (!response.ok) throw new Error(`تعذر إنهاء مهمة الصياغة بعد انتهاء مهلتها (${response.status}).`);
-  const changedRows = await response.json().catch(() => []);
-  if (Array.isArray(changedRows) && changedRows.length) {
-    await sendCompletionPush(userId, jobId, taskType, 'failed');
-    return true;
+  // The 270-second limit is one worker execution window, not a deadline for
+  // the legal document itself. Preserve the accumulated text and queue another
+  // worker window until the completion marker is actually received.
+  const retryCount = Math.max(0, Number(payload._retryCount) || 0) + 1;
+  const nextPayload: Record<string, string> = {
+    ...payload,
+    _retryCount: String(retryCount),
+    _resumeText: partialResult || String(payload._resumeText || ''),
+  };
+  delete nextPayload._deadlineAt;
+
+  await patchJob(jobId, userId, {
+    status: 'queued',
+    error: 'انتهت دورة التنفيذ؛ يجري استكمال المستند من آخر نص محفوظ.',
+    partial_result: partialResult || String(payload._resumeText || ''),
+    payload: nextPayload,
+    completed_at: null,
+  });
+
+  try {
+    await send('amin-ai-jobs', { jobId }, {
+      idempotencyKey: `${jobId}:deadline-resume:${retryCount}`,
+      delaySeconds: 1,
+      retentionSeconds: 7 * 24 * 60 * 60,
+    });
+  } catch (publishError: any) {
+    const retryPublishError: any = new Error('تعذر جدولة استكمال الصياغة؛ سيعيد الطابور محاولة تسليمها.');
+    retryPublishError.queueRetryRequired = true;
+    retryPublishError.cause = publishError;
+    throw retryPublishError;
   }
-  return false;
+  console.info('Draft continued in a fresh worker window:', {
+    jobId,
+    retryCount,
+    savedCharacters: String(partialResult || payload._resumeText || '').length,
+  });
+  return true;
 }
 
 const RETRYABLE_LEGAL_TASKS = new Set(['counter-brief', 'deconstruct', 'qualify', 'legal-chat']);
@@ -601,8 +615,6 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   const lastActivityAt = Date.parse(String(job.updated_at || ''));
   const staleRunningJob = job.status === 'running' &&
     (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS);
-  if (await failExpiredDraftJob(jobId, String(job.user_id || ''), initialTaskType, initialPayload, String(job.partial_result || ''))) return;
-
   // Recover a job whose previous function invocation was terminated by its
   // platform execution limit. A live worker refreshes updated_at every 30s,
   // so only a genuinely stale running record is eligible for reclamation.
@@ -822,7 +834,9 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   try {
     phase = 'mark-running';
     await patchJob(jobId, userId, { status: 'running', error: null });
-    if (taskType === 'counter-brief' && !(Number(payload._deadlineAt) > 0)) {
+    if (taskType === 'counter-brief') {
+      // Give every durable worker invocation its own bounded execution window.
+      // The document-wide progress remains in _resumeText across queue resumes.
       payload._deadlineAt = String(Date.now() + DRAFT_JOB_MAX_RUNTIME_MS);
       await patchJob(jobId, userId, { payload });
     }
@@ -845,7 +859,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     phase = 'flush-partial-result';
     await pendingWrite;
     if (taskType === 'counter-brief' && Number(payload._deadlineAt) > 0 && Date.now() >= Number(payload._deadlineAt)) {
-      await failExpiredDraftJob(jobId, userId, taskType, payload, fullText);
+      await resumeExpiredDraftJob(jobId, userId, taskType, payload, fullText);
       return;
     }
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
@@ -899,7 +913,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     console.error('AI job processing failed:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(message), hasPartialResult: Boolean(fullText.trim()) }));
     try {
       if (taskType === 'counter-brief' && Number(payload._deadlineAt) > 0 && Date.now() >= Number(payload._deadlineAt)) {
-        await failExpiredDraftJob(jobId, userId, taskType, payload, fullText);
+        await resumeExpiredDraftJob(jobId, userId, taskType, payload, fullText);
         return;
       }
       payload._rotationAttemptedPairs = JSON.stringify(rotationAttemptedPairs);
@@ -1147,17 +1161,8 @@ export default async function handler(req: any, res: any) {
       let job = Array.isArray(rows) ? rows[0] : null;
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
 
-      // Enforce the drafting deadline for queued jobs or genuinely stale workers.
       const statusPayload = toPayload(job.payload);
-      const statusTaskType = statusPayload._actualTaskType === 'legal-chat' ? 'legal-chat' : String(job.task_type || '');
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
-      const staleRunningJob = job.status === 'running' && Number.isFinite(lastActivityAt) &&
-        Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS;
-      if (await failExpiredDraftJob(id, session.userId, statusTaskType, statusPayload, String(job.partial_result || ''))) {
-        const refreshed = await supabase(jobPath);
-        const refreshedRows = await refreshed.json().catch(() => []);
-        job = Array.isArray(refreshedRows) ? refreshedRows[0] : job;
-      }
 
       // PDF OCR keeps the original Mino-ocr dispatcher; image OCR uses Vercel Queues.
       const isPdfJob = isPdfOcrPayload('ocr', toPayload(job.payload));
