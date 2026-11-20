@@ -376,11 +376,10 @@ async function requestSavedJob<T extends Record<string, any>>(
   let lastText = '';
   let lastReportedOcrStatus = '';
   let transientFailures = 0;
-  const startedAt = Date.now();
-  const NO_PROGRESS_TIMEOUT_MS = 4 * 60 * 1000 + 30 * 1000;
-  let lastProgressAt = Date.now();
-  let serverDeadlineAt = 0;
-  while (Date.now() - startedAt < 1000 * 60 * 20) {
+  // Keep watching the same durable job until the server reports a real
+  // terminal state. Worker execution windows may roll over while the document
+  // is being continued in the background.
+  while (true) {
     await cancelIfAborted();
     try {
       const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
@@ -412,20 +411,6 @@ async function requestSavedJob<T extends Record<string, any>>(
         }
       }
       const currentText = String(data?.partialResult || data?.result || '');
-      const receivedDeadlineAt = Number(data?.deadlineAt);
-      if (type === 'counter-brief' && Number.isFinite(receivedDeadlineAt) && receivedDeadlineAt > 0) {
-        serverDeadlineAt = receivedDeadlineAt;
-      }
-      // Heartbeat/updated_at changes only prove that the worker is alive; they
-      // are not generation progress. Only newly persisted text resets this timer.
-      if (currentText.length > lastText.length) lastProgressAt = Date.now();
-      if (type === 'counter-brief' && serverDeadlineAt > 0 && Date.now() >= serverDeadlineAt && !['completed', 'failed'].includes(String(data?.status || ''))) {
-        const failure: any = new Error('انتهت المهلة الإجمالية للصياغة. تم إيقاف متابعة المهمة والاحتفاظ بالنص المحفوظ.');
-        failure.terminalJobError = true;
-        failure.jobId = jobId;
-        clearJobReference();
-        throw failure;
-      }
       if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
@@ -447,12 +432,6 @@ async function requestSavedJob<T extends Record<string, any>>(
         failure.jobId = jobId;
         if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'failed', failure.message);
         else clearJobReference();
-        throw failure;
-      }
-      if (Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS) {
-        const failure: any = new Error('لم يصل أي تحديث للمهمة خلال 4 دقائق ونصف. توقفت متابعة الانتظار، واحتُفظ بمعرّفها لمحاولة استعادة حالتها دون بدء توليد جديد.');
-        failure.noProgressTimeout = true;
-        failure.savedJobPending = type === 'ocr';
         throw failure;
       }
     } catch (err: any) {
@@ -481,9 +460,6 @@ async function requestSavedJob<T extends Record<string, any>>(
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  const failure: any = new Error('المهمة ما زالت قيد المعالجة. ارجع لاحقًا لاستعادة النتيجة المحفوظة دون بدء توليد جديد.');
-  failure.savedJobPending = type === 'ocr';
-  throw failure;
 }
 
 export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
