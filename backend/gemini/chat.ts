@@ -195,7 +195,7 @@ export default async function handler(req: any, res: any) {
 
       const conversationHistory = messages
         .filter((message: any) => message && (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string')
-        .slice(-20)
+        .slice(-21, -1)
         .map((message: any) => `[${message.role === 'user' ? 'المحامي' : 'أمين'}]: ${message.content}`)
         .join('\n\n');
 
