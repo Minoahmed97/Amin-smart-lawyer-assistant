@@ -42,7 +42,13 @@ export function fileToBase64(file: File | Blob): Promise<string> {
  * The server accepts a 20 MB base64 payload, so keep the raw file below 14 MB.
  */
 export async function compressAndResizeImage( file: File, maxDimension = 1800, quality = 0.82, ): Promise<{ base64Data: string; mimeType: string }> {
-  const MAX_IMAGE_BYTES = 1024 * 1024;
+  // The OCR endpoint accepts up to 20 MB of decoded image data.
+  // Preserve normal phone photos byte-for-byte; lossy 1 MB grayscale resizing
+  // was removing Arabic dots and fine handwriting strokes before OCR.
+  const MAX_IMAGE_BYTES = 14 * 1024 * 1024;
+  if (file.size <= MAX_IMAGE_BYTES) {
+    return { base64Data: await fileToBase64(file), mimeType: resolveMimeType(file) };
+  }
   const encodeCanvas = (canvas: HTMLCanvasElement, q: number) =>
     new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', q));
 
