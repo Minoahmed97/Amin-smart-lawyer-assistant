@@ -472,7 +472,11 @@ export async function runSavedImageOcrTask(
   lifecycle?: SavedOcrTaskLifecycle,
 ): Promise<{ text: string; jobId: string }> {
   const jobId = requestedJobId || makeJobId();
-  const mimeType = file.type || 'image/jpeg';
+  const extension = file.name.toLowerCase().split('.').pop() || '';
+  const mimeType = file.type || ({
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+    webp: 'image/webp', bmp: 'image/bmp',
+  } as Record<string, string>)[extension] || 'image/jpeg';
   if (lifecycle?.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
   const prepareResponse = await fetch('/api/gemini/jobs', {
     method: 'POST',
