@@ -1,6 +1,6 @@
 import mammoth from 'mammoth';
 import { getSessionToken } from '../services/authService.ts';
-import { runSavedOcrTask, runSavedOcrBatchTask, type SavedOcrTaskLifecycle } from '../services/aiService.ts';
+import { runSavedImageOcrTask, runSavedOcrBatchTask, type SavedOcrTaskLifecycle } from '../services/aiService.ts';
 import { getActiveLawyerUserId } from './legalVaultService.ts';
 
 export interface ExtractTextOptions {
@@ -315,9 +315,7 @@ export async function extractTextFromLegacyDoc(file: File): Promise<string> {
 let ocrUploadQueue: Promise<void> = Promise.resolve();
 let lastOcrUploadFinishedAt = 0;
 async function runQueuedOcrTask(
-  base64Data: string,
-  mimeType: string,
-  fileName: string,
+  file: File,
   recoveryScope: string,
   options: ExtractTextOptions = {},
 ): Promise<{ text: string; jobId: string }> {
@@ -331,10 +329,8 @@ async function runQueuedOcrTask(
     if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
     if (options.signal?.aborted) throw new DOMException('تم إلغاء معالجة الملف.', 'AbortError');
     await options.onStage?.('processing');
-    return await runSavedOcrTask(
-      base64Data,
-      mimeType,
-      fileName,
+    return await runSavedImageOcrTask(
+      file,
       recoveryScope,
       options.userId || getActiveLawyerUserId(),
       options.jobId,
@@ -531,14 +527,9 @@ export async function extractTextFromAnyFile(file: File, recoveryScope = 'genera
     lowerName.endsWith('.bmp') ||
     file.type.startsWith('image/')
   ) {
-    const compressed = await compressAndResizeImage(file, 1800, 0.82);
-    const savedTask = await runQueuedOcrTask(
-      compressed.base64Data,
-      compressed.mimeType,
-      fileName,
-      recoveryScope,
-      options,
-    );
+    // Upload the original image bytes directly to private storage; the queue receives
+    // only the storage path, avoiding Base64 JSON limits and lossy OCR compression.
+    const savedTask = await runQueuedOcrTask(file, recoveryScope, options);
     extractedText = savedTask.text;
     backgroundJobId = savedTask.jobId;
   } else {
