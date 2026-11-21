@@ -619,7 +619,14 @@ async function retryTransientOcrJob(jobId: string, userId: string, payload: Reco
   if (!response.ok) throw new Error(`تعذر إعادة مهمة OCR إلى الطابور (${response.status}).`);
   const rows = await response.json().catch(() => []);
   if (!Array.isArray(rows) || !rows.length) return false;
-  await send('amin-ai-jobs', { jobId });
+  try {
+    await send('amin-ai-jobs', { jobId });
+  } catch (queueError: any) {
+    // The job is already safely queued in the database; use the existing
+    // dispatcher rather than turning a queue transport hiccup into failure.
+    scheduleBackground(dispatchQueuedJob(jobId));
+    console.warn('OCR retry queue delivery deferred:', safeDiagnosticMessage(queueError?.message || queueError));
+  }
   return true;
 }
 
@@ -825,10 +832,18 @@ export default async function handler(req: any, res: any) {
         }
 
         const jobs: any[] = [];
+        const missingJobIds: string[] = [];
         for (const id of jobIds) {
           const job = await loadQueueJob(id);
-          if (!job || job.user_id !== session.userId || job.task_type !== 'ocr') {
-            return res.status(404).json({ error: 'تعذر العثور على إحدى مهام الصور المحفوظة.' });
+          // A local IndexedDB record can outlive a server insert that never
+          // committed. Let the client restore the original blob and recreate
+          // this same idempotent job instead of aborting the entire image batch.
+          if (!job) {
+            missingJobIds.push(id);
+            continue;
+          }
+          if (job.user_id !== session.userId || job.task_type !== 'ocr') {
+            return res.status(404).json({ error: 'إحدى مهام الصور لا تخص هذا الحساب أو ليست مهمة OCR.' });
           }
           if (job.status === 'failed' || job.status === 'completed') continue;
           if (!['queued', 'running'].includes(String(job.status))) {
@@ -863,7 +878,12 @@ export default async function handler(req: any, res: any) {
         if (queuedJobs.length) {
           await send('amin-ai-jobs', { jobId: queuedJobs[0].id });
         }
-        return res.status(202).json({ queued: true, count: jobIds.length, started: queuedJobs.length > 0 });
+        return res.status(202).json({
+          queued: true,
+          count: jobIds.length,
+          started: queuedJobs.length > 0,
+          missingJobIds,
+        });
       }
       if (requestBody?.action === 'cancel-ocr') {
         const jobId = String(requestBody?.jobId || '').trim();
