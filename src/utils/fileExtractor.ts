@@ -35,12 +35,7 @@ export function fileToBase64(file: File | Blob): Promise<string> {
   });
 }
 
-/** * تجهيز الصور قبل OCR: تحويل إلى رمادي، تصغير الأبعاد، وضغط JPEG. * يحاول إبقاء ملف الصورة الناتج دون 1MB مع الحفاظ على وضوح النص قدر الإمكان. */
-/**
- * Preserve the original image bytes for OCR. Do not downscale or re-encode:
- * handwriting, dots and fine pen strokes can disappear during lossy resizing.
- * The server accepts a 20 MB base64 payload, so keep the raw file below 14 MB.
- */
+/** Preserve original image bytes for OCR when within the safe upload limit; compress only oversized images. */
 export async function compressAndResizeImage( file: File, maxDimension = 1800, quality = 0.82, ): Promise<{ base64Data: string; mimeType: string }> {
   // The OCR endpoint accepts up to 20 MB of decoded image data.
   // Preserve normal phone photos byte-for-byte; lossy 1 MB grayscale resizing
