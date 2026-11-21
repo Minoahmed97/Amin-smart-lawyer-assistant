@@ -2,7 +2,6 @@ import mammoth from 'mammoth';
 import { executeWithDedicatedOCRKeyRotation, checkDedicatedOCRGeminiReadiness, GEMINI_MODELS } from './keyRotation.ts';
 
 import { requireActiveSession, consumeOperation } from './auth.ts';
-import { fetchServerCloudOCRGroqFallbackConfig } from './supabaseSync.ts';
 import { validateBase64Payload, limitBodyString } from './security.ts';
 export const config = {
   api: {
@@ -16,22 +15,6 @@ export default async function handler(req: any, res: any) {
   if (req.method === 'GET') {
     try {
       await requireActiveSession(req);
-      // If the administrator enabled the server-side Groq vision fallback,
-      // don't block image uploads just because the Gemini OCR pool is exhausted.
-      try {
-        const groqFallback = await fetchServerCloudOCRGroqFallbackConfig();
-        if (groqFallback.enabled && groqFallback.apiKey) {
-          return res.status(200).json({
-            ready: true,
-            keyCount: 0,
-            checkedKeys: 0,
-            fallbackReady: true,
-            message: 'احتياطي Groq Vision مفعّل. سيجرب التطبيق Gemini أولاً ثم Groq عند تجاوز حصة Gemini للصور.',
-          });
-        }
-      } catch (fallbackConfigError: any) {
-        console.warn('[OCR readiness] Could not read Groq fallback configuration. Gemini readiness will be checked.');
-      }
       const readiness = await checkDedicatedOCRGeminiReadiness(9000);
       return res.status(readiness.ready ? 200 : 503).json(readiness);
     } catch (err: any) {
@@ -135,7 +118,7 @@ export default async function handler(req: any, res: any) {
       throw new Error(`تعذر استخراج نص ملف وورد (${fileName || 'المحدد'}).`);
     }
 
-    // 2. الصور تستخدم Gemini مباشرةً، بينما تحتفظ ملفات بي دي إف بمسار المزوّدين وتدوير المفاتيح الحالي.
+    // 2. الصور وملفات PDF تمر حصرياً عبر تدوير مفاتيح ونماذج Gemini المخصصة لـ OCR.
     // The client compresses images to JPEG even when the original filename is
     // .png or .webp, so prefer the MIME type describing the uploaded bytes.
     let safeGeminiMime = 'image/jpeg';
@@ -157,8 +140,7 @@ export default async function handler(req: any, res: any) {
       : '';
     const ocrPrompt = `استخرج النص من المستند القضائي (${fileName || 'المستند'}) بأعلى أمانة ممكنة للمصدر. هذه مهمة استخراج حرفي وليست مهمة تلخيص أو تحليل قانوني. قواعد الاستخراج الإلزامية: - حافظ على ترتيب الصفحات والفقرات والأسطر والجداول والعناوين قدر الإمكان. - حافظ على الأسماء والأرقام والتواريخ وعلامات الترقيم كما تظهر في الأصل، ولا تطبع الأرقام أو تغيّر صيغتها. - تعليمات خاصة بالخط اليدوي: افحص شكل الحروف واتصالها والنقاط والمسافات والكلمات المحيطة، خصوصاً في محاضر الشرطة المصرية وتحقيقات النيابة. استخدم سياق الجملة القانونية وموضوع المحضر لترجيح قراءة بين احتمالات تدعمها العلامات المرئية في الصورة فقط؛ لا تستكمل عبارة متوقعة لمجرد شيوعها، ولا تجعل السياق بديلاً عن الحروف غير الظاهرة. - لا تصحح الإملاء أو النحو، ولا تعِد الصياغة، ولا تستبدل التعبير الأصلي بصياغة قانونية مألوفة. - إذا بقيت كلمة غير مؤكدة بعد فحص الصورة والسياق، فاكتب حرفياً [كلمة غير واضحة] مكانها، ولا تخمّنها ولا تخترع أي كلمة. حافظ على الكلمات المقروءة قبلها وبعدها ولا تستبدل الجملة كلها بعلامة واحدة إذا كانت بعض كلماتها واضحة. - لا تضف وقائع أو أسماء أو أرقاماً أو تواريخ أو مواد قانونية أو أحكاماً غير ظاهرة في المستند. - إذا وجدت توقيعاً أو ختماً لا يمكن قراءة محتواه، فاذكر وجوده بإيجاز من دون نسبة اسم أو مضمون إليه. - أخرج النص المستخرج فقط دون مقدمة أو تعليق أو تحليل، ولا تدّعِ دقة مطلقة.${batchInstruction}`;
     let extractedText = '';
-    try {
-      extractedText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
+    extractedText = await executeWithDedicatedOCRKeyRotation(async (ai, _key, model) => {
         if (_key.startsWith('gsk_') && batchImages.length > 3) {
           const groups: Array<Array<{ pageNumber: number; mimeType: string; base64Data: string }>> = [];
           for (let offset = 0; offset < batchImages.length; offset += 3) groups.push(batchImages.slice(offset, offset + 3));
@@ -216,11 +198,6 @@ export default async function handler(req: any, res: any) {
         }
         return text;
       }, GEMINI_MODELS, 240000);
-    } catch (geminiError: any) {
-      // executeWithDedicatedOCRKeyRotation already performs two complete
-      // Gemini-key/model -> Groq rounds. Do not trigger an extra third Groq call here.
-      throw geminiError;
-    }
 
     if (extractedText) {
       const usage = await consumeOperation(req, 'ocr');
