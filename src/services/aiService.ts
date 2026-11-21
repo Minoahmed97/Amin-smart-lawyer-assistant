@@ -464,6 +464,46 @@ export async function runSavedPdfOcrTask(
   return { text, jobId };
 }
 
+export async function runSavedImageOcrTask(
+  file: File,
+  storageScope: string,
+  userId?: string,
+  requestedJobId?: string,
+  lifecycle?: SavedOcrTaskLifecycle,
+): Promise<{ text: string; jobId: string }> {
+  const jobId = requestedJobId || makeJobId();
+  const mimeType = file.type || 'image/jpeg';
+  if (lifecycle?.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
+  const prepareResponse = await fetch('/api/gemini/jobs', {
+    method: 'POST',
+    headers: getRequestHeaders(),
+    body: JSON.stringify({ action: 'prepare-ocr-upload', jobId, fileName: file.name, mimeType, fileSize: file.size }),
+    ...(lifecycle?.signal ? { signal: lifecycle.signal } : {}),
+  });
+  const uploadInfo = await prepareResponse.json().catch(() => ({}));
+  if (!prepareResponse.ok || !uploadInfo?.signedUrl || !uploadInfo?.objectPath) {
+    throw new Error(uploadInfo?.error || `تعذر تجهيز رفع الصورة (${prepareResponse.status}).`);
+  }
+  if (lifecycle?.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
+  const uploadResponse = await fetch(String(uploadInfo.signedUrl), {
+    method: 'PUT',
+    headers: { 'Content-Type': mimeType, 'x-upsert': 'false' },
+    body: file,
+    ...(lifecycle?.signal ? { signal: lifecycle.signal } : {}),
+  });
+  if (!uploadResponse.ok) {
+    const detail = await uploadResponse.text().catch(() => '');
+    throw new Error(`تعذر رفع الصورة إلى التخزين (${uploadResponse.status})${detail ? `: ${detail.slice(0, 160)}` : ''}.`);
+  }
+  const text = await requestSavedJob(
+    'ocr',
+    { storagePath: String(uploadInfo.objectPath), mimeType, fileName: file.name, recoveryScope: sanitizeStoragePart(storageScope) },
+    undefined, userId, undefined, storageScope,
+    { fileName: file.name, mimeType }, jobId, lifecycle,
+  );
+  return { text, jobId };
+}
+
 export async function runSavedOcrTask(
   base64Data: string,
   mimeType: string,
