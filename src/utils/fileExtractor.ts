@@ -37,10 +37,10 @@ export function fileToBase64(file: File | Blob): Promise<string> {
 
 /** Preserve original image bytes for OCR when within the safe upload limit; compress only oversized images. */
 export async function compressAndResizeImage( file: File, maxDimension = 1800, quality = 0.82, ): Promise<{ base64Data: string; mimeType: string }> {
-  // The OCR endpoint accepts up to 20 MB of decoded image data.
-  // Preserve normal phone photos byte-for-byte; lossy 1 MB grayscale resizing
-  // was removing Arabic dots and fine handwriting strokes before OCR.
-  const MAX_IMAGE_BYTES = 14 * 1024 * 1024;
+  // Saved OCR jobs send base64 inside JSON to /api/gemini/jobs. Keep the
+  // decoded image at 3 MB max so base64 + JSON stays below the platform limit.
+  // Preserve original bytes for smaller photos; compress only larger images.
+  const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
   if (file.size <= MAX_IMAGE_BYTES) {
     return { base64Data: await fileToBase64(file), mimeType: resolveMimeType(file) };
   }
@@ -108,14 +108,14 @@ export async function compressAndResizeImage( file: File, maxDimension = 1800, q
     }
 
     if (!resultBlob || resultBlob.size > MAX_IMAGE_BYTES) {
-      throw new Error('تعذر ضغط الصورة إلى أقل من 1MB مع الحفاظ على وضوحها.');
+      throw new Error('تعذر ضغط الصورة إلى أقل من 3MB مع الحفاظ على وضوحها.');
     }
     const base64Data = await fileToBase64(resultBlob);
     return { base64Data, mimeType: 'image/jpeg' };
   } catch (error) {
     // Do not silently send the original oversized image: report a clear error instead.
     console.warn('Image compression failed:', error);
-    throw new Error('تعذر تجهيز الصورة وإيصال حجمها إلى أقل من 1MB. جرّب صورة أوضح أو أصغر.');
+    throw new Error('تعذر تجهيز الصورة وإيصال حجمها إلى أقل من 3MB. جرّب صورة أوضح أو أصغر.');
   }
 }
 
