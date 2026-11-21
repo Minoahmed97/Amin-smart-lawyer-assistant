@@ -594,6 +594,35 @@ async function handleWorkerRequest(req: any, res: any) {
   }
 }
 
+async function retryTransientOcrJob(jobId: string, userId: string, payload: Record<string, string>, error: unknown): Promise<boolean> {
+  const message = String((error as any)?.message || error || '');
+  const status = Number((error as any)?.statusCode || (error as any)?.status || (message.match(/"code"\s*:\s*(\d{3})/) || [])[1] || 0);
+  const retryable = [408, 429, 500, 502, 503, 504].includes(status) ||
+    /deadline.?exceeded|deadline expired|timed?\s*out|temporarily unavailable|network|fetch failed|econnreset|socket hang up/i.test(message);
+  const attempts = Math.max(0, Number(payload._ocrRetryCount || 0));
+  if (!retryable || attempts >= 2) return false;
+
+  const nextPayload = { ...payload, _ocrRetryCount: String(attempts + 1) };
+  const response = await supabase(
+    `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.ocr&status=eq.running`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({
+        status: 'queued',
+        error: `تعذرت المحاولة مؤقتاً (HTTP ${status || 'غير محدد'}). ستُعاد معالجة الملف تلقائياً دون حذفه.`,
+        payload: nextPayload,
+        updated_at: new Date().toISOString(),
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`تعذر إعادة مهمة OCR إلى الطابور (${response.status}).`);
+  const rows = await response.json().catch(() => []);
+  if (!Array.isArray(rows) || !rows.length) return false;
+  await send('amin-ai-jobs', { jobId });
+  return true;
+}
+
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
   let fullText = '';
   let pendingWrite = Promise.resolve();
@@ -676,6 +705,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       phase = 'persist-handler-failure';
       console.error('AI job handler returned failure:', JSON.stringify({ jobId, taskType, phase, statusCode: fakeRes.statusCode, error: safeDiagnosticMessage(error), hasPartialResult: Boolean(fullText.trim()) }));
       if (taskType === 'ocr') {
+        if (await retryTransientOcrJob(jobId, userId, payload, error)) return;
         const finalized = await finalizeOcrJob(jobId, userId, {
           status: 'failed', error, partial_result: fullText, payload: {}, completed_at: new Date().toISOString(),
         });
@@ -711,6 +741,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     try {
       phase = 'persist-caught-failure';
       if (taskType === 'ocr') {
+        if (await retryTransientOcrJob(jobId, userId, payload, message)) return;
         const finalized = await finalizeOcrJob(jobId, userId, {
           status: 'failed', error: message, partial_result: fullText, payload: {}, completed_at: new Date().toISOString(),
         });
@@ -747,9 +778,13 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       }
     }
     if (taskType === 'ocr' && payload.storagePath) {
-      await deleteOcrObject(payload.storagePath).catch((error: any) => {
-        console.warn('Temporary OCR file cleanup skipped:', safeDiagnosticMessage(error?.message || error));
-      });
+      // Keep the original upload while a transient failure has re-queued this job.
+      const latest = await loadQueueJob(jobId).catch(() => null);
+      if (latest && ['completed', 'failed'].includes(String(latest.status))) {
+        await deleteOcrObject(payload.storagePath).catch((error: any) => {
+          console.warn('Temporary OCR file cleanup skipped:', safeDiagnosticMessage(error?.message || error));
+        });
+      }
     }
   }
 }
