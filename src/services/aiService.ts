@@ -176,6 +176,30 @@ export async function enableCompletionPushNotifications(): Promise<'enabled' | '
   }
 }
 
+async function fetchOcrUploadWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string,
+  externalSignal?: AbortSignal,
+): Promise<Response> {
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromCaller();
+  else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  const timeoutId = setTimeout(() => controller.abort(new DOMException(timeoutMessage, 'TimeoutError')), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error: any) {
+    if (externalSignal?.aborted) throw createOcrAbortError();
+    if (controller.signal.aborted) throw new Error(timeoutMessage);
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', abortFromCaller);
+  }
+}
+
 function createOcrAbortError(): Error {
   const error = new Error('تم إلغاء معالجة الملف وحذفه من القائمة.');
   error.name = 'AbortError';
@@ -478,23 +502,21 @@ export async function runSavedImageOcrTask(
     webp: 'image/webp', bmp: 'image/bmp',
   } as Record<string, string>)[extension] || 'image/jpeg';
   if (lifecycle?.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-  const prepareResponse = await fetch('/api/gemini/jobs', {
+  const prepareResponse = await fetchOcrUploadWithTimeout('/api/gemini/jobs', {
     method: 'POST',
     headers: getRequestHeaders(),
     body: JSON.stringify({ action: 'prepare-ocr-upload', jobId, fileName: file.name, mimeType, fileSize: file.size }),
-    ...(lifecycle?.signal ? { signal: lifecycle.signal } : {}),
-  });
+  }, 30_000, 'انتهت مهلة تجهيز رفع الصورة إلى الخادم. تحقق من الاتصال ثم أعد المحاولة.', lifecycle?.signal);
   const uploadInfo = await prepareResponse.json().catch(() => ({}));
   if (!prepareResponse.ok || !uploadInfo?.signedUrl || !uploadInfo?.objectPath) {
     throw new Error(uploadInfo?.error || `تعذر تجهيز رفع الصورة (${prepareResponse.status}).`);
   }
   if (lifecycle?.signal?.aborted) throw Object.assign(new Error('تم إلغاء معالجة الملف.'), { name: 'AbortError' });
-  const uploadResponse = await fetch(String(uploadInfo.signedUrl), {
+  const uploadResponse = await fetchOcrUploadWithTimeout(String(uploadInfo.signedUrl), {
     method: 'PUT',
     headers: { 'Content-Type': mimeType, 'x-upsert': 'false' },
     body: file,
-    ...(lifecycle?.signal ? { signal: lifecycle.signal } : {}),
-  });
+  }, 120_000, 'استغرق رفع الصورة أكثر من دقيقتين دون اكتمال. لم يبدأ OCR؛ أعد المحاولة بعد التأكد من اتصال الإنترنت.', lifecycle?.signal);
   if (!uploadResponse.ok) {
     const detail = await uploadResponse.text().catch(() => '');
     throw new Error(`تعذر رفع الصورة إلى التخزين (${uploadResponse.status})${detail ? `: ${detail.slice(0, 160)}` : ''}.`);
