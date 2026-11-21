@@ -413,9 +413,11 @@ function isInternalWorkerRequest(req: any) {
 }
 
 function isPdfOcrPayload(taskType: string, payload: Record<string, string>) {
+  // A storagePath can point to either an image or a PDF. Route by the actual
+  // MIME type so stored images go through the durable image queue, while PDF
+  // pages continue using the existing PDF OCR dispatcher.
   return taskType === 'ocr' && (
     String(payload.mimeType || '').toLowerCase() === 'application/pdf' ||
-    typeof payload.storagePath === 'string' ||
     typeof payload.images === 'string'
   );
 }
