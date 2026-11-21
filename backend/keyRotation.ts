@@ -3,7 +3,7 @@ import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
 import { createOpenRouterCompatibleClient, getOpenRouterModels } from './openrouterAdapter.ts';
-import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys, fetchServerCloudOCRGroqFallbackConfig } from './supabaseSync.ts';
+import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys } from './supabaseSync.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
   if (!key || typeof key !== 'string') return false;
@@ -281,31 +281,8 @@ export async function checkDedicatedOCRGeminiReadiness(totalTimeoutMs = 9000): P
   return { ready: false, keyCount: keys.length, checkedKeys, message: `توجد ${keys.length} مفاتيح في مجموعة OCR، لكن تعذر التحقق من وصول أي نموذج. آخر نتيجة: ${lastFailure}` };
 }
 
-/** * دالة استخراج النص الخاصة بـ Groq الاحتياطي المباشر (المجاني) عندما تفشل محاولات Gemini */
-async function executeGroqOCRFallback(action: (ai: GoogleGenAI, key: string, model: string) => Promise<any>, deadlineAt = Date.now() + 90000): Promise<any> {
-  const fallbackConfig = await fetchServerCloudOCRGroqFallbackConfig();
-  if (!fallbackConfig.enabled || !fallbackConfig.apiKey) {
-    throw new Error('احتياطي Groq لـ OCR غير مفعل أو لم يتم حفظ مفتاحه.');
-  }
+/** تدوير OCR حصرياً عبر مفاتيح ونماذج Gemini المخصصة للصور والمستندات. */
 
-  console.log('🔄 جاري تشغيل بديل Groq المباشر لـ OCR...');
-  
-  const remainingMs = Math.max(1000, deadlineAt - Date.now());
-  
-  // الاتصال المباشر بخوادم Groq لمنع أخطاء الـ 402 الخاصة بـ OpenRouter
-  const client = createOpenRouterCompatibleClient(
-    Math.min(60000, remainingMs), 
-    deadlineAt, 
-    'https://api.groq.com/openai/v1', 
-    fallbackConfig.apiKey
-  );
-  
-  const modelToUse = fallbackConfig.model || 'meta-llama/llama-3.2-11b-vision-preview';
-  
-  return await action(client as unknown as GoogleGenAI, fallbackConfig.apiKey, modelToUse);
-}
-
-/** تدوير OCR المكثف عبر مفاتيح Gemini أولاً، وعند فشلها يتم الانتقال التلقائي لـ Groq المباشر */
 export async function executeWithDedicatedOCRKeyRotation<T>(
   action: (ai: GoogleGenAI, key: string, model: string) => Promise<T>,
   preferredModels: string[] = GEMINI_MODELS,
@@ -326,8 +303,8 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
   for (let round = 0; round < 2; round++) {
     const roundStart = overallStart + Math.floor(totalBudget * round / 2);
     const roundEnd = overallStart + Math.floor(totalBudget * (round + 1) / 2);
-    // Reserve most of each round for a full Gemini key/model rotation; Groq remains the fallback.
-    const geminiDeadlineAt = roundStart + Math.floor((roundEnd - roundStart) * 0.88);
+    // Use the complete round budget for Gemini key/model rotation only.
+    const geminiDeadlineAt = roundEnd;
     if (round > 0) await new Promise((r) => setTimeout(r, 1000));
 
     if (keys.length > 0) {
@@ -377,27 +354,10 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
       }
     }
 
-    console.warn(`⚠️ فشلت محاولات Gemini لـ OCR في الجولة ${round + 1}. جاري تجربة Groq المباشر الاحتياطي...`);
-    try {
-      if (roundEnd - Date.now() < 10000) {
-        lastError = lastError || new Error('لم يتبق وقت كاف لتجربة Groq في هذه الجولة.');
-        continue;
-      }
-      const groqResult = await executeGroqOCRFallback(action, roundEnd);
-      if (groqResult) {
-        console.log(`✅ تم إتمام استخراج النص بنجاح عبر Groq المباشر في الجولة ${round + 1}!`);
-        return groqResult;
-      }
-      lastError = new Error('أعاد Groq نتيجة فارغة لاستخراج النص.');
-    } catch (groqError: any) {
-      lastError = groqError;
-      console.error(`❌ فشل Groq المباشر في الجولة ${round + 1}:`, groqError?.message);
-    }
-
     if (Date.now() >= deadlineAt || deadlineAt - Date.now() < 10000) break;
   }
 
-  const finalError: any = new Error(`فشلت محاولتان كاملتان لاستخراج النص: Gemini بمفاتيح ونماذج ثم Groq. ${String(lastError?.message || '')}`);
+  const finalError: any = new Error(`فشلت محاولات Gemini بمفاتيحها ونماذجها المخصصة لاستخراج النص. ${String(lastError?.message || '')}`);
   finalError.status = lastError?.status || lastError?.statusCode || 503;
   finalError.statusCode = finalError.status;
   finalError.cause = lastError;
