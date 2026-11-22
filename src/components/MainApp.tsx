@@ -92,8 +92,8 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     const caseAnalysisContext = [
       '[ملف القضية المستعاد — البيانات المنظمة]:',
       JSON.stringify(context, null, 2),
-      ...(context.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\\n${item.content}`),
-    ].join('\\n\\n').slice(0, 28000);
+      ...(context.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\n${item.content}`),
+    ].join('\n\n').slice(0, 28000);
     setDraftingData({
       courtType: context.court || '',
       circuit: context.circuit || '',
@@ -205,7 +205,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     };
     const caseContextSummary = { schemaVersion: caseContext.schemaVersion, caseId: caseContext.caseId, updatedAt: caseContext.updatedAt, court: caseContext.court, circuit: caseContext.circuit, caseNumber: caseContext.caseNumber, clientName: caseContext.clientName, clientRole: caseContext.clientRole, opponentName: caseContext.opponentName, caseNature: caseContext.caseNature, selectedDocumentType: caseContext.selectedDocumentType, sessionDate: caseContext.sessionDate, defenses: caseContext.defenses, requests: caseContext.requests, proceduralStage: caseContext.proceduralStage, proceduralStageSource: caseContext.proceduralStageSource, clientGoals: caseContext.clientGoals, verificationNotes: caseContext.verificationNotes };
     const caseAnalysisContext = [
-      ...(existingCase?.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\\n${item.content}`),
+      ...(existingCase?.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\n${item.content}`),
       '[بيانات ملف القضية المنظمة]:',
       JSON.stringify(caseContextSummary, null, 2),
       '[تحليل التكييف القانوني السابق — مرتبط بذات النزاع]',
@@ -306,7 +306,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     const caseAnalysisContext = [
       '[بيانات ملف القضية المنظمة]:',
       JSON.stringify(caseContextSummary, null, 2),
-      ...(existingCase?.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\\n${item.content}`),
+      ...(existingCase?.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\n${item.content}`),
       analysisContext?.trim() ? `[نتائج التفنيد والتحليل السابق — مرتبطة بذات النزاع]:\n${analysisContext.trim().slice(0, 26000)}\n\nأعد مطابقة كل نتيجة مع الوقائع والمستندات الحالية، ولا تنقل استنتاجاً أو دفعاً دون التحقق من سنده. عند وجود تعارض، اعرضه ولا تتجاهله.` : '',
     ].filter(Boolean).join('\n\n');
 

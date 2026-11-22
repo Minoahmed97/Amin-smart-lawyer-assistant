@@ -473,16 +473,6 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
             capturedAt: item.capturedAt,
             content: item.content.slice(0, 5000),
           })),
-        materials: (Array.isArray(formData.caseContext.materials) ? formData.caseContext.materials : [])
-          .filter((item) => item.content.trim() && item.content.trim() !== String(formData.facts || '').trim())
-          .slice(-6)
-          .map((item) => ({
-            kind: item.kind,
-            title: item.title,
-            sourceView: item.sourceView,
-            capturedAt: item.capturedAt,
-            content: item.content.slice(0, 5000),
-          })),
       } : null;
       const caseAnalysisContextForPrompt = [
         formData.caseAnalysisContext?.trim() || '',
