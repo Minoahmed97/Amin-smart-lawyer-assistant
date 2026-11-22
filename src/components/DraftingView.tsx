@@ -45,12 +45,14 @@ interface DraftingViewProps {
   initialFormData?: Partial<DraftingFormData>;
   userId: string;
   onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
+  onCaseContextChange?: (context: DraftingFormData['caseContext']) => void;
 }
 
 export const DraftingView: React.FC<DraftingViewProps> = ({
   initialFormData,
   userId,
   onSwitchTab,
+  onCaseContextChange,
 }) => {
   const [formData, setFormData] = useState<DraftingFormData>(() => {
     const saved = persistentStorage.getJSON<DraftingFormData>('amin_judicial_draft_form');
@@ -302,6 +304,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       return { ...prev, caseContext: nextContext };
     });
   }, [formData.courtType, formData.circuit, formData.caseNumber, formData.clientName, formData.clientRole, formData.opponentName, formData.judicialWorkType, formData.briefType, formData.sessionDate, formData.defenses, formData.requests, formData.facts, formData.caseContext]);
+
+  useEffect(() => {
+    if (formData.caseContext) onCaseContextChange?.(formData.caseContext);
+  }, [formData.caseContext]);
 
   useEffect(() => { clearPersistenceRef.current = false; });
 

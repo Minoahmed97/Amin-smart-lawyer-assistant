@@ -9,6 +9,7 @@ import { CommunityWallView } from './CommunityWallView.tsx';
 import { BroadcastBanner } from './BroadcastBanner.tsx';
 import { AdminApiModal } from './AdminApiModal.tsx';
 import { DraftingFormData, LegalCaseContext } from '../types.ts';
+import { listLegalCases, saveLegalCase, LegalCaseRecord } from '../services/legalCaseService.ts';
 import { getAllLawModels } from '../utils/legalVaultService.ts';
 import { UserRole } from '../utils/deviceFingerprint.ts';
 import { persistentStorage } from '../utils/persistentStorage.ts';
@@ -79,6 +80,73 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
 
   // Shared form data for cross-tab workflows
   const [draftingData, setDraftingData] = useState<Partial<DraftingFormData>>({});
+
+  const [legalCases, setLegalCases] = useState<LegalCaseRecord[]>([]);
+  const [activeCaseId, setActiveCaseId] = useState<string>(() => persistentStorage.getItem(`amin_active_legal_case_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`, ''));
+  const [caseStorageStatus, setCaseStorageStatus] = useState<'loading' | 'cloud' | 'local' | 'error'>('loading');
+
+  const restoreCaseIntoDrafting = (context: LegalCaseContext) => {
+    const preferredFacts = [...(context.materials || [])].reverse().find((item) => item.kind === 'drafting_snapshot')
+      || [...(context.materials || [])].reverse().find((item) => item.kind === 'case_facts' || item.kind === 'opponent_pleading');
+    const caseAnalysisContext = [
+      '[ملف القضية المستعاد — البيانات المنظمة]:',
+      JSON.stringify(context, null, 2),
+      ...(context.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\\n${item.content}`),
+    ].join('\\n\\n').slice(0, 28000);
+    setDraftingData({
+      courtType: context.court || '',
+      circuit: context.circuit || '',
+      caseNumber: context.caseNumber || '',
+      clientName: context.clientName || '',
+      clientRole: context.clientRole || '',
+      opponentName: context.opponentName || '',
+      sessionDate: context.sessionDate || '',
+      briefType: context.selectedDocumentType || '',
+      judicialWorkType: context.selectedDocumentType || '',
+      facts: preferredFacts?.content || '',
+      defenses: context.defenses || '',
+      requests: context.requests || '',
+      caseAnalysisContext,
+      caseContext: context,
+    });
+  };
+
+  useEffect(() => {
+    let active = true;
+    setCaseStorageStatus('loading');
+    void listLegalCases(userId).then(({ cases, cloudAvailable }) => {
+      if (!active) return;
+      setLegalCases(cases);
+      setCaseStorageStatus(cloudAvailable ? 'cloud' : 'local');
+      const storedActiveId = persistentStorage.getItem(`amin_active_legal_case_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`, '');
+      const selected = cases.find((row) => row.case_id === storedActiveId) || null;
+      if (selected) {
+        setActiveCaseId(selected.case_id);
+        restoreCaseIntoDrafting(selected.case_data);
+      } else {
+        setActiveCaseId('');
+        persistentStorage.removeItem(`amin_active_legal_case_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`);
+      }
+    }).catch(() => { if (active) setCaseStorageStatus('error'); });
+    return () => { active = false; };
+  }, [userId]);
+
+  useEffect(() => {
+    const context = draftingData.caseContext;
+    if (!context?.caseId) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void saveLegalCase(userId, context).then(({ cases, cloudSaved }) => {
+        if (!active) return;
+        setLegalCases(cases);
+        setCaseStorageStatus(cloudSaved ? 'cloud' : 'local');
+        setActiveCaseId(context.caseId);
+        persistentStorage.setItem(`amin_active_legal_case_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`, context.caseId);
+      });
+    }, 650);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [userId, draftingData.caseContext]);
+
 
   const handleChangeRoleRequest = () => {
     setActiveTab('deconstruct');
@@ -297,7 +365,37 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       {/* Global Broadcast Announcement from Admin */}
       <BroadcastBanner onSwitchTab={handleTabChange} />
 
-      {/* Main Tab Content - Kept mounted in DOM to prevent losing state when navigating */}
+      {legalCases.length > 0 && (
+        <div className="mx-auto w-full max-w-7xl px-3 pt-3">
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-black/10 p-3">
+            <label htmlFor="amin-active-legal-case" className="text-sm font-semibold">ملف القضية النشط</label>
+            <select
+              id="amin-active-legal-case"
+              value={activeCaseId}
+              onChange={(event) => {
+                const selectedId = event.target.value;
+                setActiveCaseId(selectedId);
+                persistentStorage.setItem(`amin_active_legal_case_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`, selectedId);
+                const selected = legalCases.find((row) => row.case_id === selectedId);
+                if (selected) restoreCaseIntoDrafting(selected.case_data);
+              }}
+              className="min-w-0 flex-1 rounded-lg border border-white/15 bg-slate-900 px-3 py-2 text-sm text-white"
+            >
+              <option value="">اختر ملف قضية محفوظًا</option>
+              {legalCases.map((row) => (
+                <option key={row.case_id} value={row.case_id}>
+                  {[row.case_data.caseNumber, row.case_data.clientName, row.case_data.caseNature].filter(Boolean).join(' — ') || `ملف قضية ${row.case_id.slice(-6)}`}
+                </option>
+              ))}
+            </select>
+            <span className="text-xs text-slate-400">
+              {caseStorageStatus === 'cloud' ? 'محفوظ سحابيًا' : caseStorageStatus === 'local' ? 'حفظ محلي مؤقت' : caseStorageStatus === 'loading' ? 'جارٍ تحميل الملفات…' : 'تعذر تحميل التخزين'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Main Tab Content - Kept mounted in DOM to prevent losing state when navigating */
       <main className="flex-1 py-3 sm:py-5">
         {(
           <>
@@ -313,6 +411,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               <DraftingView
                 initialFormData={draftingData}
                 userId={userId}
+                onCaseContextChange={(context) => setDraftingData((prev) => ({ ...prev, caseContext: context }))}
                     onSwitchTab={handleTabChange}
               />
             </div>
