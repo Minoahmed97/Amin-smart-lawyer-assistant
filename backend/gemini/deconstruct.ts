@@ -36,9 +36,19 @@ export default async function handler(req: any, res: any) {
 
     limitBodyString(opponentBriefText, 200000, 'مذكرة الخصم');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
-    const caseContextText = caseContext && typeof caseContext === 'object'
-      ? JSON.stringify(caseContext).slice(0, 30000)
-      : '';
+    limitBodyString(caseContext, 30000, 'ملف القضية');
+    let caseContextText = '';
+    if (typeof caseContext === 'string' && caseContext.trim()) {
+      try {
+        const parsedCaseContext = JSON.parse(caseContext);
+        if (!parsedCaseContext || typeof parsedCaseContext !== 'object' || Array.isArray(parsedCaseContext)) {
+          throw new Error('invalid case context');
+        }
+        caseContextText = JSON.stringify(parsedCaseContext);
+      } catch {
+        return res.status(400).json({ error: 'بيانات ملف القضية المرسلة إلى التفنيد غير صالحة.' });
+      }
+    }
 
     const legalStrategy = prepareLegalStrategy({
       task: 'deconstruct',
