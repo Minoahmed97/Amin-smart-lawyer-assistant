@@ -132,7 +132,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       }] : [],
       verificationNotes: ['لم تُحدد المرحلة الإجرائية صراحةً؛ يلزم إدخالها أو التحقق منها من ملف القضية.'],
     };
-    const caseContextSummary = { schemaVersion: caseContext.schemaVersion, caseId: caseContext.caseId, updatedAt: caseContext.updatedAt, court: caseContext.court, circuit: caseContext.circuit, caseNumber: caseContext.caseNumber, clientName: caseContext.clientName, clientRole: caseContext.clientRole, opponentName: caseContext.opponentName, caseNature: caseContext.caseNature, proceduralStage: caseContext.proceduralStage, proceduralStageSource: caseContext.proceduralStageSource, clientGoals: caseContext.clientGoals, verificationNotes: caseContext.verificationNotes };
+    const caseContextSummary = { schemaVersion: caseContext.schemaVersion, caseId: caseContext.caseId, updatedAt: caseContext.updatedAt, court: caseContext.court, circuit: caseContext.circuit, caseNumber: caseContext.caseNumber, clientName: caseContext.clientName, clientRole: caseContext.clientRole, opponentName: caseContext.opponentName, caseNature: caseContext.caseNature, selectedDocumentType: caseContext.selectedDocumentType, sessionDate: caseContext.sessionDate, defenses: caseContext.defenses, requests: caseContext.requests, proceduralStage: caseContext.proceduralStage, proceduralStageSource: caseContext.proceduralStageSource, clientGoals: caseContext.clientGoals, verificationNotes: caseContext.verificationNotes };
     const caseAnalysisContext = [
       '[بيانات ملف القضية المنظمة]:',
       JSON.stringify(caseContextSummary, null, 2),
@@ -227,7 +227,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         'لم تُحدد المرحلة الإجرائية صراحةً؛ لا يجوز استنتاجها من مجرد نص مذكرة الخصم.',
       ],
     };
-    const caseContextSummary = { schemaVersion: caseContext.schemaVersion, caseId: caseContext.caseId, updatedAt: caseContext.updatedAt, court: caseContext.court, circuit: caseContext.circuit, caseNumber: caseContext.caseNumber, clientName: caseContext.clientName, clientRole: caseContext.clientRole, opponentName: caseContext.opponentName, caseNature: caseContext.caseNature, proceduralStage: caseContext.proceduralStage, proceduralStageSource: caseContext.proceduralStageSource, clientGoals: caseContext.clientGoals, verificationNotes: caseContext.verificationNotes };
+    const caseContextSummary = { schemaVersion: caseContext.schemaVersion, caseId: caseContext.caseId, updatedAt: caseContext.updatedAt, court: caseContext.court, circuit: caseContext.circuit, caseNumber: caseContext.caseNumber, clientName: caseContext.clientName, clientRole: caseContext.clientRole, opponentName: caseContext.opponentName, caseNature: caseContext.caseNature, selectedDocumentType: caseContext.selectedDocumentType, sessionDate: caseContext.sessionDate, defenses: caseContext.defenses, requests: caseContext.requests, proceduralStage: caseContext.proceduralStage, proceduralStageSource: caseContext.proceduralStageSource, clientGoals: caseContext.clientGoals, verificationNotes: caseContext.verificationNotes };
     const caseAnalysisContext = [
       '[بيانات ملف القضية المنظمة]:',
       JSON.stringify(caseContextSummary, null, 2),
