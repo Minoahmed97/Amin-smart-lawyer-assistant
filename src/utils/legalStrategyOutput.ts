@@ -15,7 +15,12 @@ export interface SplitLegalStrategyOutput {
  */
 export function combineLegalStrategyOutput(strategy: string, document: string): string {
   if (!strategy.trim()) return document;
-  return `${LEGAL_STRATEGY_START}\n${strategy.trim()}\n${LEGAL_STRATEGY_END}\n${LEGAL_DOCUMENT_START}\n${document}\n${LEGAL_DOCUMENT_END}`;
+  return `${LEGAL_STRATEGY_START}
+${strategy.trim()}
+${LEGAL_STRATEGY_END}
+${LEGAL_DOCUMENT_START}
+${document}
+${LEGAL_DOCUMENT_END}`;
 }
 
 export function splitLegalStrategyOutput(raw: string, allowUnstructuredFallback = true): SplitLegalStrategyOutput {

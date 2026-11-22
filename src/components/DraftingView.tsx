@@ -482,15 +482,41 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       formData.defenses?.trim() ? `[الدفوع التي حددها المحامي]:\n${formData.defenses.slice(0, 5000)}` : '',
       formData.requests?.trim() ? `[الطلبات المحددة]:\n${formData.requests.slice(0, 3000)}` : '',
       formData.caseAnalysisContext?.trim() ? `[التحليل القانوني السابق المرتبط بالقضية]:\n${formData.caseAnalysisContext.slice(0, 10000)}` : '',
+      formData.caseContext ? `[البيانات المنظمة الحالية للقضية]:\n${JSON.stringify({
+        court: formData.caseContext.court,
+        circuit: formData.caseContext.circuit,
+        caseNumber: formData.caseContext.caseNumber,
+        clientName: formData.caseContext.clientName,
+        clientRole: formData.caseContext.clientRole,
+        opponentName: formData.caseContext.opponentName,
+        selectedDocumentType: formData.caseContext.selectedDocumentType,
+        sessionDate: formData.caseContext.sessionDate,
+        proceduralStage: formData.caseContext.proceduralStage,
+        proceduralStageSource: formData.caseContext.proceduralStageSource,
+        requests: formData.caseContext.requests,
+        verificationNotes: formData.caseContext.verificationNotes,
+      }, null, 2)}` : '',
       formData.customInstructions?.trim() ? `[تعليمات المحامي الحالية]:\n${formData.customInstructions.slice(0, 2000)}` : '',
     ].filter(Boolean).join('\n\n').slice(0, 28000);
+    let refinementStream = '';
     try {
       const refined = await refineDraftText(previousDraft, type, (chunk) => {
-        if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
+        if (operationId !== resultOperationRef.current) return;
+        refinementStream += chunk;
+        const streamedOutput = splitLegalStrategyOutput(refinementStream);
+        const streamedStrategy = streamedOutput.strategy || legalStrategyRecommendation;
+        const streamedDocument = streamedOutput.document || (
+          streamedOutput.strategy ? '' : refinementStream
+        );
+        setGeneratedBrief(combineLegalStrategyOutput(streamedStrategy, streamedDocument));
       }, userId, refinementCaseContext);
       if (refined && operationId === resultOperationRef.current) {
-        setGeneratedBrief(refined);
-        persistentStorage.setItem('amin_judicial_draft_result', refined);
+        const refinedOutput = splitLegalStrategyOutput(refined);
+        const finalStrategy = refinedOutput.strategy || legalStrategyRecommendation;
+        const finalDocument = refinedOutput.document || refined;
+        const finalOutput = combineLegalStrategyOutput(finalStrategy, finalDocument);
+        setGeneratedBrief(finalOutput);
+        persistentStorage.setItem('amin_judicial_draft_result', finalOutput);
         const notes: Record<string, string> = {
           moreDecisive: 'تم تعزيز العبارات القضائية وجعل الصياغة أكثر حسماً.',
           addPrecedents: 'تم تدعيم المذكرة بأحدث مبادئ وأحكام محكمة النقض المصرية.',
