@@ -46,6 +46,7 @@ interface DraftingViewProps {
   userId: string;
   onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
   onCaseContextChange?: (context: DraftingFormData['caseContext']) => void;
+  caseSelectionRevision?: number;
 }
 
 export const DraftingView: React.FC<DraftingViewProps> = ({
@@ -53,6 +54,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   userId,
   onSwitchTab,
   onCaseContextChange,
+  caseSelectionRevision = 0,
 }) => {
   const [formData, setFormData] = useState<DraftingFormData>(() => {
     const saved = persistentStorage.getJSON<DraftingFormData>('amin_judicial_draft_form');
@@ -308,6 +310,34 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   useEffect(() => {
     if (formData.caseContext) onCaseContextChange?.(formData.caseContext);
   }, [formData.caseContext]);
+
+  // An explicit case selection from the case-file picker replaces the active
+  // drafting form. Ordinary parent re-renders never overwrite live edits.
+  useEffect(() => {
+    if (caseSelectionRevision <= 0 || !initialFormData?.caseContext) return;
+    setFormData({
+      courtType: initialFormData.courtType || '',
+      circuit: initialFormData.circuit || '',
+      briefType: initialFormData.briefType || '',
+      judicialWorkType: initialFormData.judicialWorkType || '',
+      customJudicialWorkType: initialFormData.customJudicialWorkType || '',
+      clientRole: initialFormData.clientRole || '',
+      clientName: initialFormData.clientName || '',
+      opponentName: initialFormData.opponentName || '',
+      caseNumber: initialFormData.caseNumber || '',
+      sessionDate: initialFormData.sessionDate || '',
+      facts: initialFormData.facts || '',
+      defenses: initialFormData.defenses || '',
+      requests: initialFormData.requests || '',
+      customInstructions: initialFormData.customInstructions || '',
+      caseAnalysisContext: initialFormData.caseAnalysisContext || '',
+      caseContext: initialFormData.caseContext,
+      exemplarBrief: initialFormData.exemplarBrief || '',
+      useFewShot: initialFormData.useFewShot,
+    });
+    setGeneratedBrief('');
+    persistentStorage.removeItem('amin_judicial_draft_result');
+  }, [caseSelectionRevision]);
 
   useEffect(() => { clearPersistenceRef.current = false; });
 

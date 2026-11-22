@@ -83,6 +83,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
 
   const [legalCases, setLegalCases] = useState<LegalCaseRecord[]>([]);
   const [activeCaseId, setActiveCaseId] = useState<string>(() => persistentStorage.getItem(`amin_active_legal_case_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`, ''));
+  const [caseSelectionRevision, setCaseSelectionRevision] = useState(0);
   const [caseStorageStatus, setCaseStorageStatus] = useState<'loading' | 'cloud' | 'local' | 'error'>('loading');
 
   const restoreCaseIntoDrafting = (context: LegalCaseContext) => {
@@ -377,7 +378,10 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
                 setActiveCaseId(selectedId);
                 persistentStorage.setItem(`amin_active_legal_case_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`, selectedId);
                 const selected = legalCases.find((row) => row.case_id === selectedId);
-                if (selected) restoreCaseIntoDrafting(selected.case_data);
+                if (selected) {
+                  restoreCaseIntoDrafting(selected.case_data);
+                  setCaseSelectionRevision((value) => value + 1);
+                }
               }}
               className="min-w-0 flex-1 rounded-lg border border-white/15 bg-slate-900 px-3 py-2 text-sm text-white"
             >
@@ -412,6 +416,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
                 initialFormData={draftingData}
                 userId={userId}
                 onCaseContextChange={(context) => setDraftingData((prev) => ({ ...prev, caseContext: context }))}
+                caseSelectionRevision={caseSelectionRevision}
                     onSwitchTab={handleTabChange}
               />
             </div>
