@@ -247,6 +247,62 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     }
   }, [initialFormData]);
 
+  // Keep the structured case file synchronized with the lawyer's existing
+  // drafting fields. The same caseId and prior analysis are retained; empty
+  // form fields never erase previously captured case data.
+  useEffect(() => {
+    setFormData((prev) => {
+      const current = prev.caseContext;
+      if (!current) return prev;
+
+      const nextMaterials = [...current.materials];
+      const materialIndex = nextMaterials.findIndex((item) =>
+        item.kind === 'case_facts' || item.kind === 'opponent_pleading'
+      );
+      const factsText = String(prev.facts || '').trim();
+      if (factsText) {
+        if (materialIndex >= 0) {
+          if (nextMaterials[materialIndex].content !== factsText) {
+            nextMaterials[materialIndex] = {
+              ...nextMaterials[materialIndex],
+              content: factsText,
+              capturedAt: new Date().toISOString(),
+            };
+          }
+        } else {
+          const fromDeconstruction = current.priorAnalysis.some((item) => item.type === 'deconstruction');
+          nextMaterials.push({
+            id: `material-${current.caseId}-facts`,
+            kind: fromDeconstruction ? 'opponent_pleading' : 'case_facts',
+            title: fromDeconstruction ? 'المذكرة أو المستند المقدم من الخصم' : 'وقائع ومستندات القضية',
+            content: factsText,
+            sourceView: fromDeconstruction ? 'deconstruction' : 'drafting',
+            capturedAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      const nextContext = {
+        ...current,
+        court: prev.courtType?.trim() || current.court,
+        circuit: prev.circuit?.trim() || current.circuit,
+        caseNumber: prev.caseNumber?.trim() || current.caseNumber,
+        clientName: prev.clientName?.trim() || current.clientName,
+        clientRole: prev.clientRole?.trim() || current.clientRole,
+        opponentName: prev.opponentName?.trim() || current.opponentName,
+        selectedDocumentType: prev.judicialWorkType?.trim() || prev.briefType?.trim() || current.selectedDocumentType,
+        sessionDate: prev.sessionDate?.trim() || current.sessionDate,
+        defenses: prev.defenses?.trim() || current.defenses,
+        requests: prev.requests?.trim() || current.requests,
+        materials: nextMaterials,
+      };
+
+      if (JSON.stringify(nextContext) === JSON.stringify(current)) return prev;
+      nextContext.updatedAt = new Date().toISOString();
+      return { ...prev, caseContext: nextContext };
+    });
+  }, [formData.courtType, formData.circuit, formData.caseNumber, formData.clientName, formData.clientRole, formData.opponentName, formData.judicialWorkType, formData.briefType, formData.sessionDate, formData.defenses, formData.requests, formData.facts, formData.caseContext]);
+
   useEffect(() => { clearPersistenceRef.current = false; });
 
   const clearForm = () => {

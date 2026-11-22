@@ -23,6 +23,10 @@ export interface LegalCaseContext {
   clientRole: string;
   opponentName: string;
   caseNature: string;
+  selectedDocumentType: string;
+  sessionDate: string;
+  defenses: string;
+  requests: string;
   proceduralStage: string;
   proceduralStageSource: 'lawyer_provided' | 'not_provided';
   clientGoals: string;
