@@ -1,5 +1,5 @@
 import { testGeminiKey, getKeysStatus } from '../../keyRotation.ts';
-import { saveServerCloudGeminiKey } from '../../supabaseSync.ts';
+import { saveServerCloudGeminiKey, fetchServerCloudGeminiKeys } from '../../supabaseSync.ts';
 import { requireAdmin } from '../../auth.ts';
 
 export default async function handler(req: any, res: any) {
@@ -35,7 +35,7 @@ export default async function handler(req: any, res: any) {
     return res.json({
       ok: true,
       message: testRes.success ? 'تم حفظ المفتاح. ' + testRes.message : 'تم حفظ المفتاح، لكن تعذّر تأكيد عمله الآن. الحالة: ' + testRes.message,
-      status: getKeysStatus(),
+      status: getKeysStatus(await fetchServerCloudGeminiKeys()),
     });
   } catch (err: any) {
     return res.status(err?.statusCode || 500).json({ error: err?.message || 'فشل حفظ المفتاح في التخزين الدائم.' });
