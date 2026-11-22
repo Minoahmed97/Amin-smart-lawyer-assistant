@@ -16,6 +16,7 @@ export interface DraftingFormData {
   defenses: string;
   requests: string;
   customInstructions?: string;
+  caseAnalysisContext?: string;
   exemplarBrief?: string;
   useFewShot?: boolean;
 }

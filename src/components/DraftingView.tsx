@@ -36,6 +36,7 @@ import { getLegalDocTemplates, LegalDocTemplate } from '../utils/legalTemplateSe
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { AppliedRulesAuditBadge } from './AppliedRulesAuditBadge.tsx';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
+import { combineLegalStrategyOutput, splitLegalStrategyOutput } from '../utils/legalStrategyOutput.ts';
 
 const sanitizeDraftJobUserId = (value: string | null | undefined): string =>
   String(value || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -87,6 +88,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       defenses: initialFormData?.defenses || '',
       requests: initialFormData?.requests || '',
       customInstructions: initialFormData?.customInstructions || '',
+      caseAnalysisContext: initialFormData?.caseAnalysisContext || '',
     };
   });
 
@@ -113,6 +115,10 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const resultOperationRef = useRef(0);
   const clearPersistenceRef = useRef(false);
+
+  const legalStrategyOutput = splitLegalStrategyOutput(generatedBrief);
+  const legalStrategyRecommendation = legalStrategyOutput.strategy;
+  const generatedDocument = legalStrategyOutput.document;
 
   // General task types only. The AI decides which vault references are useful;
   // the user is not asked to choose an internal template/subtype.
@@ -263,6 +269,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       defenses: '',
       requests: '',
       customInstructions: '',
+      caseAnalysisContext: '',
     });
     setUploadedDocName('');
     extractedDocumentBatchRef.current = false;
@@ -378,16 +385,23 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   };
 
   const handleRefine = async (type: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck') => {
-    if (!generatedBrief) return;
+    if (!generatedDocument) return;
     const operationId = ++resultOperationRef.current;
     setIsRefining(true);
     setRefineNote('');
-    const previousDraft = generatedBrief;
+    const previousDraft = generatedDocument;
     setGeneratedBrief('');
+    const refinementCaseContext = [
+      formData.facts?.trim() ? `[وقائع القضية الأصلية]:\n${formData.facts.slice(0, 10000)}` : '',
+      formData.defenses?.trim() ? `[الدفوع التي حددها المحامي]:\n${formData.defenses.slice(0, 5000)}` : '',
+      formData.requests?.trim() ? `[الطلبات المحددة]:\n${formData.requests.slice(0, 3000)}` : '',
+      formData.caseAnalysisContext?.trim() ? `[التحليل القانوني السابق المرتبط بالقضية]:\n${formData.caseAnalysisContext.slice(0, 10000)}` : '',
+      formData.customInstructions?.trim() ? `[تعليمات المحامي الحالية]:\n${formData.customInstructions.slice(0, 2000)}` : '',
+    ].filter(Boolean).join('\n\n').slice(0, 28000);
     try {
       const refined = await refineDraftText(previousDraft, type, (chunk) => {
         if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
-      }, userId);
+      }, userId, refinementCaseContext);
       if (refined && operationId === resultOperationRef.current) {
         setGeneratedBrief(refined);
         persistentStorage.setItem('amin_judicial_draft_result', refined);
@@ -407,8 +421,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   };
 
   const copyToClipboard = async () => {
-    if (!generatedBrief) return;
-    const ok = await copyTextSafely(generatedBrief);
+    if (!generatedDocument) return;
+    const ok = await copyTextSafely(generatedDocument);
     if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -416,9 +430,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   };
 
   const exportToWord = () => {
-    if (!generatedBrief) return;
+    if (!generatedDocument) return;
     const briefTitle = formData.briefType || 'مذكرة_قضائية';
-    void exportLegalDocToWord(generatedBrief, briefTitle, {
+    void exportLegalDocToWord(generatedDocument, briefTitle, {
       userId,
       templateMode,
       templateId: selectedTemplateId || undefined,
@@ -433,8 +447,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   };
 
   const shareBrief = async () => {
-    if (!generatedBrief) return;
-    await shareLegalDoc(generatedBrief, 'صياغة قضائية معتمدة', () => {
+    if (!generatedDocument) return;
+    await shareLegalDoc(generatedDocument, 'صياغة قضائية معتمدة', () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -871,12 +885,21 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   </h3>
                   {generatedBrief && (
                     <span className="text-[11px] text-slate-400">
-                      {generatedBrief.split(/\s+/).filter(Boolean).length} كلمة | {generatedBrief.length} حرف
+                      {generatedDocument.split(/\s+/).filter(Boolean).length} كلمة | {generatedDocument.length} حرف
                     </span>
                   )}
                 </div>
               </div>
 
+              {legalStrategyRecommendation && (
+                <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-right">
+                  <div className="mb-2 flex items-center gap-2 text-sm font-bold text-amber-200">
+                    <Sparkles className="h-4 w-4" />
+                    <span>التوصية الاستراتيجية للمحامي — خارج المستند</span>
+                  </div>
+                  <div className="whitespace-pre-wrap text-xs leading-7 text-slate-200">{legalStrategyRecommendation}</div>
+                </div>
+              )}
               {generatedBrief && (
                 <div className="w-full flex flex-wrap items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/60 p-2">
                   <label className="text-[11px] font-bold text-slate-300" htmlFor="word-template-mode">قالب الطباعة:</label>
@@ -1070,14 +1093,15 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                   </div>
                   <Loader2 className="w-6 h-6 animate-spin text-amber-400 mt-2" />
                 </div>
-              ) : generatedBrief ? (
+              ) : generatedDocument ? (
                 isLiveEditing ? (
                   <textarea
                     rows={26}
-                    value={generatedBrief}
+                    value={generatedDocument}
                     onChange={(e) => {
-                      setGeneratedBrief(e.target.value);
-                      persistentStorage.setItem('amin_judicial_draft_result', e.target.value);
+                      const updated = combineLegalStrategyOutput(legalStrategyRecommendation, e.target.value);
+                      setGeneratedBrief(updated);
+                      persistentStorage.setItem('amin_judicial_draft_result', updated);
                     }}
                     className="w-full p-4 border border-amber-500/60 rounded-xl text-white bg-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500 font-sans"
                     style={{
@@ -1096,7 +1120,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
                       fontSize: `${fontSizePt}pt`,
                     }}
                   >
-                    {generatedBrief}
+                    {generatedDocument}
                   </div>
                 )
               ) : draftError ? (
@@ -1177,7 +1201,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           </div>
         </div>
       </div>
-      {generatedBrief && <LegalFollowupChat taskType="draft" userId={userId} originalContext={JSON.stringify(formData)} result={generatedBrief} onResultChange={(nextResult) => { setGeneratedBrief(nextResult); persistentStorage.setItem('amin_judicial_draft_result', nextResult); }} />}
+      {generatedBrief && <LegalFollowupChat taskType="draft" userId={userId} originalContext={JSON.stringify(formData)} result={generatedDocument} onResultChange={(nextResult) => { const updated = combineLegalStrategyOutput(legalStrategyRecommendation, nextResult); setGeneratedBrief(updated); persistentStorage.setItem('amin_judicial_draft_result', updated); }} />}
     </div>
   );
 };

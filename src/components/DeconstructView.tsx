@@ -31,11 +31,12 @@ import {
 } from 'lucide-react';
 import { copyTextSafely, shareLegalDoc } from '../utils/clipboardHelper.ts';
 import { exportLegalDocToWord } from '../utils/exportHelper.ts';
+import { splitLegalStrategyOutput } from '../utils/legalStrategyOutput.ts';
 
 interface DeconstructViewProps {
   userId: string;
   onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
-  onTransferToDrafting?: (facts: string, defenses: string, caseNature?: string, responseWorkType?: string) => void;
+  onTransferToDrafting?: (facts: string, defenses: string, caseNature?: string, responseWorkType?: string, analysisContext?: string) => void;
 }
 
 export const DeconstructView: React.FC<DeconstructViewProps> = ({
@@ -77,6 +78,10 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   const [isLiveEditing, setIsLiveEditing] = useState<boolean>(false);
   const resultOperationRef = useRef(0);
   const clearPersistenceRef = useRef(false);
+
+  const deconstructOutput = splitLegalStrategyOutput(analysisResult);
+  const legalStrategyRecommendation = deconstructOutput.strategy;
+  const analysisReport = deconstructOutput.document;
 
   useEffect(() => {
     if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_brief'); else persistentStorage.setItem('judicial_deconstruct_brief', opponentBriefText);
@@ -248,16 +253,16 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
 
   const displayedContent = () => {
     if (activeOutputTab === 'counterBrief') {
-      return extractCounterBrief(analysisResult);
+      return extractCounterBrief(analysisReport);
     }
     if (activeOutputTab === 'analysis') {
-      return extractDeconstructOnly(analysisResult);
+      return extractDeconstructOnly(analysisReport);
     }
     if (activeOutputTab === 'table') {
-      const tbl = extractTableSection(analysisResult);
-      return tbl || analysisResult;
+      const tbl = extractTableSection(analysisReport);
+      return tbl || analysisReport;
     }
-    return analysisResult;
+    return analysisReport;
   };
 
   const copyResult = async () => {
@@ -581,12 +586,13 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                           const selectedResponseType =
                             responseWorkType && responseWorkType !== '__smart__'
                               ? responseWorkType
-                              : extractProposedWorkType(analysisResult);
+                              : extractProposedWorkType(analysisReport);
                           onTransferToDrafting(
                             opponentBriefText,
-                            extractCounterBrief(analysisResult),
+                            extractCounterBrief(analysisReport),
                             caseNature,
                             selectedResponseType,
+                            [legalStrategyRecommendation, analysisReport].filter(Boolean).join('\n\n').slice(0, 26000),
                           );
                         }
                         onSwitchTab('draft');
@@ -601,6 +607,16 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 </div>
               )}
             </div>
+
+            {legalStrategyRecommendation && (
+              <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-right">
+                <div className="mb-2 flex items-center gap-2 text-sm font-bold text-amber-200">
+                  <Sparkles className="h-4 w-4" />
+                  <span>التوصية الاستراتيجية للمحامي — خارج التقرير</span>
+                </div>
+                <div className="whitespace-pre-wrap text-xs leading-7 text-slate-200">{legalStrategyRecommendation}</div>
+              </div>
+            )}
 
             {analysisResult && (
               <AppliedRulesAuditBadge
@@ -712,10 +728,11 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                 isLiveEditing ? (
                   <textarea
                     rows={26}
-                    value={analysisResult}
+                    value={analysisReport}
                     onChange={(e) => {
-                      setAnalysisResult(e.target.value);
-                      persistentStorage.setItem('judicial_deconstruct_result', e.target.value);
+                      const updated = legalStrategyRecommendation ? `[[AMIN_STRATEGY]]\n${legalStrategyRecommendation}\n[[/AMIN_STRATEGY]]\n[[AMIN_DOCUMENT]]\n${e.target.value}\n[[/AMIN_DOCUMENT]]` : e.target.value;
+                      setAnalysisResult(updated);
+                      persistentStorage.setItem('judicial_deconstruct_result', updated);
                     }}
                     className="w-full p-4 border border-amber-500/60 rounded-xl text-white bg-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500 font-sans"
                     style={{
@@ -815,7 +832,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
           </div>
         </div>
       </div>
-      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisResult} onResultChange={(nextResult) => { setAnalysisResult(nextResult); persistentStorage.setItem('judicial_deconstruct_result', nextResult); }} />}
+      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisReport} onResultChange={(nextResult) => { const updated = legalStrategyRecommendation ? `[[AMIN_STRATEGY]]\n${legalStrategyRecommendation}\n[[/AMIN_STRATEGY]]\n[[AMIN_DOCUMENT]]\n${nextResult}\n[[/AMIN_DOCUMENT]]` : nextResult; setAnalysisResult(updated); persistentStorage.setItem('judicial_deconstruct_result', updated); }} />}
     </div>
   );
 };

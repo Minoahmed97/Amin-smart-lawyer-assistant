@@ -95,10 +95,17 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     (window as any).openAdminModal = () => setIsAdminOpen(true);
   }, [user, userId]);
 
-  const handleDraftFromQualify = (facts: string) => {
-        setDraftingData((prev) => ({
+  const handleDraftFromQualify = (facts: string, qualificationAnalysis = '', clientGoals = '') => {
+    const caseAnalysisContext = [
+      '[تحليل التكييف القانوني السابق — مرتبط بذات النزاع]',
+      clientGoals.trim() ? `[هدف الموكل في مرحلة التكييف]:\n${clientGoals.trim()}` : '',
+      qualificationAnalysis.trim(),
+      'هذا تحليل سابق مرجعي؛ أعد اختبار استنتاجاته على الوقائع والمستندات الحالية، ولا تعتمد أي نقطة لا يسندها السياق الحالي.',
+    ].filter(Boolean).join('\n\n').slice(0, 28000);
+    setDraftingData((prev) => ({
       ...prev,
       facts,
+      caseAnalysisContext,
     }));
     setActiveTab('draft');
   };
@@ -128,6 +135,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     draftCounter: string,
     caseNature?: string,
     responseWorkType?: string,
+    analysisContext?: string,
   ) => {
     const lockedCaseNature = caseNature?.trim() || '';
     const selectedResponseType = responseWorkType?.trim() || '';
@@ -142,12 +150,17 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       'افصل دائماً بين طبيعة الدعوى ونوع المستند المطلوب صياغته.',
     ].join('\n');
 
+    const caseAnalysisContext = analysisContext?.trim()
+      ? `[نتائج التفنيد والتحليل السابق — مرتبطة بذات النزاع]:\n${analysisContext.trim().slice(0, 26000)}\n\nأعد مطابقة كل نتيجة مع الوقائع والمستندات الحالية، ولا تنقل استنتاجاً أو دفعاً دون التحقق من سنده. عند وجود تعارض، اعرضه ولا تتجاهله.`
+      : '';
+
     setDraftingData({
       facts: opponentFacts,
       defenses: draftCounter,
       briefType: selectedResponseType,
       judicialWorkType: selectedResponseType,
       customInstructions: transferInstruction,
+      caseAnalysisContext,
     });
     setActiveTab('draft');
   };

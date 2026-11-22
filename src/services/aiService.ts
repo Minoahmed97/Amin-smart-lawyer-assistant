@@ -660,7 +660,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   }
 }
 
-export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
+export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; caseAnalysisContext?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const effectiveWorkType =
     params.customJudicialWorkType?.trim()
@@ -675,12 +675,22 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
   }, params.userId);
 
   try {
-    const { userId: _userId, ...requestParams } = params;
-    const result = await requestSavedJob('counter-brief', {
+    const { userId: _userId, caseAnalysisContext: _caseAnalysisContext, ...requestParams } = params;
+    const requestPayload = {
       ...requestParams,
       effectiveWorkType,
       vaultContext: lawyerVaultContext,
-    }, onChunk, params.userId);
+      caseAnalysisContext: '',
+    };
+    const existingPayloadLength = Object.entries(requestPayload).reduce(
+      (total, [key, value]) => total + (key !== 'caseAnalysisContext' && ['string', 'number', 'boolean'].includes(typeof value) ? String(value).length : 0),
+      0,
+    );
+    const contextBudget = Math.max(0, Math.min(28000, 230000 - existingPayloadLength - 1024));
+    if (contextBudget && params.caseAnalysisContext?.trim()) {
+      requestPayload.caseAnalysisContext = params.caseAnalysisContext.trim().slice(0, contextBudget);
+    }
+    const result = await requestSavedJob('counter-brief', requestPayload, onChunk, params.userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
@@ -703,18 +713,28 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
   }
 }
 
-export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string ): Promise<string> {
+export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string, caseContext?: string ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     factsOrSubject: draftText,
   }, userId);
 
   try {
-    const result = await requestSavedJob('refine', {
+    const requestPayload = {
       draftText,
       enhancementType,
       vaultContext: lawyerVaultContext,
-    }, onChunk, userId);
+      caseContext: '',
+    };
+    const existingPayloadLength = Object.entries(requestPayload).reduce(
+      (total, [key, value]) => total + (key !== 'caseContext' && ['string', 'number', 'boolean'].includes(typeof value) ? String(value).length : 0),
+      0,
+    );
+    const contextBudget = Math.max(0, Math.min(28000, 230000 - existingPayloadLength - 1024));
+    if (contextBudget && caseContext?.trim()) {
+      requestPayload.caseContext = caseContext.trim().slice(0, contextBudget);
+    }
+    const result = await requestSavedJob('refine', requestPayload, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');

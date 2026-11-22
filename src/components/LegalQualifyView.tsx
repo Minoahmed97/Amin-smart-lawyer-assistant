@@ -25,10 +25,11 @@ import {
 } from 'lucide-react';
 import { copyTextSafely, shareLegalDoc } from '../utils/clipboardHelper.ts';
 import { exportLegalDocToWord } from '../utils/exportHelper.ts';
+import { splitLegalStrategyOutput } from '../utils/legalStrategyOutput.ts';
 
 interface LegalQualifyViewProps {
   userId: string;
-  onDraftBriefFromQualify: (facts: string) => void;
+  onDraftBriefFromQualify: (facts: string, qualificationAnalysis?: string, clientGoals?: string) => void;
   isClientOnly?: boolean;
 }
 
@@ -57,6 +58,10 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
   const [isLiveEditing, setIsLiveEditing] = useState<boolean>(false);
   const resultOperationRef = useRef(0);
   const clearPersistenceRef = useRef(false);
+
+  const qualificationOutput = splitLegalStrategyOutput(qualificationResult);
+  const legalStrategyRecommendation = qualificationOutput.strategy;
+  const qualificationReport = qualificationOutput.document;
 
   useEffect(() => {
     if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_qualify_dispute'); else persistentStorage.setItem('judicial_qualify_dispute', disputeDetails);
@@ -166,8 +171,8 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
   };
 
   const copyResult = async () => {
-    if (!qualificationResult) return;
-    const ok = await copyTextSafely(qualificationResult);
+    if (!qualificationReport) return;
+    const ok = await copyTextSafely(qualificationReport);
     if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -175,8 +180,8 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
   };
 
   const exportToWord = () => {
-    if (!qualificationResult) return;
-    exportLegalDocToWord(qualificationResult, 'تقرير_التكييف_القانوني');
+    if (!qualificationReport) return;
+    exportLegalDocToWord(qualificationReport, 'تقرير_التكييف_القانوني');
   };
 
   const handlePrint = () => {
@@ -184,8 +189,8 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
   };
 
   const shareResult = async () => {
-    if (!qualificationResult) return;
-    await shareLegalDoc(qualificationResult, 'تقرير التكييف القانوني', () => {
+    if (!qualificationReport) return;
+    await shareLegalDoc(qualificationReport, 'تقرير التكييف القانوني', () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -381,7 +386,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
                   </button>
                   {!isClientOnly && (
                     <button
-                      onClick={() => onDraftBriefFromQualify(disputeDetails)}
+                      onClick={() => onDraftBriefFromQualify(disputeDetails, [legalStrategyRecommendation, qualificationReport].filter(Boolean).join('\n\n'), clientGoals)}
                       className="px-3 py-1.5 rounded-lg bg-[#b45309] hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1.5 shadow transition-colors cursor-pointer"
                       title="تحويل الوقائع إلى صياغة مذكرة"
                     >
@@ -393,6 +398,15 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
               )}
             </div>
 
+              {legalStrategyRecommendation && (
+                <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-right">
+                  <div className="mb-2 flex items-center gap-2 text-sm font-bold text-amber-200">
+                    <Sparkles className="h-4 w-4" />
+                    <span>التوصية الاستراتيجية للمحامي — خارج التقرير</span>
+                  </div>
+                  <div className="whitespace-pre-wrap text-xs leading-7 text-slate-200">{legalStrategyRecommendation}</div>
+                </div>
+              )}
             {qualificationResult && (
               <div className="bg-[#1e293b] border border-slate-700 rounded-xl p-2.5 mb-3 flex flex-wrap items-center justify-between gap-3 text-xs">
                 <div className="flex items-center gap-2">
@@ -459,7 +473,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
             )}
 
             <div className="flex-1 bg-[#1e293b] border-2 border-slate-700/80 rounded-2xl p-4 sm:p-6 overflow-y-auto max-h-[850px] shadow-inner text-slate-100">
-              {isLoading && !qualificationResult ? (
+              {isLoading && !qualificationReport ? (
                 <div className="h-full flex flex-col items-center justify-center py-24 sm:py-28 text-center gap-4">
                   <div className="w-16 h-16 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 flex items-center justify-center text-emerald-400 animate-pulse">
                     <Compass className="w-8 h-8" />
@@ -474,14 +488,15 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
                   </div>
                   <Loader2 className="w-6 h-6 animate-spin text-emerald-400 mt-2" />
                 </div>
-              ) : qualificationResult ? (
+              ) : qualificationReport ? (
                 isLiveEditing ? (
                   <textarea
                     rows={26}
-                    value={qualificationResult}
+                    value={qualificationReport}
                     onChange={(e) => {
-                      setQualificationResult(e.target.value);
-                      persistentStorage.setItem('judicial_qualify_result', e.target.value);
+                      const updated = legalStrategyRecommendation ? `[[AMIN_STRATEGY]]\n${legalStrategyRecommendation}\n[[/AMIN_STRATEGY]]\n[[AMIN_DOCUMENT]]\n${e.target.value}\n[[/AMIN_DOCUMENT]]` : e.target.value;
+                      setQualificationResult(updated);
+                      persistentStorage.setItem('judicial_qualify_result', updated);
                     }}
                     className="w-full p-4 border border-emerald-500/60 rounded-xl text-white bg-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-sans"
                     style={{
@@ -500,7 +515,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
                       fontSize: `${fontSizePt}pt`,
                     }}
                   >
-                    {qualificationResult}
+                    {qualificationReport}
                   </div>
                 )
               ) : qualifyError ? (
@@ -581,7 +596,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
           </div>
         </div>
       </div>
-      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={userId} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationResult} onResultChange={(nextResult) => { setQualificationResult(nextResult); persistentStorage.setItem('judicial_qualify_result', nextResult); }} />}
+      {qualificationResult && <LegalFollowupChat taskType="qualify" userId={userId} originalContext={`${disputeDetails}\n${clientGoals || ''}`} result={qualificationReport} onResultChange={(nextResult) => { const updated = legalStrategyRecommendation ? `[[AMIN_STRATEGY]]\n${legalStrategyRecommendation}\n[[/AMIN_STRATEGY]]\n[[AMIN_DOCUMENT]]\n${nextResult}\n[[/AMIN_DOCUMENT]]` : nextResult; setQualificationResult(updated); persistentStorage.setItem('judicial_qualify_result', updated); }} />}
     </div>
   );
 };
