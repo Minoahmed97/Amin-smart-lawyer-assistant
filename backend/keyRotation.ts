@@ -42,10 +42,10 @@ const KEY_QUOTA_COOLDOWN_MS = 60_000;
 const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
-const MAX_MODELS_PER_KEY_PER_REQUEST = 3;
 
 function rotationPairKey(key: string, model: string): string {
-  return `${key}:${model}`;
+  // Keep the same identity format used by continuation avoidPairs.
+  return `${key}::${model}`;
 }
 
 function isCooling(map: Map<string, number>, id: string, now = Date.now()): boolean {
@@ -100,7 +100,8 @@ function selectModelsForKey( models: string[], key: string, pool: 'general' | 'o
     !isCooling(pairCooldowns, rotationPairKey(key, model), now) &&
     !avoidPairs?.has(`${key}::${model}`)
   );
-  return available.slice(0, MAX_MODELS_PER_KEY_PER_REQUEST);
+  // Try every eligible model for this key before moving to the next key.
+  return available;
 }
 
 function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
