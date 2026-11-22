@@ -29,15 +29,13 @@ export function splitLegalStrategyOutput(raw: string, allowUnstructuredFallback 
     ? source.indexOf(LEGAL_DOCUMENT_END, documentStart + LEGAL_DOCUMENT_START.length)
     : -1;
 
-  const strategy = strategyStart >= 0
-    ? source.slice(
-        strategyStart + LEGAL_STRATEGY_START.length,
-        strategyEnd >= 0 ? strategyEnd : documentStart >= 0 ? documentStart : source.length,
-      ).replace(LEGAL_STRATEGY_END, '').trim()
+  const hasCompleteStrategy = strategyStart >= 0 && strategyEnd >= 0;
+  const strategyBoundary = documentStart >= 0
+    ? Math.min(strategyEnd >= 0 ? strategyEnd : documentStart, documentStart)
+    : strategyEnd;
+  const strategy = strategyStart >= 0 && strategyBoundary >= 0
+    ? source.slice(strategyStart + LEGAL_STRATEGY_START.length, strategyBoundary).trim()
     : '';
-  if (documentStart < 0 && strategyStart >= 0) {
-    return { strategy, document: '', structured: true };
-  }
 
   if (documentStart >= 0) {
     return {
@@ -50,12 +48,28 @@ export function splitLegalStrategyOutput(raw: string, allowUnstructuredFallback 
     };
   }
 
+  // During streaming, do not mistake an unfinished recommendation for a document.
+  // If its closing marker did arrive, however, preserve any document text that
+  // followed even when the model omitted the document-start marker.
+  if (strategyStart >= 0 && strategyEnd < 0) {
+    return { strategy: '', document: '', structured: true };
+  }
+  if (hasCompleteStrategy) {
+    const trailingDocument = source.slice(strategyEnd + LEGAL_STRATEGY_END.length).trim();
+    return {
+      strategy,
+      document: allowUnstructuredFallback ? trailingDocument : '',
+      structured: false,
+    };
+  }
+
   return {
-    strategy,
+    strategy: '',
     document: allowUnstructuredFallback
       ? source
           .replace(LEGAL_STRATEGY_START, '')
           .replace(LEGAL_STRATEGY_END, '')
+          .replace(LEGAL_DOCUMENT_START, '')
           .replace(LEGAL_DOCUMENT_END, '')
           .trim()
       : '',

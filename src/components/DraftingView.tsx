@@ -892,7 +892,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
               </div>
 
               {legalStrategyRecommendation && (
-                <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-right">
+                <div className="no-print mb-3 rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-right">
                   <div className="mb-2 flex items-center gap-2 text-sm font-bold text-amber-200">
                     <Sparkles className="h-4 w-4" />
                     <span>التوصية الاستراتيجية للمحامي — خارج المستند</span>

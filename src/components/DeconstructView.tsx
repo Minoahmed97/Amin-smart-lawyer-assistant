@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { copyTextSafely, shareLegalDoc } from '../utils/clipboardHelper.ts';
 import { exportLegalDocToWord } from '../utils/exportHelper.ts';
-import { splitLegalStrategyOutput } from '../utils/legalStrategyOutput.ts';
+import { combineLegalStrategyOutput, splitLegalStrategyOutput } from '../utils/legalStrategyOutput.ts';
 
 interface DeconstructViewProps {
   userId: string;
@@ -592,7 +592,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                             extractCounterBrief(analysisReport),
                             caseNature,
                             selectedResponseType,
-                            [legalStrategyRecommendation, analysisReport].filter(Boolean).join('\n\n').slice(0, 26000),
+                            [legalStrategyRecommendation, extractDeconstructOnly(analysisReport) !== analysisReport ? extractDeconstructOnly(analysisReport) : ''].filter(Boolean).join('\n\n').slice(0, 26000),
                           );
                         }
                         onSwitchTab('draft');
@@ -609,7 +609,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
             </div>
 
             {legalStrategyRecommendation && (
-              <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-right">
+              <div className="no-print mb-3 rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-right">
                 <div className="mb-2 flex items-center gap-2 text-sm font-bold text-amber-200">
                   <Sparkles className="h-4 w-4" />
                   <span>التوصية الاستراتيجية للمحامي — خارج التقرير</span>
@@ -730,7 +730,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     rows={26}
                     value={analysisReport}
                     onChange={(e) => {
-                      const updated = legalStrategyRecommendation ? `[[AMIN_STRATEGY]]\n${legalStrategyRecommendation}\n[[/AMIN_STRATEGY]]\n[[AMIN_DOCUMENT]]\n${e.target.value}\n[[/AMIN_DOCUMENT]]` : e.target.value;
+                      const updated = combineLegalStrategyOutput(legalStrategyRecommendation, e.target.value);
                       setAnalysisResult(updated);
                       persistentStorage.setItem('judicial_deconstruct_result', updated);
                     }}
@@ -832,7 +832,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
           </div>
         </div>
       </div>
-      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisReport} onResultChange={(nextResult) => { const updated = legalStrategyRecommendation ? `[[AMIN_STRATEGY]]\n${legalStrategyRecommendation}\n[[/AMIN_STRATEGY]]\n[[AMIN_DOCUMENT]]\n${nextResult}\n[[/AMIN_DOCUMENT]]` : nextResult; setAnalysisResult(updated); persistentStorage.setItem('judicial_deconstruct_result', updated); }} />}
+      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisReport} onResultChange={(nextResult) => { const updated = combineLegalStrategyOutput(legalStrategyRecommendation, nextResult); setAnalysisResult(updated); persistentStorage.setItem('judicial_deconstruct_result', updated); }} />}
     </div>
   );
 };
