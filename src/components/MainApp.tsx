@@ -407,7 +407,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         </div>
       )}
 
-      {/* Main Tab Content - Kept mounted in DOM to prevent losing state when navigating */
+      {/* Main Tab Content - Kept mounted in DOM to prevent losing state when navigating */}
       <main className="flex-1 py-3 sm:py-5">
         {(
           <>
