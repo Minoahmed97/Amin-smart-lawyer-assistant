@@ -1,5 +1,6 @@
 import { getLawyerStyleContext } from '../utils/legalVaultService.ts';
 import { getSessionToken } from './authService.ts';
+import type { LegalCaseContext } from '../types.ts';
 
 // Throttling control to prevent burst requests
 let lastRequestTimestamp = 0;
@@ -633,7 +634,7 @@ async function callDirectGeminiApi(_prompt: string, _systemInstruction = EGYPTIA
   throw new Error('تعذر الاتصال بالخادم المركزي للذكاء الاصطناعي.');
 }
 
-export async function deconstructBrief( params: { opponentBriefText: string; courtType?: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
+export async function deconstructBrief( params: { opponentBriefText: string; courtType?: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; caseContext?: LegalCaseContext; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: params.courtType,
@@ -648,6 +649,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
     judicialWorkType: params.judicialWorkType || '',
     ourPosition: params.ourPosition || '',
     additionalFacts: params.additionalFacts || '',
+    caseContext: params.caseContext || null,
     vaultContext: lawyerVaultContext,
   };
 
