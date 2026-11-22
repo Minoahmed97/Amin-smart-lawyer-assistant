@@ -649,7 +649,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
     judicialWorkType: params.judicialWorkType || '',
     ourPosition: params.ourPosition || '',
     additionalFacts: params.additionalFacts || '',
-    caseContext: params.caseContext || null,
+    caseContext: params.caseContext ? JSON.stringify(params.caseContext) : '',
     vaultContext: lawyerVaultContext,
   };
 
