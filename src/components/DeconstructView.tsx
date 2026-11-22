@@ -592,7 +592,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                             extractCounterBrief(analysisReport),
                             caseNature,
                             selectedResponseType,
-                            [legalStrategyRecommendation, extractDeconstructOnly(analysisReport) !== analysisReport ? extractDeconstructOnly(analysisReport) : ''].filter(Boolean).join('\n\n').slice(0, 26000),
+                            [legalStrategyRecommendation, analysisReport].filter(Boolean).join('\n\n').slice(0, 26000),
                           );
                         }
                         onSwitchTab('draft');
