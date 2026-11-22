@@ -1,4 +1,4 @@
-import { getKeysStatus, getVercelGeminiKeys, getFileStoredKeys, removeStoredKey } from '../../keyRotation.ts';
+import { getKeysStatus } from '../../keyRotation.ts';
 import { deleteServerCloudGeminiKey, fetchServerCloudGeminiKeys } from '../../supabaseSync.ts';
 import { requireAdmin } from '../../auth.ts';
 
@@ -18,26 +18,11 @@ export default async function handler(req: any, res: any) {
     const { index } = body || {};
     if (typeof index === 'number' && Number.isInteger(index) && index >= 0) {
       const cloudKeys = await fetchServerCloudGeminiKeys();
-      const fileKeys = getFileStoredKeys();
-      const envKeys = getVercelGeminiKeys().filter((key) => !fileKeys.includes(key));
-      const cloudOnlyKeys = cloudKeys.filter((key) => !envKeys.includes(key) && !fileKeys.includes(key));
-
-      // Keep the same order returned by keys-status: environment, local legacy,
-      // then cloud-only. Persistent deletion must succeed before local mutation.
-      if (index < envKeys.length) {
-        return res.status(400).json({ error: 'مفتاح Environment لا يُحذف من داخل المنصة.' });
-      }
-      const fileIndex = index - envKeys.length;
-      if (fileIndex < fileKeys.length) {
-        const target = fileKeys[fileIndex];
-        if (cloudKeys.includes(target)) await deleteServerCloudGeminiKey(target);
-        removeStoredKey(fileIndex);
-        return res.json({ ok: true, status: getKeysStatus() });
-      }
-      const target = cloudOnlyKeys[fileIndex - fileKeys.length];
-      if (!target) return res.status(404).json({ error: 'المفتاح غير موجود.' });
+      const target = cloudKeys[index];
+      if (!target) return res.status(404).json({ error: 'المفتاح غير موجود في مفاتيح Supabase.' });
       await deleteServerCloudGeminiKey(target);
-      return res.json({ ok: true, status: getKeysStatus() });
+      const remainingKeys = await fetchServerCloudGeminiKeys();
+      return res.json({ ok: true, status: getKeysStatus(remainingKeys) });
     }
     return res.status(400).json({ error: 'بيانات الحذف غير صحيحة.' });
   } catch (err: any) {
