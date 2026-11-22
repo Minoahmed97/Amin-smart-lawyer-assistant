@@ -599,6 +599,12 @@ export async function executeWithKeyRotationStream(
   throw unavailableError;
 }
 
-export default function handler(req: any, res: any) {
-  return res.status(200).json({ ok: true, activeKeys: getKeysStatus().totalCount });
+export default async function handler(req: any, res: any) {
+  try {
+    const keys = await fetchServerCloudGeminiKeys();
+    return res.status(200).json({ ok: true, activeKeys: getKeysStatus(keys).totalCount });
+  } catch (error: any) {
+    console.error('Failed to read managed Gemini key count from Supabase:', error?.message || error);
+    return res.status(503).json({ ok: false, error: 'تعذر تحميل مفاتيح Gemini من Supabase.' });
+  }
 }
