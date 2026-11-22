@@ -247,39 +247,33 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     }
   }, [initialFormData]);
 
-  // Keep the structured case file synchronized with the lawyer's existing
-  // drafting fields. The same caseId and prior analysis are retained; empty
-  // form fields never erase previously captured case data.
+  // Preserve source documents as immutable case materials. The lawyer's
+  // editable facts field is stored separately so editing it never overwrites
+  // the original opponent pleading or previously captured case facts.
   useEffect(() => {
     setFormData((prev) => {
       const current = prev.caseContext;
       if (!current) return prev;
 
-      const nextMaterials = [...current.materials];
-      const materialIndex = nextMaterials.findIndex((item) =>
-        item.kind === 'case_facts' || item.kind === 'opponent_pleading'
-      );
+      const existingMaterials = Array.isArray(current.materials) ? current.materials : [];
+      const nextMaterials = [...existingMaterials];
       const factsText = String(prev.facts || '').trim();
-      if (factsText) {
-        if (materialIndex >= 0) {
-          if (nextMaterials[materialIndex].content !== factsText) {
-            nextMaterials[materialIndex] = {
-              ...nextMaterials[materialIndex],
-              content: factsText,
-              capturedAt: new Date().toISOString(),
-            };
-          }
-        } else {
-          const fromDeconstruction = current.priorAnalysis.some((item) => item.type === 'deconstruction');
-          nextMaterials.push({
-            id: `material-${current.caseId}-facts`,
-            kind: fromDeconstruction ? 'opponent_pleading' : 'case_facts',
-            title: fromDeconstruction ? 'المذكرة أو المستند المقدم من الخصم' : 'وقائع ومستندات القضية',
-            content: factsText,
-            sourceView: fromDeconstruction ? 'deconstruction' : 'drafting',
-            capturedAt: new Date().toISOString(),
-          });
-        }
+      const snapshotId = `material-${current.caseId}-drafting-snapshot`;
+      const snapshotIndex = nextMaterials.findIndex((item) => item.id === snapshotId);
+
+      if (factsText && !existingMaterials.some((item) => item.content.trim() === factsText && item.kind !== 'drafting_snapshot')) {
+        const snapshot = {
+          id: snapshotId,
+          kind: 'drafting_snapshot' as const,
+          title: 'النص الحالي الذي يعمل عليه المحامي',
+          content: factsText,
+          sourceView: 'drafting' as const,
+          capturedAt: new Date().toISOString(),
+        };
+        if (snapshotIndex >= 0) nextMaterials[snapshotIndex] = snapshot;
+        else nextMaterials.push(snapshot);
+      } else if (snapshotIndex >= 0 && !factsText) {
+        nextMaterials.splice(snapshotIndex, 1);
       }
 
       const nextContext = {
@@ -427,6 +421,26 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         proceduralStageSource: formData.caseContext.proceduralStageSource,
         clientGoals: formData.caseContext.clientGoals,
         verificationNotes: formData.caseContext.verificationNotes,
+        materials: (Array.isArray(formData.caseContext.materials) ? formData.caseContext.materials : [])
+          .filter((item) => item.content.trim() && item.content.trim() !== String(formData.facts || '').trim())
+          .slice(-6)
+          .map((item) => ({
+            kind: item.kind,
+            title: item.title,
+            sourceView: item.sourceView,
+            capturedAt: item.capturedAt,
+            content: item.content.slice(0, 5000),
+          })),
+        materials: (Array.isArray(formData.caseContext.materials) ? formData.caseContext.materials : [])
+          .filter((item) => item.content.trim() && item.content.trim() !== String(formData.facts || '').trim())
+          .slice(-6)
+          .map((item) => ({
+            kind: item.kind,
+            title: item.title,
+            sourceView: item.sourceView,
+            capturedAt: item.capturedAt,
+            content: item.content.slice(0, 5000),
+          })),
       } : null;
       const caseAnalysisContextForPrompt = [
         formData.caseAnalysisContext?.trim() || '',

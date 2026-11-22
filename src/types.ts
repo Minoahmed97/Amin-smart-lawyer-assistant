@@ -1,7 +1,7 @@
 export type CourtJurisdiction = string;
 export type BriefType = string;
 
-export type CaseMaterialKind = 'case_facts' | 'opponent_pleading' | 'prior_legal_analysis' | 'supporting_document';
+export type CaseMaterialKind = 'case_facts' | 'opponent_pleading' | 'prior_legal_analysis' | 'supporting_document' | 'drafting_snapshot';
 
 export interface LegalCaseMaterial {
   id: string;
