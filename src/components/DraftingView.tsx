@@ -89,6 +89,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       requests: initialFormData?.requests || '',
       customInstructions: initialFormData?.customInstructions || '',
       caseAnalysisContext: initialFormData?.caseAnalysisContext || '',
+      caseContext: initialFormData?.caseContext,
     };
   });
 
@@ -270,6 +271,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       requests: '',
       customInstructions: '',
       caseAnalysisContext: '',
+      caseContext: undefined,
     });
     setUploadedDocName('');
     extractedDocumentBatchRef.current = false;

@@ -1,6 +1,40 @@
 export type CourtJurisdiction = string;
 export type BriefType = string;
 
+export type CaseMaterialKind = 'case_facts' | 'opponent_pleading' | 'prior_legal_analysis' | 'supporting_document';
+
+export interface LegalCaseMaterial {
+  id: string;
+  kind: CaseMaterialKind;
+  title: string;
+  content: string;
+  sourceView: 'qualification' | 'deconstruction' | 'drafting';
+  capturedAt: string;
+}
+
+export interface LegalCaseContext {
+  schemaVersion: 1;
+  caseId: string;
+  updatedAt: string;
+  court: string;
+  circuit: string;
+  caseNumber: string;
+  clientName: string;
+  clientRole: string;
+  opponentName: string;
+  caseNature: string;
+  proceduralStage: string;
+  proceduralStageSource: 'lawyer_provided' | 'not_provided';
+  clientGoals: string;
+  materials: LegalCaseMaterial[];
+  priorAnalysis: Array<{
+    type: 'qualification' | 'deconstruction';
+    content: string;
+    capturedAt: string;
+  }>;
+  verificationNotes: string[];
+}
+
 export interface DraftingFormData {
   courtType: string;
   circuit: string;
@@ -17,6 +51,7 @@ export interface DraftingFormData {
   requests: string;
   customInstructions?: string;
   caseAnalysisContext?: string;
+  caseContext?: LegalCaseContext;
   exemplarBrief?: string;
   useFewShot?: boolean;
 }

@@ -8,7 +8,7 @@ import { LegalVaultView } from './LegalVaultView.tsx';
 import { CommunityWallView } from './CommunityWallView.tsx';
 import { BroadcastBanner } from './BroadcastBanner.tsx';
 import { AdminApiModal } from './AdminApiModal.tsx';
-import { DraftingFormData } from '../types.ts';
+import { DraftingFormData, LegalCaseContext } from '../types.ts';
 import { getAllLawModels } from '../utils/legalVaultService.ts';
 import { UserRole } from '../utils/deviceFingerprint.ts';
 import { persistentStorage } from '../utils/persistentStorage.ts';
@@ -95,7 +95,39 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     (window as any).openAdminModal = () => setIsAdminOpen(true);
   }, [user, userId]);
 
+  const createCaseId = () => `case-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
   const handleDraftFromQualify = (facts: string, qualificationAnalysis = '', clientGoals = '') => {
+    const capturedAt = new Date().toISOString();
+    const caseContext: LegalCaseContext = {
+      schemaVersion: 1,
+      caseId: createCaseId(),
+      updatedAt: capturedAt,
+      court: '',
+      circuit: '',
+      caseNumber: '',
+      clientName: '',
+      clientRole: '',
+      opponentName: '',
+      caseNature: '',
+      proceduralStage: '',
+      proceduralStageSource: 'not_provided',
+      clientGoals: clientGoals.trim(),
+      materials: facts.trim() ? [{
+        id: `material-${Date.now()}`,
+        kind: 'case_facts',
+        title: 'وقائع النزاع المقدمة في مرحلة التكييف',
+        content: facts.trim(),
+        sourceView: 'qualification',
+        capturedAt,
+      }] : [],
+      priorAnalysis: qualificationAnalysis.trim() ? [{
+        type: 'qualification',
+        content: qualificationAnalysis.trim(),
+        capturedAt,
+      }] : [],
+      verificationNotes: ['لم تُحدد المرحلة الإجرائية صراحةً؛ يلزم إدخالها أو التحقق منها من ملف القضية.'],
+    };
     const caseAnalysisContext = [
       '[تحليل التكييف القانوني السابق — مرتبط بذات النزاع]',
       clientGoals.trim() ? `[هدف الموكل في مرحلة التكييف]:\n${clientGoals.trim()}` : '',
@@ -106,6 +138,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       ...prev,
       facts,
       caseAnalysisContext,
+      caseContext,
     }));
     setActiveTab('draft');
   };
@@ -150,9 +183,40 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       'افصل دائماً بين طبيعة الدعوى ونوع المستند المطلوب صياغته.',
     ].join('\n');
 
-    const caseAnalysisContext = analysisContext?.trim()
-      ? `[نتائج التفنيد والتحليل السابق — مرتبطة بذات النزاع]:\n${analysisContext.trim().slice(0, 26000)}\n\nأعد مطابقة كل نتيجة مع الوقائع والمستندات الحالية، ولا تنقل استنتاجاً أو دفعاً دون التحقق من سنده. عند وجود تعارض، اعرضه ولا تتجاهله.`
-      : '';
+    const capturedAt = new Date().toISOString();
+    const caseContext: LegalCaseContext = {
+      schemaVersion: 1,
+      caseId: createCaseId(),
+      updatedAt: capturedAt,
+      court: '',
+      circuit: '',
+      caseNumber: '',
+      clientName: '',
+      clientRole: '',
+      opponentName: '',
+      caseNature: lockedCaseNature,
+      proceduralStage: '',
+      proceduralStageSource: 'not_provided',
+      clientGoals: '',
+      materials: opponentFacts.trim() ? [{
+        id: `material-${Date.now()}`,
+        kind: 'opponent_pleading',
+        title: 'المذكرة أو المستند المقدم من الخصم',
+        content: opponentFacts.trim(),
+        sourceView: 'deconstruction',
+        capturedAt,
+      }] : [],
+      priorAnalysis: analysisContext?.trim() ? [{
+        type: 'deconstruction',
+        content: analysisContext.trim().slice(0, 26000),
+        capturedAt,
+      }] : [],
+      verificationNotes: [
+        'بيانات المحكمة ورقم الدعوى وأطرافها وصفة الموكل لم تُنقل من شاشة التفنيد؛ يجب استكمالها من ملف القضية.',
+        'لم تُحدد المرحلة الإجرائية صراحةً؛ لا يجوز استنتاجها من مجرد نص مذكرة الخصم.',
+      ],
+    };
+    const caseAnalysisContext = `[ملف القضية المنظم — مرجع سابق]:\n${JSON.stringify(caseContext, null, 2)}\n\n${analysisContext?.trim() ? `[نتائج التفنيد والتحليل السابق — مرتبطة بذات النزاع]:\n${analysisContext.trim().slice(0, 26000)}\n\nأعد مطابقة كل نتيجة مع الوقائع والمستندات الحالية، ولا تنقل استنتاجاً أو دفعاً دون التحقق من سنده. عند وجود تعارض، اعرضه ولا تتجاهله.` : ''}`;
 
     setDraftingData({
       facts: opponentFacts,
@@ -161,6 +225,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       judicialWorkType: selectedResponseType,
       customInstructions: transferInstruction,
       caseAnalysisContext,
+      caseContext,
     });
     setActiveTab('draft');
   };
