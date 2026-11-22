@@ -2,7 +2,6 @@ import { GoogleGenAI } from '@google/genai';
 import { sanitizeGeminiKey } from './centralKeys.ts';
 import fs from 'fs';
 import path from 'path';
-import { createOpenRouterCompatibleClient, getOpenRouterModels } from './openrouterAdapter.ts';
 import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys } from './supabaseSync.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
@@ -122,13 +121,6 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
   return 'other';
 }
 
-function shouldFallbackFromOpenRouter(error: any): boolean {
-  const status = Number(error?.status || error?.statusCode || error?.response?.status);
-  const message = String(error?.message || error?.error?.message || '').toLowerCase();
-  return status === 401 || status === 402 || status === 403 || status === 404 || status === 408 || status === 413 || status === 429 || status >= 500 ||
-    (status === 400 && /max_tokens|context.?length|model|unsupported|parameter/.test(message)) ||
-    /quota|rate.?limit|free.*(limit|unavailable|exhaust)|no free models|temporarily unavailable|service unavailable|timed out|timeout/.test(message);
-}
 
 const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
 let inMemoryDynamicKeys: string[] = [];
@@ -453,7 +445,6 @@ type KeyRotationExecutionOptions = {
   ocrMode?: boolean;
   deadlineAt?: number;
   previousProviderError?: string;
-  providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
   /** Previously used key/model pairs are avoided first during continuation. */
   avoidPairs?: string[];
   /** Resume Gemini rotation from the key used by the previous continuation segment. */
@@ -478,76 +469,7 @@ export async function executeWithKeyRotation<T>(
     { status: 504, statusCode: 504 },
   );
 
-  if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
-    const overallStart = Date.now();
-    const totalBudget = Math.max(0, deadlineAt - overallStart);
-    const geminiDeadlineAt = overallStart + Math.floor(totalBudget * 0.9);
-    let geminiError: any = null;
-
-    if (totalBudget >= 10000) {
-      try {
-        return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
-          ...executionOptions,
-          deadlineAt: geminiDeadlineAt,
-          providerAttempt: 'gemini-primary',
-        });
-      } catch (error: any) {
-        geminiError = error;
-      }
-    }
-
-    if (deadlineAt - Date.now() >= 10000) {
-      try {
-        return await executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
-          ...executionOptions,
-          deadlineAt,
-          providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
-        });
-      } catch (openRouterError: any) {
-        const combined: any = new Error(
-          `فشلت محاولات Gemini على المفاتيح والنماذج المتاحة، وتعذر الاحتياطي OpenRouter. سبب Gemini: ${String(geminiError?.message || 'انتهت المهلة أو لم تتوفر محاولة كافية.')} سبب OpenRouter: ${String(openRouterError?.message || 'خطأ غير محدد.')}`
-        );
-        combined.status = Number(openRouterError?.status || geminiError?.status || 503);
-        combined.statusCode = combined.status;
-        combined.cause = { gemini: geminiError, openrouter: openRouterError };
-        throw combined;
-      }
-    }
-
-    throw geminiError || timeoutError();
-  }
-
-  if (!_forceGeminiFallback) {
-    const availableModels = executionOptions?.ocrMode ? ['openrouter/free'] : getOpenRouterModels();
-    const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
-    const preferredModelsForAttempt = availableModels.filter((model) => !avoidedPairs.has(`openrouter::${model}`));
-    const models = preferredModelsForAttempt.length ? preferredModelsForAttempt : availableModels;
-    let lastError: any = null;
-    if (!process.env.OPENROUTER_API_KEY?.trim()) {
-      lastError = Object.assign(new Error('مفتاح OpenRouter غير مضبوط.'), { status: 503, statusCode: 503 });
-    }
-    for (const model of (process.env.OPENROUTER_API_KEY?.trim() ? models : [])) {
-      executionOptions?.attemptedPairs?.add(`openrouter::${model}`);
-      try {
-        const result = await action(
-          withAdaptiveAnswerLength(createOpenRouterCompatibleClient(12000, deadlineAt)) as unknown as GoogleGenAI,
-          'openrouter',
-          model,
-        );
-        if (Date.now() >= deadlineAt) throw timeoutError();
-        return result;
-      } catch (error: any) {
-        lastError = error;
-      }
-    }
-    if ((executionOptions?.ocrMode || shouldFallbackFromOpenRouter(lastError)) && executionOptions?.providerAttempt !== 'openrouter-fallback') {
-      if (deadlineAt - Date.now() < 10000) throw timeoutError();
-      return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, executionOptions);
-    }
-    throw lastError || new Error('تعذر الاتصال بننماذج OpenRouter.');
-  }
-
+  // Legal generation uses Gemini exclusively; OCR uses its dedicated rotation path.
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) {
     throw new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
@@ -601,9 +523,6 @@ export async function executeWithKeyRotation<T>(
   }
 
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
-    if (executionOptions?.providerAttempt === 'gemini-primary') {
-      throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
-    }
     return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
       ...executionOptions,
       avoidPairs: undefined,
@@ -626,104 +545,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   const deadlineAt = Number(executionOptions.deadlineAt);
   const timeoutError = () => Object.assign(new Error('انتهت المهلة المتاحة للتوليد.'), { status: 504, statusCode: 504 });
 
-  if (!_forceGeminiFallback && !executionOptions?.ocrMode && !executionOptions?.providerAttempt) {
-    const overallStart = Date.now();
-    const totalBudget = Math.max(0, deadlineAt - overallStart);
-    const geminiDeadlineAt = overallStart + Math.floor(totalBudget * 0.9);
-    let geminiError: any = null;
-    let geminiEmittedText = false;
-
-    if (totalBudget >= 10000) {
-      try {
-        await executeWithKeyRotationStream(action, (chunk) => {
-          if (chunk) geminiEmittedText = true;
-          onChunk(chunk);
-        }, preferredModels, _ignoredClientFallbackKey, true, {
-          ...executionOptions,
-          deadlineAt: geminiDeadlineAt,
-          providerAttempt: 'gemini-primary',
-        });
-        return;
-      } catch (error: any) {
-        geminiError = error;
-        if (geminiEmittedText) throw error;
-      }
-    }
-
-    if (deadlineAt - Date.now() >= 10000) {
-      let openRouterEmittedText = false;
-      try {
-        await executeWithKeyRotationStream(action, (chunk) => {
-          if (chunk) openRouterEmittedText = true;
-          onChunk(chunk);
-        }, preferredModels, _ignoredClientFallbackKey, false, {
-          ...executionOptions,
-          deadlineAt,
-          providerAttempt: 'openrouter-fallback',
-          previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
-        });
-        return;
-      } catch (openRouterError: any) {
-        if (openRouterEmittedText) throw openRouterError;
-        const combined: any = new Error(
-          `فشلت محاولات Gemini على المفاتيح والنماذج المتاحة، وتعذر الاحتياطي OpenRouter. سبب Gemini: ${String(geminiError?.message || 'انتهت المهلة أو لم تتوفر محاولة كافية.')} سبب OpenRouter: ${String(openRouterError?.message || 'خطأ غير محدد.')}`
-        );
-        combined.status = Number(openRouterError?.status || geminiError?.status || 503);
-        combined.statusCode = combined.status;
-        combined.cause = { gemini: geminiError, openrouter: openRouterError };
-        throw combined;
-      }
-    }
-
-    throw geminiError || timeoutError();
-  }
-
-  if (!_forceGeminiFallback && executionOptions?.providerAttempt === 'openrouter-fallback' && !executionOptions?.ocrMode) {
-    const availableModels = getOpenRouterModels();
-    const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
-    const preferredModelsForAttempt = availableModels.filter((model) => !avoidedPairs.has(`openrouter::${model}`));
-    const models = preferredModelsForAttempt.length ? preferredModelsForAttempt : availableModels;
-    let lastOpenRouterError: any = null;
-
-    if (!process.env.OPENROUTER_API_KEY?.trim()) {
-      const missingKeyError: any = new Error('مفتاح OpenRouter غير مضبوط.');
-      missingKeyError.status = 503;
-      missingKeyError.statusCode = 503;
-      throw missingKeyError;
-    }
-
-    for (const model of models) {
-      if (deadlineAt - Date.now() < 10000) break;
-      executionOptions?.attemptedPairs?.add(`openrouter::${model}`);
-      let emittedOpenRouterText = false;
-      try {
-        const ai = withAdaptiveAnswerLength(
-          createOpenRouterCompatibleClient(12000, deadlineAt),
-        ) as unknown as GoogleGenAI;
-        const stream = await action(ai, 'openrouter', model);
-        for await (const chunk of stream) {
-          const text = typeof chunk?.text === 'string' ? chunk.text : '';
-          if (text) {
-            emittedOpenRouterText = true;
-            onChunk(text);
-          }
-        }
-        if (!emittedOpenRouterText) {
-          const emptyError: any = new Error(`أعاد موديل OpenRouter (${model}) استجابة فارغة.`);
-          emptyError.status = 503;
-          emptyError.statusCode = 503;
-          throw emptyError;
-        }
-        return;
-      } catch (error: any) {
-        if (emittedOpenRouterText) throw error;
-        lastOpenRouterError = error;
-      }
-    }
-
-    throw lastOpenRouterError || new Error('تعذر الحصول على نتيجة من نماذج OpenRouter الاحتياطية.');
-  }
-
+  // Streaming legal generation uses Gemini exclusively.
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
 
@@ -765,9 +587,6 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     }
   }
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
-    if (executionOptions?.providerAttempt === 'gemini-primary') {
-      throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
-    }
     return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, {
       ...executionOptions,
       avoidPairs: undefined,
