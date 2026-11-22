@@ -48,7 +48,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
-  const maxContinuations = 5;
+  // Continue across the full Gemini key/model pool until completion or the shared deadline.
   // Shared ledger: every attempted Gemini key/model pair is retained across continuation segments.
   const usedPairs = new Set<string>();
   const deadlineAt = Date.now() + 270000;
@@ -64,7 +64,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
   if (onChunk) {
     let completed = false;
-    while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
+    while (Date.now() < deadlineAt) {
       const segmentPrompt = makeContinuationPrompt();
       const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
@@ -188,14 +188,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       if (!segmentBuffer.trim() || accumulatedText.length === segmentBaseText.length) {
         throw segmentError || new Error('لم يصل نص جديد أثناء محاولة استكمال المستند.');
       }
-      if (continuationCount >= maxContinuations) {
-        const incompleteError: any = new Error(`لم تكتمل الإجابة بعد ${maxContinuations} محاولات استكمال؛ لم تصل علامة اكتمال المستند.`);
-        incompleteError.status = 502;
-        incompleteError.statusCode = 502;
-        incompleteError.cause = lastError;
-        throw incompleteError;
-      }
-
       console.info('[counter-brief] continuing incomplete output', {
         finishReason: finishReason || 'UNKNOWN',
         generatedCharacters: accumulatedText.length,
@@ -217,7 +209,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     return accumulatedText.trim();
   }
 
-  while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
+  while (Date.now() < deadlineAt) {
     const segmentPrompt = makeContinuationPrompt();
     let activePair = '';
     let activePairLabel = '';
@@ -279,13 +271,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     accumulatedText += addition;
     if (segmentResult.completed) return accumulatedText.trim();
     if (!addition.trim()) throw new Error(`لم يصل نص جديد أثناء الاستكمال (finishReason: ${segmentResult.finishReason || 'UNKNOWN'}).`);
-    if (continuationCount >= maxContinuations) {
-      const incompleteError: any = new Error(`لم تكتمل الإجابة بعد ${maxContinuations} محاولات استكمال؛ لم تصل علامة اكتمال المستند.`);
-      incompleteError.status = 502;
-      incompleteError.statusCode = 502;
-      incompleteError.cause = lastError;
-      throw incompleteError;
-    }
     console.info('[counter-brief] continuing incomplete output', {
       finishReason: segmentResult.finishReason || 'UNKNOWN',
       generatedCharacters: accumulatedText.length,
