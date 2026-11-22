@@ -32,15 +32,18 @@ import {
 import { copyTextSafely, shareLegalDoc } from '../utils/clipboardHelper.ts';
 import { exportLegalDocToWord } from '../utils/exportHelper.ts';
 import { combineLegalStrategyOutput, splitLegalStrategyOutput } from '../utils/legalStrategyOutput.ts';
+import type { LegalCaseContext } from '../types.ts';
 
 interface DeconstructViewProps {
   userId: string;
+  caseContext?: LegalCaseContext;
   onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
   onTransferToDrafting?: (facts: string, defenses: string, caseNature?: string, responseWorkType?: string, analysisContext?: string) => void;
 }
 
 export const DeconstructView: React.FC<DeconstructViewProps> = ({
   userId,
+  caseContext,
   onSwitchTab,
   onTransferToDrafting,
 }) => {
@@ -188,6 +191,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
         judicialWorkType: responseWorkType === '__smart__' ? '' : responseWorkType,
         ourPosition,
         additionalFacts,
+        caseContext,
         userId,
       }, (chunk) => {
         if (operationId === resultOperationRef.current) setAnalysisResult((current) => current + chunk);
