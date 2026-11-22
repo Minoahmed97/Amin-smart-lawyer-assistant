@@ -26,6 +26,7 @@ import chatHandler from '../backend/gemini/chat.ts';
 import geminiOcrHandler from '../backend/gemini/ocr.ts';
 import ocrHandler from '../backend/ocr.ts';
 import authHandler from '../backend/auth-api.ts';
+import legalCasesHandler from '../backend/legalCases.ts';
 
 export const config = {
   api: {
@@ -48,6 +49,7 @@ const ROUTES: Record<string, Handler> = {
   '/auth/accounts': authHandler,
   '/auth/admin-balance': authHandler,
   '/auth/admin-delete-account': authHandler,
+  '/cases': legalCasesHandler,
   '/reviews': reviewsHandler,
   '/broadcast': broadcastHandler,
 
