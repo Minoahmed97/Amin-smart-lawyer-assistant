@@ -414,6 +414,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
             <div style={{ display: activeTab === 'deconstruct' ? 'block' : 'none' }}>
               <DeconstructView
                 userId={userId}
+                caseContext={draftingData.caseContext}
                 onSwitchTab={handleTabChange}
                 onTransferToDrafting={handleTransferFromDeconstruct}
               />
