@@ -1,7 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
 import { sanitizeGeminiKey } from './centralKeys.ts';
-import fs from 'fs';
-import path from 'path';
 import { fetchServerCloudGeminiKeys, fetchServerCloudOCRGeminiKeys } from './supabaseSync.ts';
 
 export function isValidGeminiApiKey(key: any): boolean {
@@ -123,58 +121,10 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
 }
 
 
-const KEYS_FILE = path.join(process.cwd(), '.keys_config.json');
-let inMemoryDynamicKeys: string[] = [];
-
-export function getFileStoredKeys(): string[] {
-  if (process.env.NODE_ENV === 'production') return [];
-  try {
-    if (fs.existsSync(KEYS_FILE)) {
-      const data = fs.readFileSync(KEYS_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) {
-        return parsed.filter((k) => isValidGeminiApiKey(k));
-      }
-    }
-  } catch (e) {}
-  return inMemoryDynamicKeys;
-}
-
-export function saveFileStoredKeys(keys: string[]): void {
-  inMemoryDynamicKeys = keys.filter((k) => isValidGeminiApiKey(k));
-  try {
-    fs.writeFileSync(KEYS_FILE, JSON.stringify(inMemoryDynamicKeys, null, 2), 'utf-8');
-  } catch (e) {
-    console.warn('تحذير أثناء حفظ تكوين المفاتيح على القرص:', e);
-  }
-}
-
-export function addStoredKey(key: string): boolean {
-  if (!isValidGeminiApiKey(key)) return false;
-  const current = getFileStoredKeys();
-  const clean = key.trim();
-  if (!current.includes(clean)) {
-    current.push(clean);
-    saveFileStoredKeys(current);
-  }
-  return true;
-}
-
-export function removeStoredKey(indexOrKey: number | string): boolean {
-  const current = getFileStoredKeys();
-  if (typeof indexOrKey === 'number') {
-    if (indexOrKey >= 0 && indexOrKey < current.length) {
-      current.splice(indexOrKey, 1);
-      saveFileStoredKeys(current);
-      return true;
-    }
-  } else {
-    const updated = current.filter((k) => k !== indexOrKey);
-    saveFileStoredKeys(updated);
-    return true;
-  }
-  return false;
-}
+export function getFileStoredKeys(): string[] { return []; }
+export function saveFileStoredKeys(_keys: string[]): void {}
+export function addStoredKey(_key: string): boolean { return false; }
+export function removeStoredKey(_indexOrKey: number | string): boolean { return false; }
 
 export async function testGeminiKey(apiKey: string, timeoutMs = 15000): Promise<{ success: boolean; message: string }> {
   const cleanKey = sanitizeGeminiKey(apiKey);
@@ -357,40 +307,20 @@ export async function executeWithDedicatedOCRKeyRotation<T>(
   throw finalError;
 }
 
-export function getVercelGeminiKeys(): string[] {
-  const keys: string[] = [];
-  const addKey = (k: any) => {
-    if (!k || typeof k !== 'string') return;
-    for (const part of k.split(/[\n,;]+/)) {
-      const clean = sanitizeGeminiKey(part.trim());
-      if (isValidGeminiApiKey(clean) && !keys.includes(clean)) keys.push(clean);
-    }
-  };
-
-  for (let i = 1; i <= 50; i++) {
-    addKey(process.env[`GEMINI_API_KEY_${i}`]);
-    addKey(process.env[`GEMINI_KEY_${i}`]);
-  }
-  addKey(process.env.GEMINI_API_KEYS);
-  addKey(process.env.GEMINI_API_KEY);
-  addKey(process.env.GOOGLE_GENAI_API_KEY);
-  addKey(process.env.GOOGLE_API_KEY);
-
-  for (const storedKey of getFileStoredKeys()) addKey(storedKey);
-
-  return keys;
-}
+export function getVercelGeminiKeys(): string[] { return []; }
 
 async function getAvailableGeminiKeys(timeoutMs?: number): Promise<string[]> {
-  const keys = getVercelGeminiKeys();
-  try {
-    for (const key of await fetchServerCloudGeminiKeys(timeoutMs)) {
-      if (isValidGeminiApiKey(key) && !keys.includes(key)) keys.push(key);
-    }
-  } catch (error) {
-    if (keys.length === 0) throw error;
+  // Supabase is the single source of truth for managed legal Gemini keys.
+  // Do not silently fall back to Vercel environment variables or local files.
+  const cloudKeys = await fetchServerCloudGeminiKeys(timeoutMs);
+  const uniqueKeys: string[] = [];
+  for (const key of cloudKeys) {
+    if (isValidGeminiApiKey(key) && !uniqueKeys.includes(key)) uniqueKeys.push(key);
   }
-  return keys;
+  if (uniqueKeys.length === 0) {
+    throw new Error('لا توجد مفاتيح Gemini نشطة في إدارة المنصة على Supabase.');
+  }
+  return uniqueKeys;
 }
 
 export async function getManagedGeminiKeyByIndex(index: number): Promise<string> {
@@ -401,22 +331,22 @@ export async function getManagedGeminiKeyByIndex(index: number): Promise<string>
   return key;
 }
 
-export function getKeysStatus() {
-  const keys = getVercelGeminiKeys();
-  const maskedList = keys.map((k, idx) => ({
+export function getKeysStatus(keys: string[] = []) {
+  const uniqueKeys = Array.from(new Set(keys.filter((key) => isValidGeminiApiKey(key))));
+  const maskedList = uniqueKeys.map((key, idx) => ({
     index: idx,
-    id: `key_${idx + 1}`,
+    id: `cloud_${idx + 1}`,
     name: idx === 0 ? 'المفتاح الرئيسي' : `مفتاح التدوير (${idx + 1})`,
-    masked: k.length > 8 ? `${k.slice(0, 4)}...${k.slice(-4)}` : '****',
-    prefix: k.slice(0, 2),
+    masked: key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : '****',
+    prefix: key.slice(0, 2),
     isActive: idx === activeKeyIndex,
   }));
   return {
-    isConfigured: keys.length > 0,
-    totalCount: keys.length,
+    isConfigured: uniqueKeys.length > 0,
+    totalCount: uniqueKeys.length,
     activeIndex: activeKeyIndex,
     keys: maskedList,
-    rotationEnabled: keys.length > 1,
+    rotationEnabled: uniqueKeys.length > 1,
   };
 }
 
