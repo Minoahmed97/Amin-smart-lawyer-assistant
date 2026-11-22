@@ -408,8 +408,37 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setDraftError('');
     setGeneratedBrief('');
     try {
+      const caseContextForPrompt = formData.caseContext ? {
+        schemaVersion: formData.caseContext.schemaVersion,
+        caseId: formData.caseContext.caseId,
+        updatedAt: formData.caseContext.updatedAt,
+        court: formData.caseContext.court,
+        circuit: formData.caseContext.circuit,
+        caseNumber: formData.caseContext.caseNumber,
+        clientName: formData.caseContext.clientName,
+        clientRole: formData.caseContext.clientRole,
+        opponentName: formData.caseContext.opponentName,
+        caseNature: formData.caseContext.caseNature,
+        selectedDocumentType: formData.caseContext.selectedDocumentType,
+        sessionDate: formData.caseContext.sessionDate,
+        defenses: formData.caseContext.defenses,
+        requests: formData.caseContext.requests,
+        proceduralStage: formData.caseContext.proceduralStage,
+        proceduralStageSource: formData.caseContext.proceduralStageSource,
+        clientGoals: formData.caseContext.clientGoals,
+        verificationNotes: formData.caseContext.verificationNotes,
+      } : null;
+      const caseAnalysisContextForPrompt = [
+        formData.caseAnalysisContext?.trim() || '',
+        caseContextForPrompt
+          ? `[البيانات المنظمة المحدثة لملف القضية — لا تفترض القيم الفارغة ولا تستنتج المرحلة الإجرائية]:\\n${JSON.stringify(caseContextForPrompt, null, 2)}`
+          : '',
+      ].filter(Boolean).join('\\n\\n');
+
       const aiText = await draftCounterBrief({
         ...formData,
+        caseAnalysisContext: caseAnalysisContextForPrompt,
+        judicialWorkType: formData.judicialWorkType === '__custom__' ? '' : formData.judicialWorkType,
         judicialWorkType: formData.judicialWorkType === '__custom__' ? '' : formData.judicialWorkType,
         customJudicialWorkType: formData.customJudicialWorkType,
         briefType: formData.judicialWorkType === '__custom__'
