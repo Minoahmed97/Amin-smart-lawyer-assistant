@@ -128,7 +128,10 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       }] : [],
       verificationNotes: ['لم تُحدد المرحلة الإجرائية صراحةً؛ يلزم إدخالها أو التحقق منها من ملف القضية.'],
     };
+    const { materials: _qualificationMaterials, priorAnalysis: _qualificationHistory, ...caseContextSummary } = caseContext;
     const caseAnalysisContext = [
+      '[بيانات ملف القضية المنظمة]:',
+      JSON.stringify(caseContextSummary, null, 2),
       '[تحليل التكييف القانوني السابق — مرتبط بذات النزاع]',
       clientGoals.trim() ? `[هدف الموكل في مرحلة التكييف]:\n${clientGoals.trim()}` : '',
       qualificationAnalysis.trim(),
@@ -216,7 +219,12 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         'لم تُحدد المرحلة الإجرائية صراحةً؛ لا يجوز استنتاجها من مجرد نص مذكرة الخصم.',
       ],
     };
-    const caseAnalysisContext = `[ملف القضية المنظم — مرجع سابق]:\n${JSON.stringify(caseContext, null, 2)}\n\n${analysisContext?.trim() ? `[نتائج التفنيد والتحليل السابق — مرتبطة بذات النزاع]:\n${analysisContext.trim().slice(0, 26000)}\n\nأعد مطابقة كل نتيجة مع الوقائع والمستندات الحالية، ولا تنقل استنتاجاً أو دفعاً دون التحقق من سنده. عند وجود تعارض، اعرضه ولا تتجاهله.` : ''}`;
+    const { materials: _deconstructionMaterials, priorAnalysis: _deconstructionHistory, ...caseContextSummary } = caseContext;
+    const caseAnalysisContext = [
+      '[بيانات ملف القضية المنظمة]:',
+      JSON.stringify(caseContextSummary, null, 2),
+      analysisContext?.trim() ? `[نتائج التفنيد والتحليل السابق — مرتبطة بذات النزاع]:\n${analysisContext.trim().slice(0, 26000)}\n\nأعد مطابقة كل نتيجة مع الوقائع والمستندات الحالية، ولا تنقل استنتاجاً أو دفعاً دون التحقق من سنده. عند وجود تعارض، اعرضه ولا تتجاهله.` : '',
+    ].filter(Boolean).join('\n\n');
 
     setDraftingData({
       facts: opponentFacts,
