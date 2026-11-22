@@ -124,6 +124,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       if (selected) {
         setActiveCaseId(selected.case_id);
         restoreCaseIntoDrafting(selected.case_data);
+        setCaseSelectionRevision((value) => value + 1);
       } else {
         setActiveCaseId('');
         persistentStorage.removeItem(`amin_active_legal_case_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`);
@@ -218,6 +219,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       caseAnalysisContext,
       caseContext,
     }));
+    setCaseSelectionRevision((value) => value + 1);
     setActiveTab('draft');
   };
 
@@ -304,6 +306,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     const caseAnalysisContext = [
       '[بيانات ملف القضية المنظمة]:',
       JSON.stringify(caseContextSummary, null, 2),
+      ...(existingCase?.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\\n${item.content}`),
       analysisContext?.trim() ? `[نتائج التفنيد والتحليل السابق — مرتبطة بذات النزاع]:\n${analysisContext.trim().slice(0, 26000)}\n\nأعد مطابقة كل نتيجة مع الوقائع والمستندات الحالية، ولا تنقل استنتاجاً أو دفعاً دون التحقق من سنده. عند وجود تعارض، اعرضه ولا تتجاهله.` : '',
     ].filter(Boolean).join('\n\n');
 
@@ -316,6 +319,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       caseAnalysisContext,
       caseContext,
     });
+    setCaseSelectionRevision((value) => value + 1);
     setActiveTab('draft');
   };
 
