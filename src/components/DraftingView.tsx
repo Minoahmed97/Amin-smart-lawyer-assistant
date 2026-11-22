@@ -505,9 +505,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         refinementStream += chunk;
         const streamedOutput = splitLegalStrategyOutput(refinementStream);
         const streamedStrategy = streamedOutput.strategy || legalStrategyRecommendation;
-        const streamedDocument = streamedOutput.document || (
-          streamedOutput.strategy ? '' : refinementStream
-        );
+        const streamedDocument = streamedOutput.document;
         setGeneratedBrief(combineLegalStrategyOutput(streamedStrategy, streamedDocument));
       }, userId, refinementCaseContext);
       if (refined && operationId === resultOperationRef.current) {
