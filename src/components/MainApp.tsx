@@ -168,41 +168,43 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
 
   const handleDraftFromQualify = (facts: string, qualificationAnalysis = '', clientGoals = '') => {
     const capturedAt = new Date().toISOString();
+    const existingCase = activeCaseId && draftingData.caseContext?.caseId === activeCaseId ? draftingData.caseContext : null;
     const caseContext: LegalCaseContext = {
       schemaVersion: 1,
-      caseId: createCaseId(),
+      caseId: existingCase?.caseId || createCaseId(),
       updatedAt: capturedAt,
-      court: '',
-      circuit: '',
-      caseNumber: '',
-      clientName: '',
-      clientRole: '',
-      opponentName: '',
-      caseNature: '',
-      selectedDocumentType: '',
-      sessionDate: '',
-      defenses: '',
-      requests: '',
-      proceduralStage: '',
-      proceduralStageSource: 'not_provided',
-      clientGoals: clientGoals.trim(),
-      materials: facts.trim() ? [{
+      court: existingCase?.court || '',
+      circuit: existingCase?.circuit || '',
+      caseNumber: existingCase?.caseNumber || '',
+      clientName: existingCase?.clientName || '',
+      clientRole: existingCase?.clientRole || '',
+      opponentName: existingCase?.opponentName || '',
+      caseNature: existingCase?.caseNature || '',
+      selectedDocumentType: existingCase?.selectedDocumentType || '',
+      sessionDate: existingCase?.sessionDate || '',
+      defenses: existingCase?.defenses || '',
+      requests: existingCase?.requests || '',
+      proceduralStage: existingCase?.proceduralStage || '',
+      proceduralStageSource: existingCase?.proceduralStageSource || 'not_provided',
+      clientGoals: clientGoals.trim() || existingCase?.clientGoals || '',
+      materials: [...(existingCase?.materials || []), ...(facts.trim() ? [{
         id: `material-${Date.now()}`,
         kind: 'case_facts',
         title: 'وقائع النزاع المقدمة في مرحلة التكييف',
         content: facts.trim(),
         sourceView: 'qualification',
         capturedAt,
-      }] : [],
-      priorAnalysis: qualificationAnalysis.trim() ? [{
+      }] : [])],
+      priorAnalysis: [...(existingCase?.priorAnalysis || []), ...(qualificationAnalysis.trim() ? [{
         type: 'qualification',
         content: qualificationAnalysis.trim(),
         capturedAt,
-      }] : [],
-      verificationNotes: ['لم تُحدد المرحلة الإجرائية صراحةً؛ يلزم إدخالها أو التحقق منها من ملف القضية.'],
+      }] : [])],
+      verificationNotes: [...(existingCase?.verificationNotes || []), 'لم تُحدد المرحلة الإجرائية صراحةً؛ يلزم إدخالها أو التحقق منها من ملف القضية.'],
     };
     const caseContextSummary = { schemaVersion: caseContext.schemaVersion, caseId: caseContext.caseId, updatedAt: caseContext.updatedAt, court: caseContext.court, circuit: caseContext.circuit, caseNumber: caseContext.caseNumber, clientName: caseContext.clientName, clientRole: caseContext.clientRole, opponentName: caseContext.opponentName, caseNature: caseContext.caseNature, selectedDocumentType: caseContext.selectedDocumentType, sessionDate: caseContext.sessionDate, defenses: caseContext.defenses, requests: caseContext.requests, proceduralStage: caseContext.proceduralStage, proceduralStageSource: caseContext.proceduralStageSource, clientGoals: caseContext.clientGoals, verificationNotes: caseContext.verificationNotes };
     const caseAnalysisContext = [
+      ...(existingCase?.priorAnalysis || []).map((item) => `[تحليل سابق - ${item.type}]:\\n${item.content}`),
       '[بيانات ملف القضية المنظمة]:',
       JSON.stringify(caseContextSummary, null, 2),
       '[تحليل التكييف القانوني السابق — مرتبط بذات النزاع]',
@@ -260,38 +262,40 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     ].join('\n');
 
     const capturedAt = new Date().toISOString();
+    const existingCase = activeCaseId && draftingData.caseContext?.caseId === activeCaseId ? draftingData.caseContext : null;
     const caseContext: LegalCaseContext = {
       schemaVersion: 1,
-      caseId: createCaseId(),
+      caseId: existingCase?.caseId || createCaseId(),
       updatedAt: capturedAt,
-      court: '',
-      circuit: '',
-      caseNumber: '',
-      clientName: '',
-      clientRole: '',
-      opponentName: '',
-      caseNature: lockedCaseNature,
-      selectedDocumentType: selectedResponseType,
-      sessionDate: '',
-      defenses: draftCounter,
-      requests: '',
-      proceduralStage: '',
-      proceduralStageSource: 'not_provided',
-      clientGoals: '',
-      materials: opponentFacts.trim() ? [{
+      court: existingCase?.court || '',
+      circuit: existingCase?.circuit || '',
+      caseNumber: existingCase?.caseNumber || '',
+      clientName: existingCase?.clientName || '',
+      clientRole: existingCase?.clientRole || '',
+      opponentName: existingCase?.opponentName || '',
+      caseNature: lockedCaseNature || existingCase?.caseNature || '',
+      selectedDocumentType: selectedResponseType || existingCase?.selectedDocumentType || '',
+      sessionDate: existingCase?.sessionDate || '',
+      defenses: draftCounter || existingCase?.defenses || '',
+      requests: existingCase?.requests || '',
+      proceduralStage: existingCase?.proceduralStage || '',
+      proceduralStageSource: existingCase?.proceduralStageSource || 'not_provided',
+      clientGoals: existingCase?.clientGoals || '',
+      materials: [...(existingCase?.materials || []), ...(opponentFacts.trim() ? [{
         id: `material-${Date.now()}`,
         kind: 'opponent_pleading',
         title: 'المذكرة أو المستند المقدم من الخصم',
         content: opponentFacts.trim(),
         sourceView: 'deconstruction',
         capturedAt,
-      }] : [],
-      priorAnalysis: analysisContext?.trim() ? [{
+      }] : [])],
+      priorAnalysis: [...(existingCase?.priorAnalysis || []), ...(analysisContext?.trim() ? [{
         type: 'deconstruction',
         content: analysisContext.trim().slice(0, 26000),
         capturedAt,
-      }] : [],
+      }] : [])],
       verificationNotes: [
+        ...(existingCase?.verificationNotes || []),
         'بيانات المحكمة ورقم الدعوى وأطرافها وصفة الموكل لم تُنقل من شاشة التفنيد؛ يجب استكمالها من ملف القضية.',
         'لم تُحدد المرحلة الإجرائية صراحةً؛ لا يجوز استنتاجها من مجرد نص مذكرة الخصم.',
       ],
