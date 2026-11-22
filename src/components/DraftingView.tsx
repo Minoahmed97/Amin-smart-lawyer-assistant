@@ -261,7 +261,11 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       const snapshotId = `material-${current.caseId}-drafting-snapshot`;
       const snapshotIndex = nextMaterials.findIndex((item) => item.id === snapshotId);
 
-      if (factsText && !existingMaterials.some((item) => item.content.trim() === factsText && item.kind !== 'drafting_snapshot')) {
+      const matchingSourceMaterial = factsText
+        ? existingMaterials.some((item) => item.content.trim() === factsText && item.kind !== 'drafting_snapshot')
+        : false;
+
+      if (factsText && !matchingSourceMaterial) {
         const snapshot = {
           id: snapshotId,
           kind: 'drafting_snapshot' as const,
@@ -272,7 +276,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         };
         if (snapshotIndex >= 0) nextMaterials[snapshotIndex] = snapshot;
         else nextMaterials.push(snapshot);
-      } else if (snapshotIndex >= 0 && !factsText) {
+      } else if (snapshotIndex >= 0) {
+        // Remove an obsolete snapshot when the text is cleared or matches
+        // an existing source document again.
         nextMaterials.splice(snapshotIndex, 1);
       }
 
