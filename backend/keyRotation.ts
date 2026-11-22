@@ -538,61 +538,134 @@ export async function executeWithKeyRotation<T>(
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
 }
 
-export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>, onChunk: (text: string) => void, preferredModels: string[] = GEMINI_MODELS, _ignoredClientFallbackKey?: string, _forceGeminiFallback = false, executionOptions?: KeyRotationExecutionOptions ): Promise<void> {
+export async function executeWithKeyRotationStream(
+  action: (ai: GoogleGenAI, key: string, model: string) => Promise<AsyncIterable<any>>,
+  onChunk: (text: string) => void,
+  preferredModels: string[] = GEMINI_MODELS,
+  _ignoredClientFallbackKey?: string,
+  _forceGeminiFallback = false,
+  executionOptions?: KeyRotationExecutionOptions
+): Promise<void> {
   if (!executionOptions?.deadlineAt) {
     executionOptions = { ...executionOptions, deadlineAt: Date.now() + 270000 };
   }
   const deadlineAt = Number(executionOptions.deadlineAt);
-  const timeoutError = () => Object.assign(new Error('انتهت المهلة المتاحة للتوليد.'), { status: 504, statusCode: 504 });
+  const timeoutError = () => Object.assign(
+    new Error('انتهت المهلة المتاحة للتوليد أثناء تدوير مفاتيح Gemini.'),
+    { status: 504, statusCode: 504 },
+  );
 
   // Streaming legal generation uses Gemini exclusively.
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
-  if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
+  if (keys.length === 0) {
+    throw new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
+  }
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  const keyFailureKinds = new Map<string, string>();
   let attemptedModelCount = 0;
-  for (let cycle = 0; cycle < 1; cycle++) {
-    const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
-    const startIdx = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
-    for (let offset = 0; offset < keys.length; offset++) {
-      const currentKeyIndex = (startIdx + offset) % keys.length;
-      const currentKey = keys[currentKeyIndex];
-      const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+  let lastError: any = null;
 
-      for (let m = 0; m < keyModels.length; m++) {
-        attemptedModelCount += 1;
-        executionOptions?.attemptedPairs?.add(rotationPairKey(currentKey, keyModels[m]));
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
-        let emittedAnyChunk = false;
-        try {
-          const stream = await action(ai, currentKey, keyModels[m]);
-          for await (const chunk of stream) {
-            const text = typeof chunk?.text === 'string' ? chunk.text : '';
-            if (text) {
-              emittedAnyChunk = true;
-              onChunk(text);
-            }
-          }
-          activeKeyIndex = currentKeyIndex;
-          return;
-        } catch (err: any) {
-          markRotationFailure(currentKey, keyModels[m], err, 'general');
-          if (emittedAnyChunk) {
-            activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
-            throw err;
-          }
-          if (permanentlyInvalidKeys.has(currentKey)) break;
+  const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
+  const startIdx = requestedStartIndex >= 0
+    ? requestedStartIndex
+    : reserveStartIndex(keys.length, 'general');
+
+  for (let offset = 0; offset < keys.length; offset++) {
+    const currentKeyIndex = (startIdx + offset) % keys.length;
+    const currentKey = keys[currentKeyIndex];
+
+    if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
+
+    const keyModels = selectModelsForKey(
+      preferredModels,
+      currentKey,
+      'general',
+      Date.now(),
+      avoidedPairs,
+    );
+
+    for (const model of keyModels) {
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs < 5000) {
+        lastError = timeoutError();
+        break;
+      }
+
+      attemptedModelCount += 1;
+      executionOptions?.attemptedPairs?.add(rotationPairKey(currentKey, model));
+      const ai = withAdaptiveAnswerLength(
+        createGeminiClient(currentKey, Math.min(30000, remainingMs)),
+      );
+      let emittedAnyChunk = false;
+
+      try {
+        const stream = await action(ai, currentKey, model);
+        for await (const chunk of stream) {
+          const text = typeof chunk?.text === 'string' ? chunk.text : '';
+          if (!text) continue;
+          emittedAnyChunk = true;
+          onChunk(text);
         }
+
+        activeKeyIndex = currentKeyIndex;
+        return;
+      } catch (err: any) {
+        lastError = err;
+        const kind = markRotationFailure(currentKey, model, err, 'general');
+        keyFailureKinds.set(currentKey, kind);
+
+        // Once text has been emitted, the caller must continue from that partial
+        // output rather than silently restarting the same segment and duplicating it.
+        if (emittedAnyChunk) {
+          activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
+          throw err;
+        }
+
+        activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
+        if (permanentlyInvalidKeys.has(currentKey)) break;
       }
     }
   }
+
+  // If every pair was already used by a previous continuation segment, make
+  // one fresh pass over pairs that are not currently cooling down.
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
-    return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, {
-      ...executionOptions,
-      avoidPairs: undefined,
-    });
+    const hasEligiblePair = keys.some((key) =>
+      !isCooling(keyCooldownUntil, key) &&
+      selectModelsForKey(preferredModels, key, 'general', Date.now()).length > 0
+    );
+    if (hasEligiblePair) {
+      return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, {
+        ...executionOptions,
+        avoidPairs: undefined,
+      });
+    }
   }
-  throw new Error('فشلت جميع محاولات تدوير البث.');
+
+  const attemptedKinds = Array.from(keyFailureKinds.values());
+  if (attemptedModelCount > 0 && attemptedKinds.length > 0 && attemptedKinds.every((kind) => kind === 'quota')) {
+    const quotaError: any = new Error(
+      'تعذر إكمال البث: استنفدت حصص مفاتيح Gemini أو حدود النماذج المتاحة. لم يتم التحويل إلى مزود آخر.'
+    );
+    quotaError.status = 429;
+    quotaError.statusCode = 429;
+    quotaError.allGeminiQuotasExhausted = true;
+    quotaError.cause = lastError;
+    throw quotaError;
+  }
+
+  if (lastError) throw lastError;
+  if (Date.now() >= deadlineAt) throw timeoutError();
+
+  const unavailableError: any = new Error(
+    attemptedModelCount === 0
+      ? 'لا توجد محاولة Gemini متاحة حالياً؛ جميع أزواج المفاتيح والنماذج إما قيد التهدئة أو سبق استخدامها في هذه المهمة.'
+      : 'فشلت محاولات بث Gemini المتاحة. راجع سبب فشل آخر محاولة قبل إعادة الطلب.'
+  );
+  unavailableError.status = 503;
+  unavailableError.statusCode = 503;
+  throw unavailableError;
 }
 
 export default function handler(req: any, res: any) {
