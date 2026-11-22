@@ -337,6 +337,7 @@ export default async function handler(req: any, res: any) {
       requests,
       customInstructions,
       caseAnalysisContext,
+      caseContext,
       vaultContext,
     } = body || {};
 
@@ -368,6 +369,11 @@ export default async function handler(req: any, res: any) {
     const legalStrategy = prepareLegalStrategy({
       task: 'drafting',
       courtType,
+      circuit,
+      opponentName,
+      selectedDocumentType: caseContext?.selectedDocumentType || finalWorkType,
+      proceduralStage: caseContext?.proceduralStage,
+      proceduralStageSource: caseContext?.proceduralStageSource,
       judicialWorkType: finalWorkType,
       clientRole,
       sessionDate,

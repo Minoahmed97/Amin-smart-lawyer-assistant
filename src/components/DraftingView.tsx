@@ -431,14 +431,13 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       const caseAnalysisContextForPrompt = [
         formData.caseAnalysisContext?.trim() || '',
         caseContextForPrompt
-          ? `[البيانات المنظمة المحدثة لملف القضية — لا تفترض القيم الفارغة ولا تستنتج المرحلة الإجرائية]:\\n${JSON.stringify(caseContextForPrompt, null, 2)}`
+          ? `[البيانات المنظمة المحدثة لملف القضية — لا تفترض القيم الفارغة ولا تستنتج المرحلة الإجرائية]:\n${JSON.stringify(caseContextForPrompt, null, 2)}`
           : '',
-      ].filter(Boolean).join('\\n\\n');
+      ].filter(Boolean).join('\n\n');
 
       const aiText = await draftCounterBrief({
         ...formData,
         caseAnalysisContext: caseAnalysisContextForPrompt,
-        judicialWorkType: formData.judicialWorkType === '__custom__' ? '' : formData.judicialWorkType,
         judicialWorkType: formData.judicialWorkType === '__custom__' ? '' : formData.judicialWorkType,
         customJudicialWorkType: formData.customJudicialWorkType,
         briefType: formData.judicialWorkType === '__custom__'
