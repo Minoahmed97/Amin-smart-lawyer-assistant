@@ -218,3 +218,71 @@ export async function appendAttorneyCorrection(
   };
   return saveCaseFile(updated, expectedUpdatedAt ?? caseFile.updatedAt);
 }
+
+
+export interface StrategicAnalysisJobStatus {
+  jobId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  result: string;
+  error: string | null;
+  updatedAt: string | null;
+}
+
+export async function enqueueStrategicAnalysis(
+  caseId: string,
+  requestedStages?: import('./types.ts').StrategicStage[],
+  additionalInstructions = '',
+): Promise<{ jobId: string; status: string }> {
+  if (!caseId) throw new Error('معرّف القضية مطلوب لبدء التحليل الاستراتيجي.');
+  const token = getSessionToken();
+  if (!token) throw new Error('انتهت جلسة الحساب. سجّل الدخول قبل بدء التحليل.');
+
+  const response = await fetch('/api/gemini/jobs', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + token,
+    },
+    body: JSON.stringify({
+      taskType: 'strategic-analysis',
+      jobId: createId(),
+      payload: {
+        caseId,
+        ...(requestedStages?.length ? { requestedStages } : {}),
+        additionalInstructions,
+      },
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error: any = new Error(String(data?.error || 'تعذر إدخال التحليل الاستراتيجي إلى طابور المعالجة.'));
+    error.statusCode = response.status;
+    throw error;
+  }
+  return { jobId: String(data.jobId || ''), status: String(data.status || 'queued') };
+}
+
+export async function getStrategicAnalysisJob(jobId: string): Promise<StrategicAnalysisJobStatus> {
+  if (!/^[0-9a-f-]{36}$/i.test(jobId)) throw new Error('معرّف مهمة التحليل غير صالح.');
+  const token = getSessionToken();
+  if (!token) throw new Error('انتهت جلسة الحساب. سجّل الدخول لمتابعة نتيجة التحليل.');
+
+  const response = await fetch('/api/gemini/jobs?id=' + encodeURIComponent(jobId), {
+    method: 'GET',
+    headers: { Authorization: 'Bearer ' + token },
+    cache: 'no-store',
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error: any = new Error(String(data?.error || 'تعذر قراءة حالة مهمة التحليل.'));
+    error.statusCode = response.status;
+    throw error;
+  }
+  return {
+    jobId: String(data.jobId || jobId),
+    status: data.status,
+    result: String(data.result || ''),
+    error: data.error ? String(data.error) : null,
+    updatedAt: data.updatedAt ? String(data.updatedAt) : null,
+  };
+}
