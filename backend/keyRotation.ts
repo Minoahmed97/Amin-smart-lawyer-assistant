@@ -45,7 +45,7 @@ const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
 
 function rotationPairKey(key: string, model: string): string {
-  return `${key}:${model}`;
+  return `${key}::${model}`;
 }
 
 function isCooling(map: Map<string, number>, id: string, now = Date.now()): boolean {
@@ -95,7 +95,7 @@ function selectModelsForKey( models: string[], key: string, pool: 'general' | 'o
   return models.filter((model) =>
     !isCooling(modelCooldowns, model, now) &&
     !isCooling(pairCooldowns, rotationPairKey(key, model), now) &&
-    !avoidPairs?.has(`${key}::${model}`)
+    !avoidPairs?.has(rotationPairKey(key, model))
   );
 }
 
