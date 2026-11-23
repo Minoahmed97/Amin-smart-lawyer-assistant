@@ -341,6 +341,11 @@ export async function getStrategicAnalysisJob(jobId: string): Promise<StrategicA
 
 const ACTIVE_STRATEGIC_CASE_PREFIX = 'amin_active_strategic_case_v1:';
 
+export function getActiveStrategicCaseId(userId: string): string {
+  if (!userId) return '';
+  try { return localStorage.getItem(ACTIVE_STRATEGIC_CASE_PREFIX + userId) || ''; } catch { return ''; }
+}
+
 export function setActiveStrategicCase(userId: string, caseId: string): void {
   if (!userId) return;
   try {
