@@ -415,7 +415,7 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
                 <textarea className={inputClass} rows={2} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="تعليمات إضافية للمحرك (اختياري)" maxLength={12000} />
                 <button onClick={() => void handleStartAnalysis()} disabled={['queued', 'running'].includes(jobStatus) || !selectedStages.length} className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-3 disabled:opacity-50">
                   {['queued', 'running'].includes(jobStatus) ? <Loader2 className="w-5 h-5 animate-spin" /> : <BrainCircuit className="w-5 h-5" />}
-                  {jobStatus === 'running' ? 'جارٍ تحليل القضية...' : jobStatus === 'queued' ? 'التحليل في قائمة الانتظار...' : {pendingContextChanges.length ? 'أعد تقييم القضية بعد التغييرات' : 'ابدأ التحليل الاستراتيجي'}
+                  {jobStatus === 'running' ? 'جارٍ تحليل القضية...' : jobStatus === 'queued' ? 'التحليل في قائمة الانتظار...' : (pendingContextChanges.length ? 'أعد تقييم القضية بعد التغييرات' : 'ابدأ التحليل الاستراتيجي')}
                 </button>
                 {jobError && <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-500">{jobError}</div>}
                 {jobStatus === 'completed' && <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-600 flex items-center gap-2"><CheckCircle2 className="w-4 h-4 shrink-0" /> اكتمل التحليل. {jobResult?.persisted ? 'تم حفظ النتائج في ملف القضية.' : 'يرجى مراجعة حالة الحفظ والتنبيهات أدناه.'}</div>}
