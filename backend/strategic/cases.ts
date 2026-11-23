@@ -171,12 +171,12 @@ export default async function handler(req: any, res: any) {
     if (!caseFile || caseFile.id !== caseId) return res.status(400).json({ error: 'معرّف ملف القضية لا يطابق البيانات المرسلة.' });
     const validationError = validateCaseFile(caseFile);
     if (validationError) return res.status(400).json({ error: validationError });
+    if (typeof body.expectedUpdatedAt !== 'string' || !body.expectedUpdatedAt) {
+      return res.status(400).json({ error: 'يلزم إرسال توقيت آخر نسخة محمّلة قبل تحديث ملف القضية.' });
+    }
     const now = new Date().toISOString();
     const stored = { ...caseFile, ownerUserId: userId, updatedAt: now };
-    let path = `${TABLE}?case_id=eq.${encodeURIComponent(caseId)}&owner_user_id=eq.${encodeURIComponent(userId)}`;
-    if (typeof body.expectedUpdatedAt === 'string' && body.expectedUpdatedAt) {
-      path += `&updated_at=eq.${encodeURIComponent(body.expectedUpdatedAt)}`;
-    }
+    const path = `${TABLE}?case_id=eq.${encodeURIComponent(caseId)}&owner_user_id=eq.${encodeURIComponent(userId)}&updated_at=eq.${encodeURIComponent(body.expectedUpdatedAt)}`;
     const response = await supabase(path, {
       method: 'PATCH',
       headers: { Prefer: 'return=representation' },
