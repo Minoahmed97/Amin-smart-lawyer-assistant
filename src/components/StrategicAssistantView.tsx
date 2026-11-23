@@ -5,9 +5,10 @@ import {
   Save, ShieldAlert, Sparkles,
 } from 'lucide-react';
 import type { UnifiedCaseFile, StrategicStage, CaseAnalysisSnapshot } from '../strategic/types.ts';
+import { FileUploadZone } from './FileUploadZone.tsx';
 import {
-  addCaseFact, addCaseParty, addCaseRequest, createCaseFile, createEmptyCaseFile, enqueueStrategicAnalysis,
-  getCaseFile, getStrategicAnalysisJob, listCaseFiles, makeCaseFact, makeCaseParty,
+  addCaseDocument, addCaseFact, addCaseParty, addCaseRequest, createCaseFile, createEmptyCaseFile, enqueueStrategicAnalysis,
+  getCaseFile, getStrategicAnalysisJob, listCaseFiles, makeCaseDocument, makeCaseFact, makeCaseParty,
 } from '../strategic/caseFileService.ts';
 
 const STAGES: { id: StrategicStage; label: string }[] = [
@@ -122,6 +123,31 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
       setJobResult(null);
     } catch (e: any) {
       setError(e?.message || 'تعذر حفظ الواقعة.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDocumentExtracted = async (text: string, fileName: string, fileType?: string) => {
+    if (!activeCase || !text.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      const document = makeCaseDocument({
+        name: fileName,
+        kind: 'other',
+        mimeType: fileType || undefined,
+        extractedText: text.trim(),
+        extractionStatus: 'completed',
+        factLinks: [],
+        origin: 'document_extraction',
+      });
+      const updated = await addCaseDocument(activeCase, document);
+      setActiveCase(updated);
+      setCases((previous) => previous.map((item) => item.id === updated.id ? updated : item));
+      setJobResult(null);
+    } catch (e: any) {
+      setError(e?.message || 'تم استخراج النص، لكن تعذر ربط المستند بملف القضية. أعد المحاولة دون حذف الملف الأصلي.');
     } finally {
       setSaving(false);
     }
@@ -304,6 +330,31 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
                     ['المسائل', activeCase.legalIssues.length],
                     ['الدفوع', activeCase.defenses.length],
                   ].map(([label, count]) => <div key={label} className={`rounded-xl p-3 text-center ${isLight ? 'bg-slate-50' : 'bg-slate-900'}`}><strong className="block text-xl text-amber-500">{count}</strong><span className={`text-xs ${muted}`}>{label}</span></div>)}
+                </div>
+
+                <div className={`rounded-xl border p-3 space-y-3 ${isLight ? 'border-slate-200 bg-slate-50' : 'border-slate-700 bg-slate-900/50'}`}>
+                  <div>
+                    <h4 className="text-sm font-bold">مستندات القضية واستخراج النصوص</h4>
+                    <p className={`mt-1 text-xs leading-6 ${muted}`}>ارفع المستندات من خلال مسار OCR الحالي. بعد اكتمال الاستخراج يُحفظ النص واسم الملف داخل القضية ويرتبط بذاكرتها، دون استبدال النسخة الأصلية في مسارات الرفع الأخرى.</p>
+                  </div>
+                  <FileUploadZone
+                    userId={userId}
+                    recoveryScope="strategic"
+                    title="إضافة مستندات إلى ملف القضية"
+                    description="PDF وWord والصور — تُضاف نتيجة الاستخراج إلى هذه القضية."
+                    onTextExtracted={handleDocumentExtracted}
+                  />
+                  {activeCase.documents.length > 0 && (
+                    <div className="space-y-2">
+                      <h5 className="text-xs font-bold">المستندات المرتبطة بالقضية ({activeCase.documents.length})</h5>
+                      {activeCase.documents.map((document) => (
+                        <details key={document.id} className={`rounded-lg border p-3 ${isLight ? 'border-slate-200' : 'border-slate-700'}`}>
+                          <summary className="cursor-pointer text-sm font-semibold">{document.name} · {document.extractionStatus === 'completed' ? 'اكتمل استخراج النص' : 'حالة الاستخراج: ' + document.extractionStatus}</summary>
+                          <p className={`mt-2 whitespace-pre-wrap text-xs leading-6 ${muted}`}>{document.extractedText ? document.extractedText.slice(0, 6000) : 'لا يوجد نص مستخرج محفوظ لهذا المستند.'}</p>
+                        </details>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
