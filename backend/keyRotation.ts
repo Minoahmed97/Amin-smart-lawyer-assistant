@@ -493,6 +493,8 @@ type KeyRotationExecutionOptions = {
   avoidPairs?: string[];
   /** Resume Gemini rotation from the key used by the previous continuation segment. */
   startKey?: string;
+  /** Resume from the last model that successfully generated part of the document. */
+  startModel?: string;
   /** Mutable per-generation ledger so failed model attempts are not retried on continuation. */
   attemptedPairs?: Set<string>;
   /** Drafting excludes a key only for confirmed quota exhaustion. */
@@ -528,6 +530,10 @@ export async function executeWithKeyRotation<T>(
     const currentKey = keys[currentKeyIndex];
     if (isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey) || (!draftingMode && permanentlyInvalidKeys.has(currentKey))) continue;
     const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+    if (draftingMode && currentKey === executionOptions?.startKey && executionOptions?.startModel) {
+      const preferredModelIndex = models.indexOf(executionOptions.startModel);
+      if (preferredModelIndex > 0) models.unshift(...models.splice(preferredModelIndex, 1));
+    }
 
     for (const model of models) {
       const pair = rotationPairKey(currentKey, model);
@@ -632,6 +638,10 @@ export async function executeWithKeyRotationStream(
     const currentKey = keys[currentKeyIndex];
     if (isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey) || (!draftingMode && permanentlyInvalidKeys.has(currentKey))) continue;
     const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+    if (draftingMode && currentKey === executionOptions?.startKey && executionOptions?.startModel) {
+      const preferredModelIndex = models.indexOf(executionOptions.startModel);
+      if (preferredModelIndex > 0) models.unshift(...models.splice(preferredModelIndex, 1));
+    }
 
     for (const model of models) {
       const pair = rotationPairKey(currentKey, model);
