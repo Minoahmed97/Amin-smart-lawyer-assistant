@@ -20,7 +20,7 @@ function requireSupabaseServerConfig() {
   return config;
 }
 
-export async function fetchServerCloudGeminiKeys(timeoutMs?: number): Promise<string[]> {
+export async function fetchServerCloudGeminiKeys(timeoutMs?: number, forceRefresh = false): Promise<string[]> {
   const { supabaseUrl, supabaseKey } = getSupabaseServerConfig();
   if (!supabaseUrl || !supabaseKey) {
     cachedServerCloudKeys = [];
@@ -31,7 +31,7 @@ export async function fetchServerCloudGeminiKeys(timeoutMs?: number): Promise<st
   // Avoid an extra Supabase round-trip before every Gemini request. The cache
   // is short-lived so Vercel instances still pick up admin key changes quickly,
   // while add/delete operations below invalidate their local cache immediately.
-  if (cachedServerCloudKeysAt && Date.now() - cachedServerCloudKeysAt < SERVER_CLOUD_KEYS_CACHE_MS) {
+  if (!forceRefresh && cachedServerCloudKeysAt && Date.now() - cachedServerCloudKeysAt < SERVER_CLOUD_KEYS_CACHE_MS) {
     return [...cachedServerCloudKeys];
   }
 
