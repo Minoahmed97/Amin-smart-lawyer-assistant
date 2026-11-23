@@ -60,24 +60,21 @@ function isCooling(map: Map<string, number>, id: string, now = Date.now()): bool
 
 function markRotationFailure(key: string, model: string, error: any, pool: 'general' | 'ocr' = 'general'): 'quota' | 'invalid' | 'temporary' | 'other' {
   const keyCooldowns = pool === 'ocr' ? ocrKeyCooldownUntil : keyCooldownUntil;
-  const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const invalidKeys = pool === 'ocr' ? permanentlyInvalidOCRKeys : permanentlyInvalidKeys;
   const kind = getGeminiErrorKind(error);
-  const status = Number(error?.status || error?.statusCode || error?.response?.status);
-  const pair = rotationPairKey(key, model);
-  const message = String(error?.message || '').toLowerCase();
   const now = Date.now();
+
   if (kind === 'invalid') {
+    // المفتاح الذي تؤكد Google أن بيانات اعتماده غير صالحة لا يمكن استخدامه.
     invalidKeys.add(key);
     keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
-  } else if (kind === 'quota' || status === 429) {
-    if (pool === 'ocr') keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
-    pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
-  } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
-    pairCooldowns.set(pair, now + MODEL_BUSY_COOLDOWN_MS);
-  } else if (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message)) {
-    pairCooldowns.set(pair, now + (status === 504 || /timeout|timed out|network|connection|socket|econn|fetch failed/.test(message) ? CONNECTION_COOLDOWN_MS : MODEL_PAIR_COOLDOWN_MS));
+  } else if (kind === 'quota') {
+    // الحصة المستنفدة تخص المفتاح؛ لا نستبعد زوجاً واحداً ونترك بقية نماذج المفتاح تدور.
+    keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
   }
+
+  // الأخطاء المؤقتة وأخطاء الشبكة والخادم لا تضع المفتاح أو الزوج في cooldown،
+  // وتظل المحاولة متاحة في التدوير الحالي وطلبات الاستكمال التالية.
   return kind;
 }
 
@@ -114,11 +111,25 @@ function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
 }
 
 function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'other' {
-  const msg = String(err?.message || err?.error?.message || '').toLowerCase();
+  const msg = [
+    err?.message,
+    err?.error?.message,
+    err?.response?.data?.error?.message,
+    err?.cause?.message,
+    err?.statusText,
+  ].filter(Boolean).join(' ').toLowerCase();
   const status = Number(err?.status || err?.statusCode || err?.response?.status);
-  if (status === 429 || /resource_exhausted|quota exceeded|rate.?limit|too many requests/.test(msg)) return 'quota';
+
+  // استبعاد المفتاح بسبب الحصة لا يحدث لمجرد HTTP 429 أو RESOURCE_EXHAUSTED؛
+  // يجب أن تتضمن رسالة Google دلالة صريحة على تجاوز/نفاد الحصة.
+  const quotaExhausted = /quota exceeded|quota has been exceeded|quota exhausted|exceeded (?:your |the |current |project )?(?:current )?quota|quota limit (?:has been )?(?:reached|exceeded)|daily quota|monthly quota/.test(msg);
+  if (quotaExhausted) return 'quota';
+
   if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/.test(msg)) return 'invalid';
-  if (status === 503 || status === 504 || /timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|\b503\b/.test(msg)) return 'temporary';
+  if (
+    status === 429 || status === 408 || status === 503 || status === 504 ||
+    /resource_exhausted|rate.?limit|too many requests|timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|\\b503\\b/.test(msg)
+  ) return 'temporary';
   return 'other';
 }
 
@@ -735,6 +746,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     for (let offset = 0; offset < keys.length; offset++) {
       const currentKeyIndex = (startIdx + offset) % keys.length;
       const currentKey = keys[currentKeyIndex];
+      if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
       const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
 
       for (let m = 0; m < keyModels.length; m++) {
