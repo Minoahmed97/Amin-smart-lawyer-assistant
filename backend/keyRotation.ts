@@ -39,7 +39,8 @@ const ocrKeyModelCooldownUntil = new Map<string, number>();
 const ocrModelCooldownUntil = new Map<string, number>();
 let nextGeneralKeyStart = 0;
 let nextOCRKeyStart = 0;
-const KEY_QUOTA_COOLDOWN_MS = 60_000;
+// حصة اليوم/الشهر المستنفدة لا يعاد اختبار مفتاحها بعد دقيقة؛ تبريدها 24 ساعة.
+const KEY_QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const MAX_MODELS_PER_KEY_PER_REQUEST = 3;
 const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
