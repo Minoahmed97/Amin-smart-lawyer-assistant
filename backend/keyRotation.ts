@@ -85,7 +85,8 @@ function markRotationFailure(
       keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
     }
   } else if (kind === 'quota') {
-    // Drafting quota exhaustion is scoped to this model/key pair.
+    // In legal drafting, quota exhaustion excludes only this exact key/model
+    // pair. Other models on the same key must remain eligible.
     if (quotaOnlyKeyExclusion && pool === 'general') {
       quotaPairCooldownUntil.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
     } else {
@@ -453,10 +454,26 @@ export function getVercelGeminiKeys(): string[] {
   return keys;
 }
 
-async function getAvailableGeminiKeys(timeoutMs?: number): Promise<string[]> {
+async function getAvailableGeminiKeys(
+  timeoutMs?: number,
+  managedOnly = false,
+  forceRefresh = false,
+): Promise<string[]> {
+  // Legal drafting uses the platform-managed key vault in Supabase as its
+  // single source of truth. Do not silently fall back to Vercel env vars or
+  // local files if the managed-key read fails.
+  if (managedOnly) {
+    const managedKeys = await fetchServerCloudGeminiKeys(timeoutMs, forceRefresh);
+    const validManagedKeys = managedKeys.filter(isValidGeminiApiKey);
+    if (validManagedKeys.length === 0) {
+      throw new Error('لم يتم العثور على مفاتيح Gemini نشطة في إدارة المنصة على Supabase. تعذر بدء الصياغة دون مفاتيح الإدارة المحفوظة.');
+    }
+    return [...new Set(validManagedKeys)];
+  }
+
   const keys = getVercelGeminiKeys();
   try {
-    for (const key of await fetchServerCloudGeminiKeys(timeoutMs)) {
+    for (const key of await fetchServerCloudGeminiKeys(timeoutMs, forceRefresh)) {
       if (isValidGeminiApiKey(key) && !keys.includes(key)) keys.push(key);
     }
   } catch (error) {
@@ -543,7 +560,7 @@ export async function executeWithKeyRotation<T>(
     { status: 504, statusCode: 504 },
   );
   const draftingMode = executionOptions?.draftingMode === true;
-  const keys = (await getAvailableGeminiKeys()).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
+  const keys = (await getAvailableGeminiKeys(undefined, draftingMode, draftingMode)).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
@@ -659,7 +676,7 @@ export async function executeWithKeyRotationStream(
   const deadlineAt = Number(executionOptions?.deadlineAt || (Date.now() + 270000));
   const timeoutError = () => Object.assign(new Error('انتهت المهلة المتاحة للتوليد.'), { status: 504, statusCode: 504 });
   const draftingMode = executionOptions?.draftingMode === true;
-  const keys = (await getAvailableGeminiKeys()).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
+  const keys = (await getAvailableGeminiKeys(undefined, draftingMode, draftingMode)).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
