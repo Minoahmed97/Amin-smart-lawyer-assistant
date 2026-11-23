@@ -31,11 +31,15 @@ export default async function handler(req: any, res: any) {
     const loaded = await loadOwnedCaseFile(session.userId, caseId);
     const caseFile = loaded.caseFile;
 
+    let requestedStages = body.requestedStages;
+    if (typeof requestedStages === 'string') {
+      try { requestedStages = JSON.parse(requestedStages); } catch { requestedStages = undefined; }
+    }
     const input: StrategicAnalysisInput = {
       caseFile,
-      requestedStages: Array.isArray(body.requestedStages) ? body.requestedStages : undefined,
+      requestedStages: Array.isArray(requestedStages) ? requestedStages : undefined,
       additionalInstructions: typeof body.additionalInstructions === 'string' ? body.additionalInstructions : '',
-      priorAnalysis: Array.isArray(body.priorAnalysis) ? body.priorAnalysis : caseFile.analysisSnapshots,
+      priorAnalysis: caseFile.analysisSnapshots,
     };
 
     const result = await runStrategicAnalysis(input);
