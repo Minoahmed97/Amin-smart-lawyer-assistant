@@ -642,6 +642,7 @@ async function retryTransientOcrJob(jobId: string, userId: string, payload: Reco
 
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
   let fullText = typeof payload._resumePartialText === 'string' ? payload._resumePartialText : '';
+  let persistedLength = fullText.length;
   let pendingWrite = Promise.resolve();
   let streamError = '';
   let handlerJson: any = null;
@@ -674,10 +675,13 @@ async function processJob(jobId: string, userId: string, token: string, taskType
           const event = JSON.parse(candidate);
           if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
-            // Persist each received model chunk so a worker interruption never loses
-            // the most recent Gemini output before the next continuation attempt.
-            const snapshot = fullText;
-            pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
+            // Persist every legal-drafting chunk immediately. Preserve the existing
+            // OCR/other-task batching behavior to keep this change scoped to drafting.
+            if (taskType === 'counter-brief' || fullText.length - persistedLength >= 800) {
+              persistedLength = fullText.length;
+              const snapshot = fullText;
+              pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
+            }
           } else if (event.type === 'error') {
             streamError = String(event.error || 'فشلت المهمة.');
           }
