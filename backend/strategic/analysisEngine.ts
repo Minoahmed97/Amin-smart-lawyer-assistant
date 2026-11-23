@@ -136,12 +136,13 @@ function normalizeSnapshot(
   stage: StrategicStage,
   raw: any,
   inputFingerprint: string,
+  version: number,
 ): CaseAnalysisSnapshot {
   const safeArray = (value: unknown): string[] =>
     Array.isArray(value) ? value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean) : [];
   return {
-    id: `analysis_${stage}_${Date.now().toString(36)}`,
-    version: 1,
+    id: crypto.randomUUID(),
+    version,
     stage,
     summary: typeof raw?.summary === 'string' ? raw.summary.trim() : '',
     findings: safeArray(raw?.findings),
@@ -200,7 +201,11 @@ export async function runStrategicAnalysis(input: StrategicAnalysisInput): Promi
   for (const stage of stages) {
     const stageRaw = parsed?.stageResults?.[stage];
     if (!stageRaw || typeof stageRaw !== 'object') continue;
-    stageResults[stage] = normalizeSnapshot(input.caseFile.id, stage, stageRaw, fingerprint);
+    const previousVersions = (input.priorAnalysis || [])
+      .filter((snapshot) => snapshot.stage === stage)
+      .map((snapshot) => Number(snapshot.version) || 0);
+    const nextVersion = (previousVersions.length ? Math.max(...previousVersions) : 0) + 1;
+    stageResults[stage] = normalizeSnapshot(input.caseFile.id, stage, stageRaw, fingerprint, nextVersion);
   }
 
   const completedStages = stages.filter((stage) => Boolean(stageResults[stage]));
