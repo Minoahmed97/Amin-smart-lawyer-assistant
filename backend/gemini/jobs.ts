@@ -726,9 +726,9 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
       fullText = handlerJson.text.trim();
     }
-    // Legal chat returns a structured JSON response rather than streamed text.
+    // Legal chat and strategic analysis return structured JSON rather than streamed text.
     // Persist the complete response in the same durable job record for polling clients.
-    if (!fullText.trim() && taskType === 'legal-chat' && fakeRes.statusCode < 400 && typeof handlerJson?.result === 'string' && handlerJson.result.trim()) {
+    if (!fullText.trim() && ['legal-chat', 'strategic-analysis'].includes(taskType) && fakeRes.statusCode < 400 && handlerJson?.result) {
       fullText = JSON.stringify(handlerJson);
     }
 
