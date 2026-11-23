@@ -31,7 +31,7 @@ const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة ال�
 
 function safeDiagnosticMessage(value: unknown) {
   return String(value || 'unknown')
-    .replace(/(?:AIza|AQ\\.)[0-9A-Za-z_.-]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/(?:AIza|AQ\.)[0-9A-Za-z_.-]{20,}/g, '[REDACTED_API_KEY]')
     .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
     .replace(/\b(api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|secret)\b\s*[:=]\s*["']?[^"'\s,;]+/gi, '$1=[REDACTED]')
     .replace(/https?:\/\/[^\s"'<>]+/gi, '[REDACTED_URL]')
