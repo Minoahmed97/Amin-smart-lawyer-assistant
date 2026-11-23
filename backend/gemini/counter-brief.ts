@@ -167,7 +167,10 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         lastError = error;
       }
 
-      if (activePair) {
+      // Resume from the last pair that actually produced document text.
+      // A request that failed before its first chunk must not replace the
+      // previously successful key/model preference.
+      if (activePair && (!segmentError || segmentBuffer.length > 0)) {
         continuationGeminiStartKey = activePair.split('::')[0];
         continuationGeminiStartModel = activePair.split('::')[1] || '';
       }
