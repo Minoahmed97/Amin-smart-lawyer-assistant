@@ -364,9 +364,32 @@ export async function prepareStrategicTaskContext(
   taskType: StrategicTaskType,
 ): Promise<string> {
   const caseId = getActiveStrategicCaseId(userId);
-  if (!caseId) return '';
-
   const taskLabel = STRATEGIC_TASK_LABELS[taskType];
+
+  // The strategic assistant remains active even when the attorney chooses not
+  // to link a persistent case file. In that mode it analyzes the current task
+  // inputs and extracted text in the task model, without inventing case history
+  // or persisting temporary facts as a real case.
+  if (!caseId) {
+    return JSON.stringify({
+      contextType: 'strategic_assistant_standalone',
+      task: taskLabel,
+      operatingMode: 'تحليل استراتيجي مستقل للمهمة الحالية دون ملف قضية محفوظ',
+      mandatoryStrategicProtocol: [
+        'لا تبدأ بإنتاج الإجابة أو المستند مباشرة؛ افهم أولاً طبيعة النزاع والمطلوب الحالي وصفة كل طرف كما وردت في المدخلات.',
+        'حلل النصوص والمستندات المرفقة أو المستخرجة من الصور وPDF تحليلاً موضوعياً عميقاً؛ استخرج الوقائع والطلبات والدفوع والأسانيد والتواريخ والتناقضات والنواقص، ولا تكتفِ بالتلخيص.',
+        'ميّز بوضوح بين واقعة ثابتة بمستند، وادعاء منسوب لصاحبه، ونص مستخرج آلياً يحتاج مراجعة، واستنتاج، واحتمال، ومعلومة غير متاحة.',
+        'حدد الإجراء أو المسار القانوني الأنسب للمهمة الحالية، ولا تنفذ طلباً يبدو غير ملائم إجرائياً أو موضوعياً دون تنبيه المحامي وشرح البديل.',
+        'ابنِ أقوى حجة للطرف المقابل، واختبر موقف الموكل ضدها، وحدد المخاطر والثغرات والأدلة الناقصة والردود المدعومة.',
+        'لا تفترض وجود دعوى أصلية أو فرعية أو مذكرة سابقة أو إجراء لم يرد في المدخلات. إذا ظهرت علاقة بين طلبات أصلية وفرعية فافصل كل دعوى وطلباتِها ودفوعها وآثارها.',
+        'لا تخترع وقائع أو مستندات أو مواد قانونية أو أحكاماً أو أرقام طعون أو مواعيد. اذكر ما يحتاج إلى تحقق عندما لا يتوافر سند.',
+        'إذا كان المطلوب صياغة أو تفنيداً أو تكييفاً، اجعل التحليل السابق موجهاً للنتيجة النهائية ولا تعرض مجرد رد عام.',
+        'إذا نقصت معلومة جوهرية يتوقف عليها اختيار المسار، صرّح بالنقص وأثره واطلب المعلومة اللازمة بدلاً من الجزم.',
+        'قدم للمحامي سبب اختيار المسار القانوني والتنبيه إلى المخاطر، مع بقاء القرار النهائي له.',
+      ],
+      persistence: 'لا توجد ذاكرة قضية دائمة في هذا الوضع؛ لا تدّعِ تذكر وقائع أو مستندات من جلسات سابقة غير موجودة في المدخلات الحالية.',
+    });
+  }
   const { jobId } = await enqueueStrategicAnalysis(
     caseId,
     STRATEGIC_TASK_STAGES[taskType],
