@@ -72,6 +72,56 @@ async function readRows(path: string) {
   return Array.isArray(rows) ? rows : [];
 }
 
+export async function loadOwnedCaseFile(userId: string, caseId: string): Promise<{ caseFile: any; updatedAt: string }> {
+  if (!userId || !validId(caseId)) {
+    const error: any = new Error('بيانات القضية غير صالحة.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const rows = await readRows(`${TABLE}?select=case_data,updated_at&case_id=eq.${encodeURIComponent(caseId)}&owner_user_id=eq.${encodeURIComponent(userId)}&limit=1`);
+  if (!rows.length) {
+    const error: any = new Error('لم يتم العثور على ملف القضية.');
+    error.statusCode = 404;
+    throw error;
+  }
+  return { caseFile: rows[0].case_data, updatedAt: rows[0].updated_at };
+}
+
+export async function persistOwnedCaseFile(
+  userId: string,
+  caseFile: any,
+  expectedUpdatedAt: string,
+): Promise<{ caseFile: any; updatedAt: string }> {
+  const validationError = validateCaseFile(caseFile);
+  if (validationError) {
+    const error: any = new Error(validationError);
+    error.statusCode = 400;
+    throw error;
+  }
+  const now = new Date().toISOString();
+  const stored = { ...caseFile, ownerUserId: userId, updatedAt: now };
+  const response = await supabase(
+    `${TABLE}?case_id=eq.${encodeURIComponent(caseFile.id)}&owner_user_id=eq.${encodeURIComponent(userId)}&updated_at=eq.${encodeURIComponent(expectedUpdatedAt)}`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ case_data: stored, updated_at: now }),
+    },
+  );
+  if (!response.ok) {
+    const error: any = new Error('تعذر حفظ نتائج التحليل في ملف القضية.');
+    error.statusCode = 503;
+    throw error;
+  }
+  const rows = await response.json().catch(() => []);
+  if (!Array.isArray(rows) || !rows.length) {
+    const error: any = new Error('تغير ملف القضية أثناء التحليل. احتُفظ بنتيجة المهمة، لكن لم تُكتب فوق التحديث الأحدث.');
+    error.statusCode = 409;
+    throw error;
+  }
+  return { caseFile: stored, updatedAt: now };
+}
+
 export default async function handler(req: any, res: any) {
   if (!['GET', 'POST', 'PUT', 'DELETE'].includes(String(req.method || '').toUpperCase())) {
     res.setHeader('Allow', 'GET, POST, PUT, DELETE');
