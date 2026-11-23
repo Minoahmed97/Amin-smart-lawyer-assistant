@@ -134,6 +134,27 @@ function jobStorageKey(type: SavedJobType, userId?: string, storageScope?: strin
   return `amin_ai_job_${type}_${user}`;
 }
 
+function draftJobPayloadKey(userId?: string): string {
+  return `amin_judicial_draft_job_payload_${sanitizeStoragePart(userId || 'default')}`;
+}
+
+function saveDraftJobPayload(userId: string | undefined, payload: Record<string, any>): void {
+  try { localStorage.setItem(draftJobPayloadKey(userId), JSON.stringify(payload)); }
+  catch (error) { console.warn('Draft recovery payload could not be persisted locally:', error); }
+}
+
+function readDraftJobPayload(userId?: string): Record<string, any> | null {
+  try {
+    const raw = localStorage.getItem(draftJobPayloadKey(userId));
+    const value = raw ? JSON.parse(raw) : null;
+    return value && typeof value === 'object' && typeof value.facts === 'string' ? value : null;
+  } catch { return null; }
+}
+
+function clearDraftJobPayload(userId?: string): void {
+  try { localStorage.removeItem(draftJobPayloadKey(userId)); } catch {}
+}
+
 export async function enableCompletionPushNotifications(): Promise<'enabled' | 'denied' | 'unsupported' | 'failed'> {
   try {
     if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return 'unsupported';
@@ -213,6 +234,12 @@ async function requestSavedJob<T extends Record<string, any>>(
   lifecycle?: SavedOcrTaskLifecycle,
 ): Promise<string> {
   const key = jobStorageKey(type, userId, storageScope);
+  let jobPayload: T = payload;
+  if (type === 'counter-brief') {
+    const savedPayload = readDraftJobPayload(userId);
+    if (!(typeof jobPayload.facts === 'string' && jobPayload.facts.trim()) && savedPayload) jobPayload = savedPayload as T;
+    if (typeof jobPayload.facts === 'string' && jobPayload.facts.trim()) saveDraftJobPayload(userId, jobPayload);
+  }
   let storage: Storage | null = null;
   try {
     if (typeof localStorage !== 'undefined') storage = localStorage;
@@ -277,7 +304,7 @@ async function requestSavedJob<T extends Record<string, any>>(
         headers,
         body: JSON.stringify({
           taskType: type,
-          payload,
+          payload: jobPayload,
           jobId,
           deferQueue: type === 'ocr' && lifecycle?.deferQueue === true,
         }),
@@ -312,11 +339,8 @@ async function requestSavedJob<T extends Record<string, any>>(
   let lastReportedOcrStatus = '';
   let transientFailures = 0;
   let consecutiveNotFound = 0;
-  const startedAt = Date.now();
-  // Let the server-side stale-job recovery run before the client gives up.
-  const NO_PROGRESS_TIMEOUT_MS = 12 * 60 * 1000;
-  let lastProgressAt = Date.now();
-  while (Date.now() - startedAt < 1000 * 60 * 20) {
+  let recoveryAttempted = false;
+  while (true) {
     await cancelIfAborted();
     try {
       const response = await fetch(`/api/gemini/jobs?id=${encodeURIComponent(jobId)}`, {
@@ -353,9 +377,6 @@ async function requestSavedJob<T extends Record<string, any>>(
       const currentText = String(data?.partialResult || data?.result || '');
       // Worker heartbeat updates updatedAt even when the model emits no text.
       // Only newly generated text counts as actual generation progress.
-      if (currentText.length > lastText.length) {
-        lastProgressAt = Date.now();
-      }
       if (currentText.length > lastText.length && currentText.startsWith(lastText)) {
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
@@ -369,6 +390,7 @@ async function requestSavedJob<T extends Record<string, any>>(
         const result = String(data.result || lastText);
         if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'completed');
         else if (storage) storage.removeItem(key);
+        if (type === 'counter-brief') clearDraftJobPayload(userId);
         return result;
       }
       if (data.status === 'failed') {
@@ -377,12 +399,7 @@ async function requestSavedJob<T extends Record<string, any>>(
         failure.jobId = jobId;
         if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'failed', failure.message);
         else clearJobReference();
-        throw failure;
-      }
-      if (Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS) {
-        const failure: any = new Error('لم يصل أي تحديث للمهمة خلال 4 دقائق ونصف. توقفت متابعة الانتظار، واحتُفظ بمعرّفها لمحاولة استعادة حالتها دون بدء توليد جديد.');
-        failure.noProgressTimeout = true;
-        failure.savedJobPending = true;
+        if (type === 'counter-brief') clearDraftJobPayload(userId);
         throw failure;
       }
     } catch (err: any) {
@@ -390,8 +407,35 @@ async function requestSavedJob<T extends Record<string, any>>(
         await cancelIfAborted();
       }
       const statusCode = Number(err?.statusCode);
+      if (statusCode === 404 && consecutiveNotFound >= 2 && type === 'counter-brief' &&
+          !recoveryAttempted && typeof jobPayload.facts === 'string' && jobPayload.facts.trim()) {
+        recoveryAttempted = true;
+        const restoreResponse = await fetch('/api/gemini/jobs', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ taskType: 'counter-brief', payload: jobPayload, jobId }),
+        }).catch(() => null);
+        if (restoreResponse?.ok) {
+          consecutiveNotFound = 0;
+          transientFailures = 0;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        const restoreError = await restoreResponse?.json().catch(() => ({}));
+        const restoreStatus = Number(restoreResponse?.status || 0);
+        if (restoreStatus >= 400 && restoreStatus < 500 && restoreStatus !== 408 && restoreStatus !== 429) {
+          const failure: any = new Error(restoreError?.error || 'تعذر استعادة مهمة الصياغة بنفس معرّفها وبياناتها المحفوظة.');
+          failure.statusCode = restoreStatus;
+          failure.savedJobPending = true;
+          throw failure;
+        }
+        consecutiveNotFound = 0;
+        transientFailures = 0;
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        continue;
+      }
       const permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429 && statusCode !== 404;
-      if (err?.noProgressTimeout || err?.terminalJobError || permanentClientError || (statusCode === 404 && consecutiveNotFound >= 6)) {
+      if (err?.terminalJobError || permanentClientError || (statusCode === 404 && consecutiveNotFound >= 6)) {
         if (statusCode === 404) {
           err.message = 'لم يتم العثور على المهمة مؤقتًا في سجل الخادم بعد عدة محاولات. احتفظنا بمعرّفها والجزء المحفوظ؛ لم نبدأ توليدًا جديدًا ولم نحذف مرجع الاستعادة. أعد فتح التطبيق للمحاولة مرة أخرى.';
           err.savedJobPending = true;
@@ -414,8 +458,27 @@ async function requestSavedJob<T extends Record<string, any>>(
   throw failure;
 }
 
-export async function resumeDraftCounterBrief(jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
-  return requestSavedJob('counter-brief', {}, onChunk, userId, jobId);
+export async function resumeDraftCounterBrief(
+  jobId: string,
+  onChunk?: (text: string) => void,
+  userId?: string,
+  fallbackPayload?: Record<string, any>,
+): Promise<string> {
+  let payload = readDraftJobPayload(userId) || fallbackPayload || {};
+  if (typeof payload.facts === 'string' && payload.facts.trim() && !payload.vaultContext) {
+    const effectiveWorkType = String(payload.customJudicialWorkType || payload.judicialWorkType || payload.briefType || '').trim();
+    const vaultContext = getLawyerStyleContext({
+      courtType: payload.courtType,
+      briefType: payload.briefType,
+      judicialWorkType: effectiveWorkType,
+      factsOrSubject: payload.facts,
+    }, userId);
+    payload = { ...payload, effectiveWorkType, vaultContext };
+  }
+  const partial = (() => { try { return localStorage.getItem('amin_judicial_draft_result') || ''; } catch { return ''; } })();
+  if (partial && !payload._resumePartialText) payload = { ...payload, _resumePartialText: partial };
+  if (typeof payload.facts === 'string' && payload.facts.trim()) saveDraftJobPayload(userId, payload);
+  return requestSavedJob('counter-brief', payload, onChunk, userId, jobId);
 }
 
 
@@ -690,7 +753,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
       (total, [key, value]) => total + (key !== 'caseAnalysisContext' && ['string', 'number', 'boolean'].includes(typeof value) ? String(value).length : 0),
       0,
     );
-    const contextBudget = Math.max(0, Math.min(100000, 900000 - existingPayloadLength - 1024));
+    const contextBudget = Math.max(0, Math.min(150000, 1200000 - existingPayloadLength - 1024));
     if (contextBudget && params.caseAnalysisContext?.trim()) {
       requestPayload.caseAnalysisContext = params.caseAnalysisContext.trim().slice(0, contextBudget);
     }
