@@ -419,6 +419,12 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
                 </button>
                 {jobError && <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-500">{jobError}</div>}
                 {jobStatus === 'completed' && <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-600 flex items-center gap-2"><CheckCircle2 className="w-4 h-4 shrink-0" /> اكتمل التحليل. {jobResult?.persisted ? 'تم حفظ النتائج في ملف القضية.' : 'يرجى مراجعة حالة الحفظ والتنبيهات أدناه.'}</div>}
+                {jobResult?.result?.warnings?.length ? (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm leading-6 text-amber-600">
+                    <strong>تنبيهات المحرك:</strong>
+                    <ul className="mt-1 list-disc pr-5">{jobResult.result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+                  </div>
+                ) : null}
               </div>
 
               {strategy && (
