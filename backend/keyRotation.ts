@@ -31,6 +31,9 @@ let activeKeyIndex = 0;
 const permanentlyInvalidKeys = new Set<string>();
 const permanentlyInvalidOCRKeys = new Set<string>();
 const keyCooldownUntil = new Map<string, number>();
+// Quota-only cooldown is tracked separately so legal drafting can keep trying
+// keys that failed for any reason other than confirmed quota exhaustion.
+const quotaKeyCooldownUntil = new Map<string, number>();
 const keyModelCooldownUntil = new Map<string, number>();
 const modelCooldownUntil = new Map<string, number>();
 const ocrKeyCooldownUntil = new Map<string, number>();
@@ -56,27 +59,39 @@ function isCooling(map: Map<string, number>, id: string, now = Date.now()): bool
   return true;
 }
 
-function markRotationFailure(key: string, model: string, error: any, pool: 'general' | 'ocr' = 'general'): 'quota' | 'invalid' | 'temporary' | 'other' {
+function markRotationFailure(
+  key: string,
+  model: string,
+  error: any,
+  pool: 'general' | 'ocr' = 'general',
+  kindOverride?: 'quota' | 'invalid' | 'temporary' | 'other',
+  quotaOnlyKeyExclusion = false,
+): 'quota' | 'invalid' | 'temporary' | 'other' {
   const keyCooldowns = pool === 'ocr' ? ocrKeyCooldownUntil : keyCooldownUntil;
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const invalidKeys = pool === 'ocr' ? permanentlyInvalidOCRKeys : permanentlyInvalidKeys;
   const status = Number(error?.status || error?.statusCode || error?.response?.status);
   // Keep the pre-existing OCR quota classification unchanged; the stricter
   // confirmed-quota rule applies to the general legal-drafting key pool.
-  const kind = pool === 'ocr' && status === 429 ? 'quota' : getGeminiErrorKind(error);
+  const kind = pool === 'ocr' && status === 429 ? 'quota' : (kindOverride || getGeminiErrorKind(error));
   const pair = rotationPairKey(key, model);
   const message = String(error?.message || '').toLowerCase();
   const now = Date.now();
   if (kind === 'invalid') {
-    invalidKeys.add(key);
-    keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
+    // Drafting must not blacklist a key because one model/request rejected it;
+    // keep rotating through its other models and the remaining configured keys.
+    if (!quotaOnlyKeyExclusion) {
+      invalidKeys.add(key);
+      keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
+    }
   } else if (kind === 'quota') {
-    // A key is skipped globally only after Gemini confirms quota exhaustion.
+    // Only a confirmed exhausted quota excludes this key from legal drafting.
     keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
+    if (pool === 'general') quotaKeyCooldownUntil.set(key, now + KEY_QUOTA_COOLDOWN_MS);
     pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
-  } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
+  } else if (!quotaOnlyKeyExclusion && (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message))) {
     pairCooldowns.set(pair, now + MODEL_BUSY_COOLDOWN_MS);
-  } else if (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message)) {
+  } else if (!quotaOnlyKeyExclusion && (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message))) {
     pairCooldowns.set(pair, now + (status === 504 || /timeout|timed out|network|connection|socket|econn|fetch failed/.test(message) ? CONNECTION_COOLDOWN_MS : MODEL_PAIR_COOLDOWN_MS));
   }
   return kind;
@@ -135,6 +150,14 @@ function safeGeminiDiagnostic(error: any): string {
     .replace(/(?:AIza|AQ\.)[A-Za-z0-9._-]{20,}/g, '[REDACTED_GEMINI_KEY]')
     .replace(/\\bBearer\\s+[^\\s,;]+/gi, 'Bearer [REDACTED]')
     .slice(0, 500);
+}
+
+function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporary' | 'other' {
+  // Google embeds help URLs in some 429 messages. A URL containing
+  // "rate-limits" must not override the actual "current quota exceeded" text.
+  const rawMessage = String(error?.message || error?.error?.message || error?.response?.data?.error?.message || error || '');
+  const messageWithoutUrls = rawMessage.replace(/https?:\\/\\/[^\\s"'<>]+/gi, ' ');
+  return getGeminiErrorKind({ ...(error && typeof error === 'object' ? error : {}), message: messageWithoutUrls });
 }
 
 function shouldRetryGeminiError(error: any): boolean {
@@ -472,6 +495,8 @@ type KeyRotationExecutionOptions = {
   startKey?: string;
   /** Mutable per-generation ledger so failed model attempts are not retried on continuation. */
   attemptedPairs?: Set<string>;
+  /** Drafting excludes a key only for confirmed quota exhaustion. */
+  draftingMode?: boolean;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -486,12 +511,13 @@ export async function executeWithKeyRotation<T>(
     new Error('انتهت المهلة المتاحة لتوليد النتيجة قبل اكتمالها.'),
     { status: 504, statusCode: 504 },
   );
-  const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
+  const draftingMode = executionOptions?.draftingMode === true;
+  const keys = (await getAvailableGeminiKeys()).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
-  const quotaExhaustedKeys = new Set<string>(keys.filter((key) => isCooling(keyCooldownUntil, key)));
+  const quotaExhaustedKeys = new Set<string>(keys.filter((key) => isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, key)));
   let lastError: any = null;
   let attemptedModelCount = 0;
   const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
@@ -500,7 +526,7 @@ export async function executeWithKeyRotation<T>(
   for (let offset = 0; offset < keys.length; offset++) {
     const currentKeyIndex = (startIndex + offset) % keys.length;
     const currentKey = keys[currentKeyIndex];
-    if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
+    if (isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey) || (!draftingMode && permanentlyInvalidKeys.has(currentKey))) continue;
     const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
 
     for (const model of models) {
@@ -535,7 +561,7 @@ export async function executeWithKeyRotation<T>(
           return result;
         } catch (error: any) {
           lastError = error;
-          const kind = getGeminiErrorKind(error);
+          const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
           const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
           console.warn('[Gemini rotation] attempt failed', {
             key: maskGeminiKey(currentKey),
@@ -552,14 +578,14 @@ export async function executeWithKeyRotation<T>(
             continue;
           }
 
-          markRotationFailure(currentKey, model, error, 'general');
+          markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
           if (kind === 'quota') quotaExhaustedKeys.add(currentKey);
-          if (permanentlyInvalidKeys.has(currentKey)) break;
+          if (!draftingMode && permanentlyInvalidKeys.has(currentKey)) break;
           break;
         }
       }
       if (pairSucceeded) break;
-      if (permanentlyInvalidKeys.has(currentKey) || isCooling(keyCooldownUntil, currentKey)) break;
+      if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey)) break;
     }
   }
 
@@ -590,20 +616,21 @@ export async function executeWithKeyRotationStream(
 ): Promise<void> {
   const deadlineAt = Number(executionOptions?.deadlineAt || (Date.now() + 270000));
   const timeoutError = () => Object.assign(new Error('انتهت المهلة المتاحة للتوليد.'), { status: 504, statusCode: 504 });
-  const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
+  const draftingMode = executionOptions?.draftingMode === true;
+  const keys = (await getAvailableGeminiKeys()).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
   let lastError: any = null;
-  const quotaExhaustedKeys = new Set<string>(keys.filter((key) => isCooling(keyCooldownUntil, key)));
+  const quotaExhaustedKeys = new Set<string>(keys.filter((key) => isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, key)));
   const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
   const startIndex = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
 
   for (let offset = 0; offset < keys.length; offset++) {
     const currentKeyIndex = (startIndex + offset) % keys.length;
     const currentKey = keys[currentKeyIndex];
-    if (isCooling(keyCooldownUntil, currentKey) || permanentlyInvalidKeys.has(currentKey)) continue;
+    if (isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey) || (!draftingMode && permanentlyInvalidKeys.has(currentKey))) continue;
     const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
 
     for (const model of models) {
@@ -642,7 +669,7 @@ export async function executeWithKeyRotationStream(
           return;
         } catch (error: any) {
           lastError = error;
-          const kind = getGeminiErrorKind(error);
+          const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
           const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
           console.warn('[Gemini stream rotation] attempt failed', {
             key: maskGeminiKey(currentKey),
@@ -654,7 +681,7 @@ export async function executeWithKeyRotationStream(
             reason: safeGeminiDiagnostic(error),
           });
 
-          markRotationFailure(currentKey, model, error, 'general');
+          markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
           if (kind === 'quota') quotaExhaustedKeys.add(currentKey);
 
           // Once a stream has delivered text, preserve it and let the document
@@ -667,11 +694,11 @@ export async function executeWithKeyRotationStream(
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
           }
-          if (permanentlyInvalidKeys.has(currentKey) || isCooling(keyCooldownUntil, currentKey)) break;
+          if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey)) break;
           break;
         }
       }
-      if (permanentlyInvalidKeys.has(currentKey) || isCooling(keyCooldownUntil, currentKey)) break;
+      if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey)) break;
     }
   }
 
