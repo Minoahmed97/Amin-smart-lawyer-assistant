@@ -130,7 +130,7 @@ function maskGeminiKey(key: string): string {
 
 function safeGeminiDiagnostic(error: any): string {
   return String(error?.message || error || 'unknown')
-    .replace(/(?:AIza|AQ\\.)[A-Za-z0-9._-]{20,}/g, '[REDACTED_GEMINI_KEY]')
+    .replace(/(?:AIza|AQ\.)[A-Za-z0-9._-]{20,}/g, '[REDACTED_GEMINI_KEY]')
     .replace(/\\bBearer\\s+[^\\s,;]+/gi, 'Bearer [REDACTED]')
     .slice(0, 500);
 }
