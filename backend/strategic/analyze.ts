@@ -67,6 +67,12 @@ export default async function handler(req: any, res: any) {
       ...caseFile,
       analysisSnapshots: [...caseFile.analysisSnapshots, ...result.completedStages.map((stage) => result.stageResults[stage]!)].slice(-100),
       memory: [...caseFile.memory, ...memoryEntries].slice(-1000),
+      contextChanges: caseFile.contextChanges.map((change) =>
+        change.reevaluationStatus === 'pending'
+          ? { ...change, reevaluationStatus: 'completed' as const }
+          : change,
+      ),
+      lastAnalyzedAt: createdAt,
       ...(result.strategy ? { strategy: result.strategy } : {}),
     };
 
