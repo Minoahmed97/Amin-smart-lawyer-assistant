@@ -128,7 +128,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     setQualifyError('');
     void resumeSavedAiTask('qualify', jobId, (chunk) => {
       if (active && operationId === resultOperationRef.current) setQualificationResult((current) => {
-        const next = current + chunk;
+        const next = !current ? chunk : chunk.startsWith(current) ? chunk : current.startsWith(chunk) ? current : current + chunk;
         persistentStorage.setItem('judicial_qualify_result', next);
         return next;
       });
