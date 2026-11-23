@@ -9,10 +9,16 @@ export default async function handler(req: any, res: any) {
   try {
     requireAdmin(req);
     const status = getKeysStatus();
-    const [cloudKeys, runtimeStatuses] = await Promise.all([
-      fetchServerCloudGeminiKeys(),
-      fetchServerCloudGeminiKeyRuntimeStatuses(),
-    ]);
+
+    // The primary key list must remain readable even when optional runtime-status
+    // columns have not yet been migrated in Supabase.
+    const cloudKeys = await fetchServerCloudGeminiKeys();
+    let runtimeStatuses: Awaited<ReturnType<typeof fetchServerCloudGeminiKeyRuntimeStatuses>> = [];
+    try {
+      runtimeStatuses = await fetchServerCloudGeminiKeyRuntimeStatuses();
+    } catch (runtimeError) {
+      console.warn('Could not read optional Gemini key runtime statuses:', runtimeError);
+    }
     const runtimeByMasked = new Map(runtimeStatuses.map((item) => [item.masked, item]));
     const merged = [...status.keys];
     for (const key of cloudKeys) {
@@ -34,6 +40,7 @@ export default async function handler(req: any, res: any) {
       });
     }
     return res.json({
+      ok: true,
       ...status,
       keys: merged,
       totalCount: merged.length,
@@ -42,6 +49,6 @@ export default async function handler(req: any, res: any) {
     });
   } catch (err: any) {
     console.error('Error in keys status handler:', err);
-    return res.status(err?.statusCode || 500).json({ error: err?.statusCode ? err.message : 'حدث خطأ في النظام.' });
+    return res.status(err?.statusCode || 500).json({ ok: false, error: err instanceof Error ? err.message : 'حدث خطأ في النظام.' });
   }
 }
