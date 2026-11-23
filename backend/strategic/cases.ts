@@ -49,9 +49,14 @@ function validateCaseFile(value: any): string {
   if (value.schemaVersion !== 1) return 'إصدار ملف القضية غير مدعوم.';
   if (!validId(value.id)) return 'معرّف ملف القضية غير صالح.';
   if (typeof value.title !== 'string' || !value.title.trim()) return 'يجب إدخال عنوان لملف القضية.';
-  if (!Array.isArray(value.parties) || !Array.isArray(value.originalFacts) ||
-      !Array.isArray(value.documents) || !Array.isArray(value.memory) ||
-      !Array.isArray(value.contextChanges)) return 'بنية ملف القضية غير مكتملة.';
+  const requiredArrays = [
+    'parties', 'requests', 'decisions', 'keyDates', 'originalFacts',
+    'documents', 'evidence', 'legalIssues', 'defenses', 'opponentPosition',
+    'analysisSnapshots', 'memory', 'contextChanges',
+  ];
+  if (requiredArrays.some((key) => !Array.isArray(value[key]))) {
+    return 'بنية ملف القضية غير مكتملة.';
+  }
   if (jsonSize(value) > MAX_CASE_BYTES) return 'حجم ملف القضية يتجاوز الحد المسموح. قسّم النصوص أو المستندات الكبيرة.';
   return '';
 }
