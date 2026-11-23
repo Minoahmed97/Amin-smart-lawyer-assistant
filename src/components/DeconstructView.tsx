@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
-import { getActiveStrategicCaseContext } from '../strategic/caseFileService.ts';
+import { prepareStrategicTaskContext } from '../strategic/caseFileService.ts';
 import { StrategicCaseSelector } from './StrategicCaseSelector.tsx';
 import { StyleTemplateSelector } from './StyleTemplateSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
@@ -178,7 +178,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setDeconstructError('');
     setAnalysisResult('');
     try {
-      const strategicCaseContext = await getActiveStrategicCaseContext(userId);
+      const strategicCaseContext = await prepareStrategicTaskContext(userId, 'deconstruct');
       const result = await deconstructBrief({
         opponentBriefText,
         courtType,
