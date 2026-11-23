@@ -40,6 +40,7 @@ const ocrModelCooldownUntil = new Map<string, number>();
 let nextGeneralKeyStart = 0;
 let nextOCRKeyStart = 0;
 const KEY_QUOTA_COOLDOWN_MS = 60_000;
+const MAX_MODELS_PER_KEY_PER_REQUEST = 3;
 const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
@@ -70,10 +71,20 @@ function markRotationFailure(key: string, model: string, error: any, pool: 'gene
   } else if (kind === 'quota') {
     // الحصة المستنفدة تخص المفتاح؛ لا نستبعد زوجاً واحداً ونترك بقية نماذج المفتاح تدور.
     keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
+    if (pool === 'ocr') pairCooldowns.set(rotationPairKey(key, model), now + KEY_QUOTA_COOLDOWN_MS);
+  } else if (pool === 'ocr') {
+    // نحافظ على سلوك تبريد OCR السابق؛ تغيير عدم استبعاد الأخطاء المؤقتة يخص التدوير العام للصياغة.
+    const status = Number(error?.status || error?.statusCode || error?.response?.status);
+    const message = String(error?.message || '').toLowerCase();
+    const pair = rotationPairKey(key, model);
+    if (status === 429 || status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
+      pairCooldowns.set(pair, now + MODEL_BUSY_COOLDOWN_MS);
+    } else if (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message)) {
+      pairCooldowns.set(pair, now + CONNECTION_COOLDOWN_MS);
+    }
   }
 
-  // الأخطاء المؤقتة وأخطاء الشبكة والخادم لا تضع المفتاح أو الزوج في cooldown،
-  // وتظل المحاولة متاحة في التدوير الحالي وطلبات الاستكمال التالية.
+  // في التدوير العام لا تُستبعد الأخطاء المؤقتة ولا تُعطل المفتاح أو زوج النموذج.
   return kind;
 }
 
@@ -92,11 +103,13 @@ function reserveStartIndex(count: number, pool: 'general' | 'ocr'): number {
 function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, ): string[] {
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
-  return models.filter((model) =>
+  const available = models.filter((model) =>
     !isCooling(modelCooldowns, model, now) &&
     !isCooling(pairCooldowns, rotationPairKey(key, model), now) &&
     !avoidPairs?.has(rotationPairKey(key, model))
   );
+  // نوسّع تدوير مسار الصياغة العام لكل النماذج؛ ونحافظ على حد OCR السابق دون تغيير.
+  return pool === 'ocr' ? available.slice(0, MAX_MODELS_PER_KEY_PER_REQUEST) : available;
 }
 
 function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
