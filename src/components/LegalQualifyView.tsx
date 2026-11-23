@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { qualifyLegalCase, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { getActiveStrategicCaseContext } from '../strategic/caseFileService.ts';
+import { StrategicCaseSelector } from './StrategicCaseSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
@@ -195,6 +196,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-5 space-y-4 sm:space-y-5" style={{ fontFamily: 'Cairo, sans-serif' }}>
+      <StrategicCaseSelector userId={userId} />
       {/* Top Banner */}
       <div className="bg-[#0f172a] border-2 border-[#b45309] rounded-2xl p-4 sm:p-5 shadow-xl">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
