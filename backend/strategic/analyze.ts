@@ -27,7 +27,7 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-strategic-analysis', 5, 10 * 60 * 1000);
     const { session } = await requireActiveSession(req);
     await enforceAiCooldown(req, session);
-    limitBodyString(body.additionalInstructions, 12000, 'التعليمات الإضافية');
+    limitBodyString(body.additionalInstructions, 110000, 'التعليمات الإضافية');
     const loaded = await loadOwnedCaseFile(session.userId, caseId);
     const caseFile = loaded.caseFile;
 
