@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
 import { getActiveStrategicCaseContext } from '../strategic/caseFileService.ts';
+import { StrategicCaseSelector } from './StrategicCaseSelector.tsx';
 import { StyleTemplateSelector } from './StyleTemplateSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { StyleTemplate, DEFAULT_STYLE_TEMPLATES } from '../data/styleTemplates.ts';
@@ -294,6 +295,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-5 space-y-4 sm:space-y-5" style={{ fontFamily: 'Cairo, sans-serif' }}>
+      <StrategicCaseSelector userId={userId} />
       {/* Top Judicial Banner */}
       <div className="bg-[#0f172a] border-2 border-[#b45309] rounded-2xl p-4 sm:p-5 shadow-xl">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
