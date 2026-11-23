@@ -1,5 +1,4 @@
 import { requireAdmin } from '../auth.ts';
-import { getOpenRouterModels } from '../openrouterAdapter.ts';
 import { getVercelGeminiKeys, testGeminiKey } from '../keyRotation.ts';
 import { fetchServerCloudGeminiKeys } from '../supabaseSync.ts';
 
