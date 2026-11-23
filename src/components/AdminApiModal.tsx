@@ -180,10 +180,19 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
 
   const fetchKeysStatus = () => {
     setIsRefreshingStatus(true);
-    fetch('/api/admin/keys-status', { headers: { 'x-admin-session': getAdminSessionToken() } })
-      .then((res) => res.json())
+    fetch('/api/admin/keys-status', {
+      headers: { 'x-admin-session': getAdminSessionToken(), 'Cache-Control': 'no-store' },
+      cache: 'no-store',
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false || !Array.isArray(data?.keys)) {
+          throw new Error(data?.error || data?.message || `تعذر قراءة مفاتيح Gemini من الخادم (HTTP ${res.status}).`);
+        }
+        return data;
+      })
       .then((data) => {
-        const allKeys = data && Array.isArray(data.keys) ? data.keys : [];
+        const allKeys = data.keys;
         setKeyStatusData({
           isConfigured: allKeys.length > 0,
           totalCount: allKeys.length,
@@ -191,9 +200,14 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
           keys: allKeys,
           rotationEnabled: allKeys.length > 1,
         });
+        setKeyActionMsg((prev) => prev?.text?.startsWith('تعذر تحميل مفاتيح Gemini:') ? null : prev);
       })
-      .catch(() => {
-        setKeyStatusData((prev) => ({ ...prev, isConfigured: false, totalCount: 0, keys: [] }));
+      .catch((error: any) => {
+        // Keep the last known list; a read failure must not masquerade as zero saved keys.
+        setKeyActionMsg({
+          type: 'error',
+          text: `تعذر تحميل مفاتيح Gemini: ${error?.message || 'حدث خطأ غير معروف أثناء القراءة.'}`,
+        });
       })
       .finally(() => setIsRefreshingStatus(false));
   };
@@ -494,7 +508,9 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   };
 
   useEffect(() => {
-
+    if (isOpen && isAuthenticated) {
+      fetchKeysStatus();
+    }
   }, [isOpen, isAuthenticated]);
 
   useEffect(() => {
@@ -510,7 +526,6 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
       await loginAdmin(passwordInput.trim());
       setIsAuthenticated(true);
       sessionStorage.setItem('admin_owner_logged_in', 'true');
-      fetchKeysStatus();
       loadAnalytics();
     } catch (err: any) {
       setPasswordError(err?.message || 'رمز المرور الإداري غير صحيح.');
