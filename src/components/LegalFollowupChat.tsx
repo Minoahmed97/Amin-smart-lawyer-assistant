@@ -193,7 +193,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
       }
 
       const strategicTaskType = taskType === 'draft' ? 'drafting' : taskType === 'qualify' ? 'qualification' : 'deconstruct';
-      const strategicCaseContext = await prepareStrategicTaskContext(String(userId || ''), strategicTaskType);
+      const strategicCaseContext = await prepareStrategicTaskContext(String(userId || ''), strategicTaskType, { originalContext: requestOriginalContext, currentResult: requestResult, latestQuestion: question });
       const headers = {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${sessionToken}`,
