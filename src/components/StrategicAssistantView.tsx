@@ -253,6 +253,7 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
 
   const strategy = jobResult?.result?.strategy || activeCase?.strategy;
   const snapshots = activeCase?.analysisSnapshots || [];
+  const pendingContextChanges = activeCase?.contextChanges.filter((change) => change.reevaluationStatus === 'pending') || [];
   const visibleFacts = showAllFacts ? activeCase?.originalFacts || [] : (activeCase?.originalFacts || []).slice(-5);
   const stageSummary = (stage: StrategicStage) => [...snapshots].reverse().find((item) => item.stage === stage);
 
@@ -401,6 +402,12 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
 
               <div className={`rounded-2xl border p-4 sm:p-5 space-y-4 ${panel}`}>
                 <div className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-amber-500" /><h3 className="font-black">إعداد التحليل الاستراتيجي</h3></div>
+                {pendingContextChanges.length > 0 && (
+                  <div className={`rounded-xl border p-3 text-sm leading-6 ${isLight ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-amber-500/40 bg-amber-950/30 text-amber-100'}`}>
+                    <strong>توجد تغييرات لم يُعَد تقييم أثرها بعد ({pendingContextChanges.length}).</strong>
+                    <p className="mt-1">أُضيفت وقائع أو مستندات أو تعديلات بعد آخر تحليل. شغّل التحليل مجدداً لتحديث النتائج؛ لن تُمحى النسخ السابقة.</p>
+                  </div>
+                )}
                 <p className={`text-sm leading-6 ${muted}`}>اختر المراحل التي تريد تنفيذها. يبدأ التحليل كمهمة خلفية، وتُحفظ النتيجة في ذاكرة القضية عند اكتمالها.</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {STAGES.map((stage) => <label key={stage.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer ${isLight ? 'border-slate-200' : 'border-slate-700'}`}><input type="checkbox" checked={selectedStages.includes(stage.id)} onChange={() => toggleStage(stage.id)} className="accent-amber-600" /><span>{stage.label}</span></label>)}
@@ -408,7 +415,7 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
                 <textarea className={inputClass} rows={2} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="تعليمات إضافية للمحرك (اختياري)" maxLength={12000} />
                 <button onClick={() => void handleStartAnalysis()} disabled={['queued', 'running'].includes(jobStatus) || !selectedStages.length} className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-3 disabled:opacity-50">
                   {['queued', 'running'].includes(jobStatus) ? <Loader2 className="w-5 h-5 animate-spin" /> : <BrainCircuit className="w-5 h-5" />}
-                  {jobStatus === 'running' ? 'جارٍ تحليل القضية...' : jobStatus === 'queued' ? 'التحليل في قائمة الانتظار...' : 'ابدأ التحليل الاستراتيجي'}
+                  {jobStatus === 'running' ? 'جارٍ تحليل القضية...' : jobStatus === 'queued' ? 'التحليل في قائمة الانتظار...' : {pendingContextChanges.length ? 'أعد تقييم القضية بعد التغييرات' : 'ابدأ التحليل الاستراتيجي'}
                 </button>
                 {jobError && <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-500">{jobError}</div>}
                 {jobStatus === 'completed' && <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-600 flex items-center gap-2"><CheckCircle2 className="w-4 h-4 shrink-0" /> اكتمل التحليل. {jobResult?.persisted ? 'تم حفظ النتائج في ملف القضية.' : 'يرجى مراجعة حالة الحفظ والتنبيهات أدناه.'}</div>}
