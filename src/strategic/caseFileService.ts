@@ -337,3 +337,72 @@ export async function getStrategicAnalysisJob(jobId: string): Promise<StrategicA
     updatedAt: data.updatedAt ? String(data.updatedAt) : null,
   };
 }
+
+
+const ACTIVE_STRATEGIC_CASE_PREFIX = 'amin_active_strategic_case_v1:';
+
+export function setActiveStrategicCase(userId: string, caseId: string): void {
+  if (!userId) return;
+  try {
+    const key = ACTIVE_STRATEGIC_CASE_PREFIX + userId;
+    if (caseId) localStorage.setItem(key, caseId);
+    else localStorage.removeItem(key);
+  } catch {}
+}
+
+export async function getActiveStrategicCaseContext(userId: string): Promise<string> {
+  if (!userId) return '';
+  let caseId = '';
+  try { caseId = localStorage.getItem(ACTIVE_STRATEGIC_CASE_PREFIX + userId) || ''; } catch {}
+  if (!caseId) return '';
+
+  const caseFile = await getCaseFile(caseId);
+  if (caseFile.ownerUserId && caseFile.ownerUserId !== userId) {
+    setActiveStrategicCase(userId, '');
+    throw new Error('ملف القضية النشط لا يخص الحساب الحالي. اختر ملف قضية تابعاً لحسابك.');
+  }
+
+  const context = {
+    contextType: 'active_strategic_case',
+    caseId: caseFile.id,
+    title: caseFile.title,
+    court: caseFile.court || '',
+    circuit: caseFile.circuit || '',
+    caseNumber: caseFile.caseNumber || '',
+    caseType: caseFile.caseType || '',
+    clientRole: caseFile.clientRole || '',
+    parties: caseFile.parties,
+    requests: caseFile.requests,
+    decisions: caseFile.decisions,
+    keyDates: caseFile.keyDates,
+    attorneyEnteredFacts: caseFile.originalFacts,
+    extractedDocuments: caseFile.documents.map((document) => ({
+      id: document.id,
+      name: document.name,
+      kind: document.kind,
+      extractionStatus: document.extractionStatus,
+      extractedText: document.extractedText || '',
+      factLinks: document.factLinks,
+    })),
+    evidence: caseFile.evidence,
+    legalIssues: caseFile.legalIssues,
+    defenses: caseFile.defenses,
+    opponentPosition: caseFile.opponentPosition,
+    strategy: caseFile.strategy || null,
+    latestAnalysis: caseFile.analysisSnapshots.slice(-14),
+    attorneyAndAnalysisMemory: caseFile.memory.slice(-80),
+    pendingContextChanges: caseFile.contextChanges.filter((change) => change.reevaluationStatus === 'pending'),
+    provenanceRules: [
+      'افصل مدخلات المحامي عن النصوص المستخرجة من المستندات وعن نتائج التحليل والاستنتاجات.',
+      'لا تحول أقوال الخصوم أو نتائج OCR غير المتحقق منها إلى وقائع ثابتة.',
+      'لا تخترع وقائع أو مستندات أو مواد أو أحكاماً أو تواريخ أو طلبات.',
+      'عند التعارض، أظهر التعارض ومصدر كل معلومة ولا تحسمه من تلقاء نفسك.',
+      'استخدم هذا السياق كملف قضية مستمر مساعد، مع إعطاء الأولوية للمدخلات الصريحة الحالية للمحامي عند تعارضها.',
+    ],
+  };
+  const serialized = JSON.stringify(context);
+  if (serialized.length > 120000) {
+    throw new Error('السياق الاستراتيجي للقضية أكبر من الحد الآمن للإرسال. قلّل المستندات أو أجرِ التحليل على أجزاء قبل ربطه بهذه المهمة.');
+  }
+  return serialized;
+}
