@@ -204,6 +204,7 @@ function safePayload(input: any, taskType: string) {
     }
     limitBodyString(input.originalContext, 100000, 'سياق القضية');
     limitBodyString(input.result, 120000, 'النتيجة الأصلية');
+    limitBodyString(input.strategicCaseContext, 120000, 'ملف القضية الاستراتيجي');
     if (!Array.isArray(input?.messages) || input.messages.length < 1 || input.messages.length > 40) {
       const error: any = new Error('سجل المحادثة غير صالح.');
       error.statusCode = 400;
@@ -225,6 +226,7 @@ function safePayload(input: any, taskType: string) {
     payload.taskType = chatType;
     payload.originalContext = input.originalContext;
     payload.result = input.result;
+    payload.strategicCaseContext = typeof input.strategicCaseContext === 'string' ? input.strategicCaseContext : '';
     payload.messages = JSON.stringify(input.messages);
     // Some deployed database schemas constrain task_type to the original job types.
     // Persist legal-chat under the existing 'refine' type and route it explicitly in the worker.
