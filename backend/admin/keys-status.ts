@@ -1,6 +1,6 @@
 import { getKeysStatus } from '../keyRotation.ts';
 import { requireAdmin } from '../auth.ts';
-import { fetchServerCloudGeminiKeys } from '../supabaseSync.ts';
+import { fetchServerCloudGeminiKeys, fetchServerCloudGeminiKeyRuntimeStatuses } from '../supabaseSync.ts';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'GET') {
@@ -9,21 +9,29 @@ export default async function handler(req: any, res: any) {
   try {
     requireAdmin(req);
     const status = getKeysStatus();
-    const cloudKeys = await fetchServerCloudGeminiKeys();
-    const existing = new Set(status.keys.map((k: any) => k.masked));
+    const [cloudKeys, runtimeStatuses] = await Promise.all([
+      fetchServerCloudGeminiKeys(),
+      fetchServerCloudGeminiKeyRuntimeStatuses(),
+    ]);
+    const runtimeByMasked = new Map(runtimeStatuses.map((item) => [item.masked, item]));
     const merged = [...status.keys];
     for (const key of cloudKeys) {
       const masked = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : '****';
-      if (!existing.has(masked)) {
-        merged.push({
-          index: merged.length,
-          id: `cloud_${merged.length + 1}`,
-          name: 'مفتاح مركزي من Supabase',
-          masked,
-          prefix: key.slice(0, 2),
-          isActive: true,
-        });
+      const runtime = runtimeByMasked.get(masked);
+      const existingKey = merged.find((item: any) => item.masked === masked);
+      if (existingKey) {
+        if (runtime) Object.assign(existingKey, runtime);
+        continue;
       }
+      merged.push({
+        index: merged.length,
+        id: `cloud_${merged.length + 1}`,
+        name: 'مفتاح مركزي من Supabase',
+        masked,
+        prefix: key.slice(0, 2),
+        isActive: true,
+        ...(runtime || {}),
+      });
     }
     return res.json({
       ...status,
