@@ -1330,3 +1330,5 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
     </div>
   );
 };
+
+// Vercel rebuild trigger: JSX handler syntax verified.
