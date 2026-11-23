@@ -6,6 +6,7 @@ import { LegalQualifyView } from './LegalQualifyView.tsx';
 import { DefensesCodexView } from './DefensesCodexView.tsx';
 import { LegalVaultView } from './LegalVaultView.tsx';
 import { CommunityWallView } from './CommunityWallView.tsx';
+import { StrategicAssistantView } from './StrategicAssistantView.tsx';
 import { BroadcastBanner } from './BroadcastBanner.tsx';
 import { AdminApiModal } from './AdminApiModal.tsx';
 import { DraftingFormData } from '../types.ts';
@@ -50,10 +51,10 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   };
 
   // Tab State Persistence
-  const [activeTab, setActiveTab] = useState<'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community'>(() => {
+  const [activeTab, setActiveTab] = useState<'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community' | 'strategic'>(() => {
     try {
       const savedTab = persistentStorage.getItem('judicial_active_tab', '');
-      if (savedTab && ['draft', 'deconstruct', 'qualify', 'defenses', 'vault', 'community'].includes(savedTab)) {
+      if (savedTab && ['draft', 'deconstruct', 'qualify', 'defenses', 'vault', 'community', 'strategic'].includes(savedTab)) {
         return savedTab as any;
       }
     } catch {}
@@ -84,7 +85,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     setActiveTab('deconstruct');
   };
 
-  const handleTabChange = (targetTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community') => {
+  const handleTabChange = (targetTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community' | 'strategic') => {
     setActiveTab(targetTab);
   };
 
@@ -248,6 +249,10 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
                 <CommunityWallView theme={theme} />
               </div>
+            </div>
+
+            <div style={{ display: activeTab === 'strategic' ? 'block' : 'none' }}>
+              <StrategicAssistantView userId={userId} theme={theme} />
             </div>
           </>
         )}
