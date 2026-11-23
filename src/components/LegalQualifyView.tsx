@@ -151,7 +151,7 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     setQualifyError('');
     setQualificationResult('');
     try {
-      const strategicCaseContext = await prepareStrategicTaskContext(userId, 'qualification');
+      const strategicCaseContext = await prepareStrategicTaskContext(userId, 'qualification', { disputeDetails, clientGoals });
       const result = await qualifyLegalCase(disputeDetails, clientGoals, (chunk) => {
         if (operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
       }, userId, strategicCaseContext);
