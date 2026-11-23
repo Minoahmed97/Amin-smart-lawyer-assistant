@@ -158,11 +158,35 @@ function safeGeminiDiagnostic(error: any): string {
 }
 
 function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporary' | 'other' {
-  // Google embeds help URLs in some 429 messages. A URL containing
-  // "rate-limits" must not override the actual "current quota exceeded" text.
-  const rawMessage = String(error?.message || error?.error?.message || error?.response?.data?.error?.message || error || '');
-  const messageWithoutUrls = rawMessage.replace(/https?:\/\/[^\s"'<>]+/gi, ' ');
-  return getGeminiErrorKind({ ...(error && typeof error === 'object' ? error : {}), message: messageWithoutUrls });
+  // Gemini sometimes wraps its JSON error inside error.message and includes a
+  // help URL containing "rate-limits". Parse nested payloads and remove URLs
+  // before classifying so that a confirmed quota exhaustion is not downgraded
+  // to a generic temporary 429.
+  const messages: string[] = [];
+  const addMessage = (value: any) => {
+    if (typeof value !== 'string' || !value.trim()) return;
+    messages.push(value);
+    try {
+      const parsed = JSON.parse(value);
+      const nested = parsed?.error || parsed;
+      if (typeof nested?.message === 'string' && nested.message !== value) messages.push(nested.message);
+      if (typeof nested?.status === 'string') messages.push(nested.status);
+    } catch {}
+  };
+  addMessage(error?.message);
+  addMessage(error?.error?.message);
+  addMessage(error?.response?.data?.error?.message);
+  if (!messages.length) addMessage(String(error || ''));
+  const messageWithoutUrls = messages.join(' ').replace(/https?:\/\/[^\s"'<>]+/gi, ' ').toLowerCase();
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || error?.response?.statusCode || 0);
+  const confirmedQuota =
+    /resource[_\s-]*exhausted|exceeded.{0,80}current quota|current quota.{0,80}(exceed|exhaust)|quota.{0,80}(exceed|exhaust)|(?:exceed|exhaust).{0,80}quota|daily quota|per day quota|limit\s*:\s*0/.test(messageWithoutUrls);
+  if (confirmedQuota) return 'quota';
+  if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.{0,20}(invalid|revoked|deleted)|credential.{0,20}invalid/.test(messageWithoutUrls)) return 'invalid';
+  return getGeminiErrorKind({
+    ...(error && typeof error === 'object' ? error : {}),
+    message: messageWithoutUrls,
+  });
 }
 
 function shouldRetryGeminiError(error: any): boolean {
