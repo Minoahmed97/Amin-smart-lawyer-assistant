@@ -50,7 +50,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
   const maxContinuations = 5;
   // Shared ledger: every attempted Gemini key/model pair is retained across continuation segments.
-  const usedPairs = new Set<string>();
   const deadlineAt = Date.now() + 270000;
   let accumulatedText = typeof options.resumeText === 'string' ? options.resumeText : '';
   let continuationCount = 0;
@@ -169,9 +168,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       }
 
       if (activePair) {
-        usedPairs.add(activePair);
         continuationGeminiStartKey = activePair.split('::')[0];
-      continuationGeminiStartModel = activePair.split('::')[1] || '';
         continuationGeminiStartModel = activePair.split('::')[1] || '';
       }
       if (segmentError) {
@@ -185,7 +182,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         });
         if (segmentError.partialCharacters === undefined) segmentError.partialCharacters = segmentBuffer.length;
       }
-      if (segmentError?.blockedResponse) throw segmentError;
       if (!segmentPrefixResolved && segmentBuffer) {
         const addition = mergeContinuation(segmentBaseText, segmentBuffer);
         if (addition) {
@@ -281,12 +277,10 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     } catch (error: any) {
       lastError = error;
       if (error?.blockedResponse) throw error;
-      if (activePair) usedPairs.add(activePair);
       throw error;
     }
 
     if (activePair) {
-      usedPairs.add(activePair);
       continuationGeminiStartKey = activePair.split('::')[0];
     }
     const addition = mergeContinuation(accumulatedText, segmentResult.text || '');
