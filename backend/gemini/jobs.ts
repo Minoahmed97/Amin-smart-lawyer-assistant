@@ -473,7 +473,7 @@ function startClaimedJob(job: any) {
   const storedTaskType = String(job?.task_type || '');
   const payload = toPayload(job?.payload);
   delete payload._resumePartialText;
-  if (storedTaskType === 'counter-brief' && typeof job?.partial_result === 'string' && job.partial_result.trim()) {
+  if (storedTaskType !== 'ocr' && typeof job?.partial_result === 'string' && job.partial_result.trim()) {
     payload._resumePartialText = job.partial_result;
   }
   // Keep the database task_type within the existing supported values while
@@ -530,7 +530,7 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   const storedTaskType = String(claimed.task_type || '');
   const payload = toPayload(claimed.payload);
   delete payload._resumePartialText;
-  if (storedTaskType === 'counter-brief' && typeof claimed?.partial_result === 'string' && claimed.partial_result.trim()) {
+  if (storedTaskType !== 'ocr' && typeof claimed?.partial_result === 'string' && claimed.partial_result.trim()) {
     payload._resumePartialText = claimed.partial_result;
   }
   const taskType = payload._actualTaskType === 'legal-chat' ? 'legal-chat' : storedTaskType;
@@ -705,7 +705,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
             fullText += event.text;
             // Persist every legal-drafting chunk immediately. Preserve the existing
             // OCR/other-task batching behavior to keep this change scoped to drafting.
-            if (taskType === 'counter-brief' || fullText.length - persistedLength >= 800) {
+            if (taskType !== 'ocr' || fullText.length - persistedLength >= 800) {
               persistedLength = fullText.length;
               const snapshot = fullText;
               pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
@@ -962,7 +962,7 @@ export default async function handler(req: any, res: any) {
       // A missing draft row can be recreated after a browser/network interruption.
       // Seed the new durable row with the already-generated text so resuming the
       // same job never discards the partial Gemini output.
-      const initialPartialResult = taskType === 'counter-brief' && typeof incomingPayload?._resumePartialText === 'string'
+      const initialPartialResult = taskType !== 'ocr' && typeof incomingPayload?._resumePartialText === 'string'
         ? incomingPayload._resumePartialText
         : '';
       if (initialPartialResult) limitBodyString(initialPartialResult, MAX_FACTS, 'النص الجزئي المحفوظ');
