@@ -127,9 +127,16 @@ function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'othe
 
   // 429 / RESOURCE_EXHAUSTED وحدهما لا يثبتان نفاد الحصة؛ قد يكونان حد معدل مؤقتاً.
   // لا نصنف الخطأ كنفاد حصة إلا بوجود دلالة صريحة على تجاوز حصة/حد يومي أو شهري.
-  const quotaExhausted =
-    /quota.{0,60}(?:exceed|exhaust|deplet|reached)|(?:exceed|exhaust|deplet).{0,60}quota|daily.{0,40}quota.{0,40}(?:exceed|exhaust|reached)|monthly.{0,40}quota.{0,40}(?:exceed|exhaust|reached)/.test(msg);
-  if (quotaExhausted) return 'quota';
+  const quotaDetails = details.toLowerCase();
+  const dailyOrMonthlyLimit =
+    /per[_ ]?day|per[_ ]?month|daily|monthly|requests_per_day|tokens_per_day|requests_per_month|tokens_per_month/.test(msg) ||
+    /per[_ ]?day|per[_ ]?month|daily|monthly|requestsperday|tokensperday|requestspermonth|tokenspermonth/.test(quotaDetails);
+  const explicitQuotaExhaustion =
+    /quota.{0,60}(?:exceed|exhaust|deplet|reached)|(?:exceed|exhaust|deplet).{0,60}quota/.test(msg);
+  const minuteOrShortRateLimit =
+    /per[_ ]?minute|per[_ ]?second|requests per minute|tokens per minute|rate.?limit|too many requests/.test(msg) ||
+    /per[_ ]?minute|per[_ ]?second|perminute|persecond/.test(quotaDetails);
+  if (dailyOrMonthlyLimit || (explicitQuotaExhaustion && !minuteOrShortRateLimit)) return 'quota';
 
   if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/.test(msg)) return 'invalid';
   if (
@@ -686,8 +693,10 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
         return;
       } catch (openRouterError: any) {
         // عند فشل الاحتياطي نحتفظ بأفضل نص جزئي أنتجه Gemini بدلاً من فقده.
-        if (geminiBufferedText) onChunk(geminiBufferedText);
-        if (openRouterBufferedText) onChunk(openRouterBufferedText);
+        const bestPartial = openRouterBufferedText.length > geminiBufferedText.length
+          ? openRouterBufferedText
+          : geminiBufferedText;
+        if (bestPartial) onChunk(bestPartial);
         const combined: any = new Error(
           `فشلت محاولات Gemini على المفاتيح والنماذج المتاحة، وتعذر الاحتياطي OpenRouter. سبب Gemini: ${String(geminiError?.message || 'انتهت المهلة أو لم تتوفر محاولة كافية.')} سبب OpenRouter: ${String(openRouterError?.message || 'خطأ غير محدد.')}`
         );
@@ -749,7 +758,11 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
   }
 
   const keys = (await getAvailableGeminiKeys()).filter((key) => !permanentlyInvalidKeys.has(key));
-  if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
+  if (keys.length === 0) {
+    const unavailableError: any = new Error('لم يتم العثور على مفتاح Gemini صالح.');
+    unavailableError.geminiAttemptsExhausted = true;
+    throw unavailableError;
+  }
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
