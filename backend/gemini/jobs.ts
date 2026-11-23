@@ -951,7 +951,9 @@ export default async function handler(req: any, res: any) {
         ? incomingPayload._resumePartialText
         : '';
       if (initialPartialResult) limitBodyString(initialPartialResult, MAX_FACTS, 'النص الجزئي المحفوظ');
-      const payload = safePayload(incomingPayload, taskType);
+      const safeInput = incomingPayload && typeof incomingPayload === 'object' ? { ...incomingPayload } : incomingPayload;
+      if (safeInput && typeof safeInput === 'object') delete safeInput._resumePartialText;
+      const payload = safePayload(safeInput, taskType);
       
       scheduleBackground((async () => {
         try {
