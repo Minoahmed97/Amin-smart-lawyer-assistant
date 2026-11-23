@@ -75,8 +75,7 @@ export async function testSupabaseConnection(
   if (!key || key.length < 20) {
     return { success: false, message: 'مفتاح المشروع غير صحيح. أدخل مفتاح anon public أو publishable الخاص بالمشروع.' };
   }
-  // Fetch header values must be ASCII. Reject hidden/non-ASCII characters
-  // instead of allowing the browser to throw an opaque RequestInit error.
+  // Fetch headers accept only ByteString values. Reject hidden/non-ASCII characters clearly.
   if (!/^[\x21-\x7E]+$/.test(key)) {
     return {
       success: false,
@@ -85,12 +84,12 @@ export async function testSupabaseConnection(
   }
 
   try {
-    // This verifies the public project connection only. The protected
-    // app_gemini_keys table remains server-only and uses Vercel server secrets.
-    const authRes = await fetch(`${url}/auth/v1/settings`, {
+    // Verify the public project connection only. Gemini keys remain server-only.
+    const authRes = await fetch(url + '/auth/v1/settings', {
       method: 'GET',
       headers: {
         apikey: key,
+        Authorization: 'Bearer ' + key,
       },
     });
 
@@ -98,7 +97,7 @@ export async function testSupabaseConnection(
       return { success: false, message: 'فشل التحقق من مفتاح Supabase: المفتاح العام غير صالح أو غير مقبول من المشروع.' };
     }
     if (!authRes.ok) {
-      return { success: false, message: `تعذر التحقق من اتصال Supabase (HTTP ${authRes.status}). تحقق من رابط المشروع والمفتاح.` };
+      return { success: false, message: 'تعذر التحقق من اتصال Supabase (HTTP ' + authRes.status + '). تحقق من رابط المشروع والمفتاح.' };
     }
 
     return {
@@ -106,7 +105,7 @@ export async function testSupabaseConnection(
       message: 'تم الاتصال بـ Supabase والتحقق من المفتاح بنجاح. مفاتيح Gemini المركزية تُقرأ من الخادم بصلاحية Service Role ولا تُرسل إلى المتصفح.',
     };
   } catch (err: any) {
-    return { success: false, message: `تعذر الاتصال بـ Supabase: ${err?.message || 'خطأ في الشبكة'}` };
+    return { success: false, message: 'تعذر الاتصال بـ Supabase: ' + (err?.message || 'خطأ في الشبكة') };
   }
 }
 
