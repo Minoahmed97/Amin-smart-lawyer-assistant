@@ -632,7 +632,7 @@ export async function executeWithKeyRotation<T>(
           if (Date.now() >= deadlineAt) throw timeoutError();
           activeKeyIndex = currentKeyIndex;
           pairSucceeded = true;
-          await persistGeminiAttemptStatus(currentKey, model, 'success');
+          if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, 'success');
           console.info('[Gemini rotation] attempt succeeded', {
             key: maskGeminiKey(currentKey),
             model,
@@ -660,7 +660,7 @@ export async function executeWithKeyRotation<T>(
           }
 
           markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
-          await persistGeminiAttemptStatus(currentKey, model, kind, error);
+          if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
           if (kind === 'quota' && preferredModels.every((candidateModel) =>
             isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, candidateModel)))) quotaExhaustedKeys.add(currentKey);
           if (!draftingMode && permanentlyInvalidKeys.has(currentKey)) break;
@@ -753,7 +753,7 @@ export async function executeWithKeyRotationStream(
             onChunk(text);
           }
           activeKeyIndex = currentKeyIndex;
-          await persistGeminiAttemptStatus(currentKey, model, 'success');
+          if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, 'success');
           console.info('[Gemini stream rotation] attempt succeeded', {
             key: maskGeminiKey(currentKey),
             model,
@@ -782,7 +782,7 @@ export async function executeWithKeyRotationStream(
           // Once a stream has delivered text, preserve it and let the document
           // continuation layer resume from that exact partial output on another pair.
           if (emittedAnyChunk) {
-            await persistGeminiAttemptStatus(currentKey, model, kind, error);
+            if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
             error.partialCharacters = partialCharacters;
             throw error;
           }
@@ -790,7 +790,7 @@ export async function executeWithKeyRotationStream(
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
           }
-          await persistGeminiAttemptStatus(currentKey, model, kind, error);
+          if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
           if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || (draftingMode
             ? preferredModels.every((candidateModel) => isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, candidateModel)))
             : isCooling(keyCooldownUntil, currentKey))) break;
