@@ -25,7 +25,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const { taskType, originalContext, result, messages } = body || {};
+    const { taskType, originalContext, result, messages, strategicCaseContext } = body || {};
 
     if (!['deconstruct', 'qualify', 'draft'].includes(taskType)) {
       return res.status(400).json({
@@ -47,6 +47,7 @@ export default async function handler(req: any, res: any) {
 
     limitBodyString(originalContext, 100000, 'سياق القضية');
     limitBodyString(result, 120000, 'النتيجة الأصلية');
+    limitBodyString(strategicCaseContext, 120000, 'ملف القضية الاستراتيجي');
 
     const lastMessage = messages[messages.length - 1];
 
@@ -192,7 +193,7 @@ export default async function handler(req: any, res: any) {
 
       /* * المحادثة القانونية العادية: * الحفاظ على نفس الوظيفة السابقة. */
 
-      const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}). أجب على طلب أو سؤال المحامي التالي في الشات مباشرة. إذا طلب عرض المذكرة أو جزء منها في الشات، اعرض المطلوب في الشات. لا تقم بتعديل المستند الأساسي. [النتيجة الحالية للمستند للاطلاع والاستعانة بها] ${result} [طلب أو سؤال المحامي] ${latestUserMessage}`;
+      const prompt = `أنت أمين، مساعد قانوني مصري شاطر وتفهم العامية المصرية بطلاقة. هذه متابعة لمهمة (${taskLabel}). أجب على طلب أو سؤال المحامي التالي في الشات مباشرة. إذا طلب عرض المذكرة أو جزء منها في الشات، اعرض المطلوب في الشات. لا تقم بتعديل المستند الأساسي. ${strategicCaseContext ? `[ملف القضية الاستراتيجي النشط — سياق منظم للمراجعة]: ${strategicCaseContext} افصل مصادر المعلومات ولا تعتبر OCR أو نتائج التحليل السابقة حقائق نهائية. عند التعارض بين هذا السياق والطلب الحالي، أبرز التعارض ولا تستبدل مدخل المحامي الحالي بصمت. ` : ''}[النتيجة الحالية للمستند للاطلاع والاستعانة بها] ${result} [طلب أو سؤال المحامي] ${latestUserMessage}`;
 
       const rawAnswer = await generateDeepLegalResponse(prompt);
 
