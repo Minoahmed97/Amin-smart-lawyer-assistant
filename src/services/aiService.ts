@@ -138,6 +138,41 @@ function draftJobPayloadKey(userId?: string): string {
   return `amin_judicial_draft_job_payload_${sanitizeStoragePart(userId || 'default')}`;
 }
 
+function savedTaskPayloadKey(type: SavedJobType, userId?: string): string {
+  return `amin_ai_job_payload_${sanitizeStoragePart(type)}_${sanitizeStoragePart(userId || 'default')}`;
+}
+
+function savedTaskPartialKey(type: SavedJobType, userId?: string): string {
+  return `amin_ai_job_partial_${sanitizeStoragePart(type)}_${sanitizeStoragePart(userId || 'default')}`;
+}
+
+function saveTaskPayload(type: SavedJobType, userId: string | undefined, payload: Record<string, any>): void {
+  try { localStorage.setItem(savedTaskPayloadKey(type, userId), JSON.stringify(payload)); } catch {}
+}
+
+function readTaskPayload(type: SavedJobType, userId?: string): Record<string, any> | null {
+  try {
+    const raw = localStorage.getItem(savedTaskPayloadKey(type, userId));
+    const value = raw ? JSON.parse(raw) : null;
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch { return null; }
+}
+
+function saveTaskPartial(type: SavedJobType, userId: string | undefined, text: string): void {
+  try { if (text) localStorage.setItem(savedTaskPartialKey(type, userId), text); } catch {}
+}
+
+function readTaskPartial(type: SavedJobType, userId?: string): string {
+  try { return localStorage.getItem(savedTaskPartialKey(type, userId)) || ''; } catch { return ''; }
+}
+
+function clearTaskRecovery(type: SavedJobType, userId?: string): void {
+  try {
+    localStorage.removeItem(savedTaskPayloadKey(type, userId));
+    localStorage.removeItem(savedTaskPartialKey(type, userId));
+  } catch {}
+}
+
 function saveDraftJobPayload(userId: string | undefined, payload: Record<string, any>): void {
   try { localStorage.setItem(draftJobPayloadKey(userId), JSON.stringify(payload)); }
   catch (error) { console.warn('Draft recovery payload could not be persisted locally:', error); }
@@ -235,10 +270,12 @@ async function requestSavedJob<T extends Record<string, any>>(
 ): Promise<string> {
   const key = jobStorageKey(type, userId, storageScope);
   let jobPayload: T = payload;
-  if (type === 'counter-brief') {
-    const savedPayload = readDraftJobPayload(userId);
-    if (!(typeof jobPayload.facts === 'string' && jobPayload.facts.trim()) && savedPayload) jobPayload = savedPayload as T;
-    if (typeof jobPayload.facts === 'string' && jobPayload.facts.trim()) saveDraftJobPayload(userId, jobPayload);
+  const hasProvidedPayload = Object.values(jobPayload).some((value) => value !== undefined && value !== null && String(value).length > 0);
+  const savedPayload = type === 'counter-brief' ? readDraftJobPayload(userId) : readTaskPayload(type, userId);
+  if (!hasProvidedPayload && savedPayload) jobPayload = savedPayload as T;
+  if (Object.values(jobPayload).some((value) => value !== undefined && value !== null && String(value).length > 0)) {
+    saveTaskPayload(type, userId, jobPayload);
+    if (type === 'counter-brief') saveDraftJobPayload(userId, jobPayload);
   }
   let storage: Storage | null = null;
   try {
@@ -381,15 +418,18 @@ async function requestSavedJob<T extends Record<string, any>>(
         const delta = currentText.slice(lastText.length);
         if (delta && onChunk) onChunk(delta);
         lastText = currentText;
+        saveTaskPartial(type, userId, lastText);
       } else if (currentText && !lastText) {
         if (onChunk) onChunk(currentText);
         lastText = currentText;
+        saveTaskPartial(type, userId, lastText);
       }
 
       if (data.status === 'completed') {
         const result = String(data.result || lastText);
         if (type === 'ocr' && storageScope) updateSavedOcrJob(storageScope, userId, jobId, 'completed');
         else if (storage) storage.removeItem(key);
+        clearTaskRecovery(type, userId);
         if (type === 'counter-brief') clearDraftJobPayload(userId);
         return result;
       }
@@ -407,13 +447,13 @@ async function requestSavedJob<T extends Record<string, any>>(
         await cancelIfAborted();
       }
       const statusCode = Number(err?.statusCode);
-      if (statusCode === 404 && consecutiveNotFound >= 2 && type === 'counter-brief' &&
-          !recoveryAttempted && typeof jobPayload.facts === 'string' && jobPayload.facts.trim()) {
+      if (statusCode === 404 && consecutiveNotFound >= 2 && ['counter-brief', 'deconstruct', 'qualify'].includes(type) &&
+          !recoveryAttempted && Object.values(jobPayload).some((value) => typeof value === 'string' && value.trim())) {
         recoveryAttempted = true;
         const restoreResponse = await fetch('/api/gemini/jobs', {
           method: 'POST',
           headers,
-          body: JSON.stringify({ taskType: 'counter-brief', payload: jobPayload, jobId }),
+          body: JSON.stringify({ taskType: type, payload: { ...jobPayload, _resumePartialText: lastText || readTaskPartial(type, userId) }, jobId }),
         }).catch(() => null);
         if (restoreResponse?.ok) {
           consecutiveNotFound = 0;
@@ -483,7 +523,10 @@ export async function resumeDraftCounterBrief(
 
 
 export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
-  return requestSavedJob(type, {}, onChunk, userId, jobId);
+  const payload = readTaskPayload(type, userId) || {};
+  const partial = readTaskPartial(type, userId);
+  if (partial) payload._resumePartialText = partial;
+  return requestSavedJob(type, payload, onChunk, userId, jobId);
 }
 
 export async function runSavedPdfOcrTask(
