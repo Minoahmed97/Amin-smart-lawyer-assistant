@@ -661,7 +661,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   }
 }
 
-export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
+export async function draftCounterBrief(params: { courtType?: string; circuit?: string; briefType?: string; judicialWorkType?: string; customJudicialWorkType?: string; clientRole?: string; clientName?: string; opponentName?: string; caseNumber?: string; sessionDate?: string; facts: string; defenses?: string; requests?: string; customInstructions?: string; strategicCaseContext?: string; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const effectiveWorkType =
     params.customJudicialWorkType?.trim()
