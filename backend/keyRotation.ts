@@ -626,7 +626,11 @@ export async function executeWithKeyRotation<T>(
 
   if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
     if (executionOptions?.providerAttempt === 'gemini-primary') {
-      throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
+      const exhaustedError: any = new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.');
+      exhaustedError.status = 503;
+      exhaustedError.statusCode = 503;
+      exhaustedError.geminiAttemptsExhausted = true;
+      throw exhaustedError;
     }
     return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, true, {
       ...executionOptions,
