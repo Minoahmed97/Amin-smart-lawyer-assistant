@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { deconstructBrief, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
+import { getActiveStrategicCaseContext } from '../strategic/caseFileService.ts';
 import { StyleTemplateSelector } from './StyleTemplateSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { StyleTemplate, DEFAULT_STYLE_TEMPLATES } from '../data/styleTemplates.ts';
@@ -176,6 +177,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setDeconstructError('');
     setAnalysisResult('');
     try {
+      const strategicCaseContext = await getActiveStrategicCaseContext(userId);
       const result = await deconstructBrief({
         opponentBriefText,
         courtType,
@@ -183,6 +185,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
         judicialWorkType: responseWorkType === '__smart__' ? '' : responseWorkType,
         ourPosition,
         additionalFacts,
+        strategicCaseContext,
         userId,
       }, (chunk) => {
         if (operationId === resultOperationRef.current) setAnalysisResult((current) => current + chunk);
