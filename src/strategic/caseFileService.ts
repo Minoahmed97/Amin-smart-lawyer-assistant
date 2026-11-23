@@ -362,9 +362,14 @@ const STRATEGIC_TASK_LABELS: Record<StrategicTaskType, string> = {
 export async function prepareStrategicTaskContext(
   userId: string,
   taskType: StrategicTaskType,
+  taskInput: unknown = {},
 ): Promise<string> {
   const caseId = getActiveStrategicCaseId(userId);
   const taskLabel = STRATEGIC_TASK_LABELS[taskType];
+  const serializedTaskInput = JSON.stringify(taskInput ?? {});
+  if (serializedTaskInput.length > 100000) {
+    throw new Error('مدخلات المهمة أكبر من الحد الآمن للتحليل الاستراتيجي. قسّم المستند أو النص إلى أجزاء قبل المتابعة.');
+  }
 
   // The strategic assistant remains active even when the attorney chooses not
   // to link a persistent case file. In that mode it analyzes the current task
@@ -374,6 +379,7 @@ export async function prepareStrategicTaskContext(
     return JSON.stringify({
       contextType: 'strategic_assistant_standalone',
       task: taskLabel,
+      currentTaskInput: taskInput,
       operatingMode: 'تحليل استراتيجي مستقل للمهمة الحالية دون ملف قضية محفوظ',
       mandatoryStrategicProtocol: [
         'لا تبدأ بإنتاج الإجابة أو المستند مباشرة؛ افهم أولاً طبيعة النزاع والمطلوب الحالي وصفة كل طرف كما وردت في المدخلات.',
@@ -393,7 +399,7 @@ export async function prepareStrategicTaskContext(
   const { jobId } = await enqueueStrategicAnalysis(
     caseId,
     STRATEGIC_TASK_STAGES[taskType],
-    `تحليل تمهيدي إلزامي قبل تنفيذ المهمة التالية: ${taskLabel}. افحص ملف القضية الموحد ونتائج التحليل السابقة، وحدد المسار القانوني الأنسب ومخاطر المهمة والنقاط التي يجب مراعاتها عند تنفيذها. لا تصغ المستند المطلوب في هذه المرحلة؛ أخرج تحليلاً استراتيجياً منظماً، وميّز الثابت من الادعاء والاستنتاج وما يحتاج تحققاً. لا تفترض أن كل ما سبق بحثه أو تقديمه ينطبق على المهمة الحالية دون مراجعة.`,
+    `تحليل تمهيدي إلزامي قبل تنفيذ المهمة التالية: ${taskLabel}. افحص ملف القضية الموحد ونتائج التحليل السابقة، وكذلك مدخلات المهمة الحالية التالية بما فيها نصوص المستندات أو النص المستخرج آلياً: ${serializedTaskInput}. اربط كل معلومة بالقضية والدعوى التي تخصها، وحدد المسار القانوني الأنسب ومخاطر المهمة والنقاط التي يجب مراعاتها عند تنفيذها. لا تصغ المستند المطلوب في هذه المرحلة؛ أخرج تحليلاً استراتيجياً منظماً، وميّز الثابت من الادعاء والاستنتاج وما يحتاج تحققاً. لا تفترض أن كل ما سبق بحثه أو تقديمه ينطبق على المهمة الحالية دون مراجعة.`,
   );
 
   if (!jobId) throw new Error('لم يتم إنشاء مهمة التحليل الاستراتيجي التمهيدي.');
