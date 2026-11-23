@@ -922,7 +922,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                               <div className="flex items-center gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => handleTestSavedKey(k.index)
+                                  onClick={() => handleTestSavedKey(k.index)}
                                   disabled={keyAddingLoading}
                                   className="px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-950/20 text-emerald-300 hover:bg-emerald-950/50 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1"
                                   title="فحص هذا المفتاح المحفوظ"
