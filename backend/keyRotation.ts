@@ -68,7 +68,7 @@ function markRotationFailure(key: string, model: string, error: any, pool: 'gene
   if (kind === 'invalid') {
     invalidKeys.add(key);
     keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
-  } else if (kind === 'quota' || status === 429) {
+  } else if (kind === 'quota') {
     if (pool === 'ocr') keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
     pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
   } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
@@ -456,7 +456,6 @@ type KeyRotationExecutionOptions = {
   ocrMode?: boolean;
   deadlineAt?: number;
   previousProviderError?: string;
-  providerAttempt?: 'gemini-primary' | 'openrouter-fallback';
   /** Previously used key/model pairs are avoided first during continuation. */
   avoidPairs?: string[];
   /** Resume Gemini rotation from the key used by the previous continuation segment. */
