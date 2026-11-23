@@ -1,5 +1,8 @@
+import crypto from 'node:crypto';
 import type {
   CaseAnalysisSnapshot,
+  CaseRecommendation,
+  CaseRisk,
   StrategicAnalysisInput,
   StrategicAnalysisOutput,
   StrategicStage,
@@ -85,8 +88,8 @@ ${caseJson}
     "opponentArguments": ["أقوى حجج الخصم المحتملة مع بيان أساسها"],
     "rebuttalPoints": ["ردود مرتبطة بوقائع أو أدلة محددة"],
     "evidenceGaps": ["الفجوات الإثباتية"],
-    "proceduralSteps": [],
-    "risks": [],
+    "proceduralSteps": [{"action":"إجراء عملي محدد","reason":"سبب الإجراء","priority":1,"relatedFactIds":[],"relatedDocumentIds":[]}],
+    "risks": [{"description":"خطر محدد","likelihood":"undetermined","impact":"undetermined","mitigation":"طريقة التعامل معه","requiresVerification":true}],
     "priorities": ["أولويات مرتبة"]
   },
   "warnings": ["تحفظات وحدود التحليل"],
@@ -97,7 +100,7 @@ ${caseJson}
 - لا تضع إلا نتائج المراحل المطلوبة في stageResults.
 - لا تنشئ معرّفات دفوع أو وقائع أو مستندات. استخدم المعرّفات الموجودة فقط.
 - إذا تعذر الجزم، اكتب ذلك في unresolvedQuestions أو warnings ولا تخترع إجابة.
-- لا تملأ proceduralSteps أو risks بكائنات ناقصة؛ استخدم مصفوفة فارغة إذا لم تتوافر بيانات منظمة كافية.
+- أدرج في proceduralSteps إجراءات عملية مدعومة فقط، واربطها بمعرّفات الوقائع والمستندات الموجودة. أدرج في risks المخاطر الواقعية أو الإجرائية المحددة، ولا تنشئ خطراً افتراضياً لمجرد ملء القائمة. استخدم مصفوفة فارغة عند عدم وجود عناصر مدعومة.
 - لا تضع نصوصاً قانونية أو أرقام أحكام أو مواد إلا إذا وردت في بيانات القضية ويمكن التحقق منها داخلها.
 - اجعل requiresAttorneyReview = true دائماً؛ فالنتيجة مسودة تحليلية لا تعتمد دون مراجعة المحامي.`;
 }
@@ -228,8 +231,31 @@ export async function runStrategicAnalysis(input: StrategicAnalysisInput): Promi
         evidenceGaps: Array.isArray(parsed.strategy.evidenceGaps)
           ? parsed.strategy.evidenceGaps.filter((item: unknown) => typeof item === 'string')
           : [],
-        proceduralSteps: [],
-        risks: [],
+        proceduralSteps: (Array.isArray(parsed.strategy.proceduralSteps) ? parsed.strategy.proceduralSteps : [])
+          .filter((item: any) => item && typeof item.action === 'string' && item.action.trim())
+          .map((item: any): CaseRecommendation => ({
+            id: crypto.randomUUID(),
+            action: item.action.trim(),
+            reason: typeof item.reason === 'string' ? item.reason.trim() : '',
+            priority: Math.max(1, Math.min(5, Math.floor(Number(item.priority) || 3))),
+            relatedFactIds: Array.isArray(item.relatedFactIds)
+              ? item.relatedFactIds.filter((id: unknown) => typeof id === 'string' && input.caseFile.originalFacts.some((fact) => fact.id === id))
+              : [],
+            relatedDocumentIds: Array.isArray(item.relatedDocumentIds)
+              ? item.relatedDocumentIds.filter((id: unknown) => typeof id === 'string' && input.caseFile.documents.some((document) => document.id === id))
+              : [],
+            status: 'proposed',
+          })),
+        risks: (Array.isArray(parsed.strategy.risks) ? parsed.strategy.risks : [])
+          .filter((item: any) => item && typeof item.description === 'string' && item.description.trim())
+          .map((item: any): CaseRisk => ({
+            id: crypto.randomUUID(),
+            description: item.description.trim(),
+            likelihood: ['high', 'medium', 'low', 'undetermined'].includes(item.likelihood) ? item.likelihood : 'undetermined',
+            impact: ['high', 'medium', 'low', 'undetermined'].includes(item.impact) ? item.impact : 'undetermined',
+            mitigation: typeof item.mitigation === 'string' ? item.mitigation.trim() : '',
+            requiresVerification: item.requiresVerification !== false,
+          })),
         priorities: Array.isArray(parsed.strategy.priorities)
           ? parsed.strategy.priorities.filter((item: unknown) => typeof item === 'string')
           : [],
