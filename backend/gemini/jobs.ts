@@ -24,8 +24,8 @@ const JOB_TABLE = 'app_ai_generation_jobs';
 const PUSH_TABLE = 'app_push_subscriptions';
 const OCR_STORAGE_BUCKET = 'amin-ocr-private';
 const MAX_OCR_FILE_BYTES = 20 * 1024 * 1024;
-const MAX_FACTS = 200_000;
-const MAX_CONTEXT = 30_000;
+const MAX_FACTS = 500_000;
+const MAX_CONTEXT = 60_000;
 const JOB_STALE_TIMEOUT_MS = 5 * 60 * 1000 + 20 * 1000;
 const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة الملف.';
 
