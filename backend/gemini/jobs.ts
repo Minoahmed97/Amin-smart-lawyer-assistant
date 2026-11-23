@@ -1054,6 +1054,29 @@ export default async function handler(req: any, res: any) {
       const isPdfJob = isPdfOcrPayload('ocr', toPayload(job.payload));
 
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
+
+      // A queued row can outlive a lost/undelivered queue message. Re-publish it
+      // after 60 seconds using a conditional timestamp claim, so polling can
+      // repair a stalled queue without creating a second generation job.
+      if (job.status === 'queued' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= 60_000) {
+        const queuedAgain = await supabase(
+          `${JOB_TABLE}?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(session.userId)}&status=eq.queued&updated_at=lt.${encodeURIComponent(new Date(Date.now() - 60_000).toISOString())}`,
+          {
+            method: 'PATCH',
+            headers: { Prefer: 'return=representation' },
+            body: JSON.stringify({ updated_at: new Date().toISOString() }),
+          },
+        );
+        if (queuedAgain.ok) {
+          const changedRows = await queuedAgain.json().catch(() => []);
+          if (Array.isArray(changedRows) && changedRows.length) {
+            await enqueueDurableAiJob(id).catch((error) => {
+              console.warn('Queued AI job redelivery deferred:', safeDiagnosticMessage((error as any)?.message || error));
+            });
+          }
+        }
+      }
+
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
         // Do not convert an interrupted background task into a terminal failure.
         // Return it to the durable queue so the same stored payload can resume.
