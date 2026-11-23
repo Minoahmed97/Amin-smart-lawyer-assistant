@@ -276,12 +276,12 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       });
     } catch (error: any) {
       lastError = error;
-      if (error?.blockedResponse) throw error;
       throw error;
     }
 
     if (activePair) {
       continuationGeminiStartKey = activePair.split('::')[0];
+      continuationGeminiStartModel = activePair.split('::')[1] || '';
     }
     const addition = mergeContinuation(accumulatedText, segmentResult.text || '');
     accumulatedText += addition;
