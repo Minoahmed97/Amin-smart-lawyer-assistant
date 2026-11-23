@@ -311,8 +311,10 @@ async function requestSavedJob<T extends Record<string, any>>(
   let lastText = '';
   let lastReportedOcrStatus = '';
   let transientFailures = 0;
+  let consecutiveNotFound = 0;
   const startedAt = Date.now();
-  const NO_PROGRESS_TIMEOUT_MS = 4 * 60 * 1000 + 30 * 1000;
+  // Let the server-side stale-job recovery run before the client gives up.
+  const NO_PROGRESS_TIMEOUT_MS = 12 * 60 * 1000;
   let lastProgressAt = Date.now();
   while (Date.now() - startedAt < 1000 * 60 * 20) {
     await cancelIfAborted();
@@ -325,6 +327,8 @@ async function requestSavedJob<T extends Record<string, any>>(
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
+        if (response.status === 404) consecutiveNotFound++;
+        else consecutiveNotFound = 0;
         const failure: any = new Error(
           error?.error || (response.status === 404
             ? 'لم يتم العثور على المهمة المحفوظة لهذا الحساب.'
@@ -335,6 +339,7 @@ async function requestSavedJob<T extends Record<string, any>>(
       }
       const data = await response.json();
       transientFailures = 0;
+      consecutiveNotFound = 0;
       if (type === 'ocr') {
         const currentStatus = String(data?.status || '');
         const normalizedStatus = currentStatus === 'completed' || currentStatus === 'failed'
@@ -377,7 +382,7 @@ async function requestSavedJob<T extends Record<string, any>>(
       if (Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS) {
         const failure: any = new Error('لم يصل أي تحديث للمهمة خلال 4 دقائق ونصف. توقفت متابعة الانتظار، واحتُفظ بمعرّفها لمحاولة استعادة حالتها دون بدء توليد جديد.');
         failure.noProgressTimeout = true;
-        failure.savedJobPending = type === 'ocr';
+        failure.savedJobPending = true;
         throw failure;
       }
     } catch (err: any) {
@@ -385,29 +390,27 @@ async function requestSavedJob<T extends Record<string, any>>(
         await cancelIfAborted();
       }
       const statusCode = Number(err?.statusCode);
-      const permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429;
-      if (err?.noProgressTimeout || err?.terminalJobError || permanentClientError || (err?.message && /فشلت المهمة المحفوظة|لم يتم العثور على المهمة/.test(err.message))) {
-        if (statusCode === 404) clearJobReference();
+      const permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429 && statusCode !== 404;
+      if (err?.noProgressTimeout || err?.terminalJobError || permanentClientError || (statusCode === 404 && consecutiveNotFound >= 6)) {
+        if (statusCode === 404) {
+          err.message = 'لم يتم العثور على المهمة مؤقتًا في سجل الخادم بعد عدة محاولات. احتفظنا بمعرّفها والجزء المحفوظ؛ لم نبدأ توليدًا جديدًا ولم نحذف مرجع الاستعادة. أعد فتح التطبيق للمحاولة مرة أخرى.';
+          err.savedJobPending = true;
+        }
         throw err;
       }
       transientFailures++;
       if (transientFailures >= 8) {
-        if (type === 'ocr') {
-          // Keep attempting lightweight status checks while the page is open;
-          // a temporary client/network outage must not discard the OCR watcher.
-          transientFailures = 0;
-          await new Promise((resolve) => setTimeout(resolve, 5000));
-          continue;
-        }
-        const failure: any = new Error('انقطع الاتصال مؤقتًا. تم الاحتفاظ بمعرّف المهمة؛ ارجع للتطبيق وحاول استعادة نفس المهمة دون بدء توليد جديد.');
-        failure.savedJobPending = false;
-        throw failure;
+        // A temporary mobile-network outage is not a failed generation.
+        // Keep polling the same durable job; never discard its ID or restart Gemini.
+        transientFailures = 0;
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        continue;
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
   const failure: any = new Error('المهمة ما زالت قيد المعالجة. ارجع لاحقًا لاستعادة النتيجة المحفوظة دون بدء توليد جديد.');
-  failure.savedJobPending = type === 'ocr';
+  failure.savedJobPending = true;
   throw failure;
 }
 
