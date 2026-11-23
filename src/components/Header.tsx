@@ -6,6 +6,7 @@ import {
   Compass,
   BookOpen,
   Sparkles,
+  BrainCircuit,
   FolderArchive,
   Megaphone,
   Sun,
@@ -24,7 +25,7 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 interface HeaderProps {
-  activeTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community';
+  activeTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community' | 'strategic';
   setActiveTab: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community') => void;
   onOpenAdmin?: () => void;
   userName?: string;
@@ -223,6 +224,9 @@ export const Header: React.FC<HeaderProps> = ({
                     </>
                   ) : (
                     <>
+                      <button onClick={() => { setActiveTab('strategic'); closeMenu(); }} className="header-menu-item" role="menuitem">
+                        <BrainCircuit className="w-4 h-4 text-emerald-300" /><span>المعاون القانوني الاستراتيجي</span>
+                      </button>
                       <button onClick={() => { setActiveTab('deconstruct'); closeMenu(); }} className="header-menu-item" role="menuitem">
                         <Crosshair className="w-4 h-4 text-amber-300" /><span>التفنيد والرد على المستندات</span>
                       </button>
