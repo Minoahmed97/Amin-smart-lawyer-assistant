@@ -195,7 +195,7 @@ export async function addCaseDocument(
       'extracted_information',
       `إضافة مستند: ${document.name}`,
       document.origin,
-      document.extractionStatus === 'completed' ? 'unverified' : 'unverified',
+      'unverified',
       [],
       [document.id],
     )],
