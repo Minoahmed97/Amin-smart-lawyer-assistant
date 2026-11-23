@@ -1,6 +1,7 @@
 import type {
   CaseContextChange,
   CaseDocument,
+  CaseParty,
   CaseFact,
   CaseMemoryEntry,
   UnifiedCaseFile,
@@ -99,6 +100,56 @@ export async function saveCaseFile(caseFile: UnifiedCaseFile, expectedUpdatedAt?
 export async function deleteCaseFile(caseId: string): Promise<void> {
   if (!caseId) throw new Error('معرّف القضية مطلوب.');
   await request(`?id=${encodeURIComponent(caseId)}`, { method: 'DELETE' });
+}
+
+export function makeCaseParty(name: string, role: CaseParty['role'], capacity = ''): CaseParty {
+  if (!name.trim()) throw new Error('اسم الطرف مطلوب.');
+  return {
+    id: createId(),
+    name: name.trim(),
+    role,
+    ...(capacity.trim() ? { capacity: capacity.trim() } : {}),
+  };
+}
+
+export async function addCaseParty(
+  caseFile: UnifiedCaseFile,
+  party: CaseParty,
+  expectedUpdatedAt?: string,
+): Promise<UnifiedCaseFile> {
+  if (!party.name.trim()) throw new Error('اسم الطرف مطلوب.');
+  const updated: UnifiedCaseFile = {
+    ...caseFile,
+    parties: [...caseFile.parties, party],
+    memory: [...caseFile.memory, makeCaseMemoryEntry(
+      caseFile.id, 'attorney_fact', `إضافة طرف: ${party.name} — الصفة: ${party.role}`,
+      'attorney_input', 'unverified',
+    )],
+    contextChanges: [...caseFile.contextChanges, makeContextChange(
+      caseFile.id, 'party_updated', `إضافة الطرف: ${party.name}`,
+    )],
+  };
+  return saveCaseFile(updated, expectedUpdatedAt ?? caseFile.updatedAt);
+}
+
+export async function addCaseRequest(
+  caseFile: UnifiedCaseFile,
+  requestText: string,
+  expectedUpdatedAt?: string,
+): Promise<UnifiedCaseFile> {
+  if (!requestText.trim()) throw new Error('نص الطلب مطلوب.');
+  const updated: UnifiedCaseFile = {
+    ...caseFile,
+    requests: [...caseFile.requests, requestText.trim()],
+    memory: [...caseFile.memory, makeCaseMemoryEntry(
+      caseFile.id, 'attorney_fact', `طلب المحامي: ${requestText.trim()}`,
+      'attorney_input', 'verified',
+    )],
+    contextChanges: [...caseFile.contextChanges, makeContextChange(
+      caseFile.id, 'request_updated', 'إضافة طلب جديد من المحامي.',
+    )],
+  };
+  return saveCaseFile(updated, expectedUpdatedAt ?? caseFile.updatedAt);
 }
 
 export function makeCaseFact(
