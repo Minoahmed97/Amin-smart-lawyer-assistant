@@ -482,7 +482,7 @@ export async function executeWithKeyRotation<T>(
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
-  const quotaExhaustedKeys = new Set<string>();
+  const quotaExhaustedKeys = new Set<string>(keys.filter((key) => isCooling(keyCooldownUntil, key)));
   let lastError: any = null;
   let attemptedModelCount = 0;
   const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
@@ -587,7 +587,7 @@ export async function executeWithKeyRotationStream(
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
   let lastError: any = null;
-  const quotaExhaustedKeys = new Set<string>();
+  const quotaExhaustedKeys = new Set<string>(keys.filter((key) => isCooling(keyCooldownUntil, key)));
   const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
   const startIndex = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
 
