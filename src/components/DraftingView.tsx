@@ -424,7 +424,14 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           return current + chunk;
         });
       }
-    }, userId).then(async (result) => {
+    }, userId, {
+      ...formData,
+      caseAnalysisContext: [
+        formData.caseAnalysisContext || '',
+        formData.caseContext ? JSON.stringify(formData.caseContext) : '',
+      ].filter(Boolean).join('\\n\\n'),
+      _resumePartialText: persistentStorage.getItem('amin_judicial_draft_result', ''),
+    }).then(async (result) => {
       if (!active || operationId !== resultOperationRef.current) return;
       setGeneratedBrief(result);
       persistentStorage.setItem('amin_judicial_draft_result', result);
