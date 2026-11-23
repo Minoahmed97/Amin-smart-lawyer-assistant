@@ -688,7 +688,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
   }
 }
 
-export async function qualifyLegalCase( disputeDetails: string, clientGoals?: string, onChunk?: (text: string) => void, userId?: string ): Promise<string> {
+export async function qualifyLegalCase( disputeDetails: string, clientGoals?: string, onChunk?: (text: string) => void, userId?: string, strategicCaseContext?: string ): Promise<string> {
   await throttleRequests();
 
   try {
@@ -697,6 +697,7 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
     const result = await requestSavedJob('qualify', {
       disputeDetails,
       clientGoals: clientGoals || '',
+      strategicCaseContext: strategicCaseContext || '',
     }, onChunk, userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
