@@ -37,7 +37,7 @@ export async function fetchServerCloudGeminiKeys(timeoutMs?: number): Promise<st
 
   try {
     const timeout = Number(timeoutMs);
-    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_keys?select=api_key,is_active`, {
+    const res = await fetch(`${supabaseUrl}/rest/v1/app_gemini_keys?select=api_key,is_active&order=created_at.asc,id.asc`, {
       method: 'GET',
       headers: {
         apikey: supabaseKey,
