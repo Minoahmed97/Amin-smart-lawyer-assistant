@@ -57,7 +57,7 @@ export async function testSupabaseConnection(
   urlInput: string,
   keyInput: string
 ): Promise<{ success: boolean; message: string }> {
-  const url = urlInput.trim().replace(/\\/$/, '');
+  const url = urlInput.trim().replace(/\/$/, '');
   const key = keyInput.trim();
 
   if (!url.startsWith('https://')) {
@@ -77,7 +77,7 @@ export async function testSupabaseConnection(
   }
   // Fetch header values must be ASCII. Reject hidden/non-ASCII characters
   // instead of allowing the browser to throw an opaque RequestInit error.
-  if (!/^[\\x21-\\x7E]+$/.test(key)) {
+  if (!/^[\x21-\x7E]+$/.test(key)) {
     return {
       success: false,
       message: 'مفتاح Supabase يحتوي على مسافات داخلية أو محارف غير صالحة. انسخ مفتاح anon public أو publishable مرة أخرى كما هو دون علامات اقتباس أو نص إضافي.',
