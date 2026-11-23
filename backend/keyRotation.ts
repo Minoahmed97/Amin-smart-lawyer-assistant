@@ -43,7 +43,6 @@ const KEY_QUOTA_COOLDOWN_MS = 60_000;
 const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
-const MAX_MODELS_PER_KEY_PER_REQUEST = 3;
 
 function rotationPairKey(key: string, model: string): string {
   return `${key}:${model}`;
@@ -93,12 +92,11 @@ function reserveStartIndex(count: number, pool: 'general' | 'ocr'): number {
 function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, ): string[] {
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
-  const available = models.filter((model) =>
+  return models.filter((model) =>
     !isCooling(modelCooldowns, model, now) &&
     !isCooling(pairCooldowns, rotationPairKey(key, model), now) &&
     !avoidPairs?.has(`${key}::${model}`)
   );
-  return available.slice(0, MAX_MODELS_PER_KEY_PER_REQUEST);
 }
 
 function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
@@ -111,24 +109,32 @@ function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
 }
 
 function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'other' {
+  let details = '';
+  try {
+    details = JSON.stringify(err?.error?.details || err?.response?.data?.error?.details || err?.details || '');
+  } catch {
+    details = '';
+  }
   const msg = [
     err?.message,
     err?.error?.message,
     err?.response?.data?.error?.message,
     err?.cause?.message,
     err?.statusText,
+    details,
   ].filter(Boolean).join(' ').toLowerCase();
   const status = Number(err?.status || err?.statusCode || err?.response?.status);
 
-  // استبعاد المفتاح بسبب الحصة لا يحدث لمجرد HTTP 429 أو RESOURCE_EXHAUSTED؛
-  // يجب أن تتضمن رسالة Google دلالة صريحة على تجاوز/نفاد الحصة.
-  const quotaExhausted = /quota exceeded|quota has been exceeded|quota exhausted|exceeded (?:your |the |current |project )?(?:current )?quota|quota limit (?:has been )?(?:reached|exceeded)|daily quota|monthly quota/.test(msg);
+  // 429 / RESOURCE_EXHAUSTED وحدهما لا يثبتان نفاد الحصة؛ قد يكونان حد معدل مؤقتاً.
+  // لا نصنف الخطأ كنفاد حصة إلا بوجود دلالة صريحة على تجاوز حصة/حد يومي أو شهري.
+  const quotaExhausted =
+    /quota.{0,60}(?:exceed|exhaust|deplet|reached)|(?:exceed|exhaust|deplet).{0,60}quota|daily.{0,40}quota.{0,40}(?:exceed|exhaust|reached)|monthly.{0,40}quota.{0,40}(?:exceed|exhaust|reached)/.test(msg);
   if (quotaExhausted) return 'quota';
 
   if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/.test(msg)) return 'invalid';
   if (
-    status === 429 || status === 408 || status === 503 || status === 504 ||
-    /resource_exhausted|rate.?limit|too many requests|timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|\\b503\\b/.test(msg)
+    status === 429 || status === 408 || status === 500 || status === 502 || status === 503 || status === 504 ||
+    /resource_exhausted|rate.?limit|too many requests|timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|\\b(?:500|502|503|504)\\b/.test(msg)
   ) return 'temporary';
   return 'other';
 }
@@ -642,40 +648,46 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
     const totalBudget = Math.max(0, deadlineAt - overallStart);
     const geminiDeadlineAt = overallStart + Math.floor(totalBudget * 0.9);
     let geminiError: any = null;
-    let geminiEmittedText = false;
+    let geminiBufferedText = '';
 
     if (totalBudget >= 10000) {
       try {
         await executeWithKeyRotationStream(action, (chunk) => {
-          if (chunk) geminiEmittedText = true;
-          onChunk(chunk);
+          if (chunk) geminiBufferedText += chunk;
         }, preferredModels, _ignoredClientFallbackKey, true, {
           ...executionOptions,
           deadlineAt: geminiDeadlineAt,
           providerAttempt: 'gemini-primary',
         });
+        if (geminiBufferedText) onChunk(geminiBufferedText);
         return;
       } catch (error: any) {
         geminiError = error;
-        if (geminiEmittedText) throw error;
+        // لا نبدأ OpenRouter إلا بعد انتهاء دورة Gemini على المفاتيح والنماذج المتاحة.
+        if (!error?.geminiAttemptsExhausted) {
+          if (geminiBufferedText) onChunk(geminiBufferedText);
+          throw error;
+        }
       }
     }
 
     if (deadlineAt - Date.now() >= 10000) {
-      let openRouterEmittedText = false;
+      let openRouterBufferedText = '';
       try {
         await executeWithKeyRotationStream(action, (chunk) => {
-          if (chunk) openRouterEmittedText = true;
-          onChunk(chunk);
+          if (chunk) openRouterBufferedText += chunk;
         }, preferredModels, _ignoredClientFallbackKey, false, {
           ...executionOptions,
           deadlineAt,
           providerAttempt: 'openrouter-fallback',
           previousProviderError: String(geminiError?.message || 'تعذر استخدام Gemini.'),
         });
+        if (openRouterBufferedText) onChunk(openRouterBufferedText);
         return;
       } catch (openRouterError: any) {
-        if (openRouterEmittedText) throw openRouterError;
+        // عند فشل الاحتياطي نحتفظ بأفضل نص جزئي أنتجه Gemini بدلاً من فقده.
+        if (geminiBufferedText) onChunk(geminiBufferedText);
+        if (openRouterBufferedText) onChunk(openRouterBufferedText);
         const combined: any = new Error(
           `فشلت محاولات Gemini على المفاتيح والنماذج المتاحة، وتعذر الاحتياطي OpenRouter. سبب Gemini: ${String(geminiError?.message || 'انتهت المهلة أو لم تتوفر محاولة كافية.')} سبب OpenRouter: ${String(openRouterError?.message || 'خطأ غير محدد.')}`
         );
@@ -686,6 +698,7 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       }
     }
 
+    if (geminiBufferedText) onChunk(geminiBufferedText);
     throw geminiError || timeoutError();
   }
 
@@ -740,6 +753,9 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
 
   const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
   let attemptedModelCount = 0;
+  let bestPartialText = '';
+  let lastGeminiError: any = null;
+
   for (let cycle = 0; cycle < 1; cycle++) {
     const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
     const startIdx = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
@@ -750,42 +766,43 @@ export async function executeWithKeyRotationStream( action: (ai: GoogleGenAI, ke
       const keyModels = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
 
       for (let m = 0; m < keyModels.length; m++) {
+        if (deadlineAt - Date.now() < 10000) break;
+        const model = keyModels[m];
         attemptedModelCount += 1;
-        executionOptions?.attemptedPairs?.add(rotationPairKey(currentKey, keyModels[m]));
-        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, 18000));
-        let emittedAnyChunk = false;
+        executionOptions?.attemptedPairs?.add(rotationPairKey(currentKey, model));
+        const ai = withAdaptiveAnswerLength(createGeminiClient(currentKey, Math.min(18000, Math.max(1000, deadlineAt - Date.now()))));
+        let attemptText = '';
         try {
-          const stream = await action(ai, currentKey, keyModels[m]);
+          const stream = await action(ai, currentKey, model);
           for await (const chunk of stream) {
             const text = typeof chunk?.text === 'string' ? chunk.text : '';
-            if (text) {
-              emittedAnyChunk = true;
-              onChunk(text);
-            }
+            if (text) attemptText += text;
           }
-          activeKeyIndex = currentKeyIndex;
-          return;
+          if (attemptText) {
+            activeKeyIndex = currentKeyIndex;
+            onChunk(attemptText);
+            return;
+          }
+          throw Object.assign(new Error('لم يصل نص من نموذج Gemini.'), { status: 503, statusCode: 503 });
         } catch (err: any) {
-          markRotationFailure(currentKey, keyModels[m], err, 'general');
-          if (emittedAnyChunk) {
-            activeKeyIndex = keys.length > 1 ? (currentKeyIndex + 1) % keys.length : currentKeyIndex;
-            throw err;
-          }
-          if (permanentlyInvalidKeys.has(currentKey)) break;
+          lastGeminiError = err;
+          if (attemptText.length > bestPartialText.length) bestPartialText = attemptText;
+          const kind = markRotationFailure(currentKey, model, err, 'general');
+          if (kind === 'quota' || kind === 'invalid' || permanentlyInvalidKeys.has(currentKey)) break;
+          // الخطأ المؤقت لا يوقف المفتاح ولا يمنع تجربة النماذج التالية.
         }
       }
     }
   }
-  if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
-    if (executionOptions?.providerAttempt === 'gemini-primary') {
-      throw Object.assign(new Error('لا توجد أزواج مفتاح/نموذج غير مستخدمة متاحة للاستكمال عبر Gemini.'), { status: 503, statusCode: 503 });
-    }
-    return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, true, {
-      ...executionOptions,
-      avoidPairs: undefined,
-    });
-  }
-  throw new Error('فشلت جميع محاولات تدوير البث.');
+
+  const exhaustedError: any = lastGeminiError || new Error(
+    attemptedModelCount === 0
+      ? 'لا توجد أزواج مفتاح/نموذج Gemini متاحة غير مستخدمة في هذه المهمة.'
+      : 'فشلت جميع محاولات تدوير البث عبر مفاتيح ونماذج Gemini المتاحة.'
+  );
+  exhaustedError.geminiAttemptsExhausted = true;
+  if (bestPartialText) onChunk(bestPartialText);
+  throw exhaustedError;
 }
 
 export default function handler(req: any, res: any) {
