@@ -95,7 +95,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk);
+        await generateDeepLegalResponse(prompt, writeChunk, { resumeText: typeof body?._resumePartialText === 'string' ? body._resumePartialText : '' });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
