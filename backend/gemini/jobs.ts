@@ -158,7 +158,7 @@ async function sendCompletionPush(userId: string, jobId: string, taskType: strin
     if (!response.ok) return;
     const subscriptions = await response.json();
     const taskNames: Record<string, string> = {
-      'counter-brief': 'توليد المذكرة', deconstruct: 'تحليل المستند', qualify: 'التكييف القانوني', refine: 'مراجعة الصياغة', 'legal-chat': 'الدردشة القانونية', ocr: 'استخراج النص من الملف',
+      'counter-brief': 'توليد المذكرة', deconstruct: 'تحليل المستند', qualify: 'التكييف القانوني', refine: 'مراجعة الصياغة', 'legal-chat': 'الدردشة القانونية', 'strategic-analysis': 'التحليل الاستراتيجي للقضية', ocr: 'استخراج النص من الملف',
     };
     const title = status === 'completed' ? 'اكتملت المهمة القانونية' : 'تعذّر إكمال المهمة القانونية';
     const fileLabel = taskType === 'ocr' && fileName ? ` (${String(fileName).slice(0, 120)})` : '';
