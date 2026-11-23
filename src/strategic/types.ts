@@ -160,6 +160,35 @@ export interface CaseRecommendation {
   status: 'proposed' | 'accepted' | 'rejected' | 'completed';
 }
 
+export interface OpponentIntentHypothesis {
+  hypothesis: string;
+  indicators: string[];
+  confidence: 'high' | 'medium' | 'low' | 'undetermined';
+  alternativeExplanation: string;
+}
+
+export interface OpponentNextMove {
+  move: string;
+  trigger: string;
+  likelihood: 'high' | 'medium' | 'low' | 'undetermined';
+  preparation: string;
+}
+
+export interface StrategicTimingRecommendation {
+  action: string;
+  timing: string;
+  reason: string;
+  riskOfActingEarly: string;
+  riskOfDelay: string;
+}
+
+export interface CourtScenario {
+  scenario: string;
+  likelyConcern: string;
+  possibleEffect: string;
+  preparation: string;
+}
+
 export interface CaseStrategy {
   objective: string;
   primaryApproach: string;
@@ -167,7 +196,14 @@ export interface CaseStrategy {
   primaryDefenseIds: string[];
   alternativeDefenseIds: string[];
   opponentArguments: string[];
+  opponentIntentHypotheses?: OpponentIntentHypothesis[];
+  opponentNextMoves?: OpponentNextMove[];
   rebuttalPoints: string[];
+  timingRecommendations?: StrategicTimingRecommendation[];
+  courtScenarios?: CourtScenario[];
+  strategicBlindSpots?: string[];
+  avoidActions?: string[];
+  nextBestAction?: string;
   evidenceGaps: string[];
   proceduralSteps: CaseRecommendation[];
   risks: CaseRisk[];
