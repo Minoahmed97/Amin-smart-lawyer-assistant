@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { enforceAiCooldown, consumeOperation } from '../auth.ts';
+import { requireActiveSession, enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
 import { loadOwnedCaseFile, persistOwnedCaseFile } from './cases.ts';
 import { runStrategicAnalysis } from './analysisEngine.ts';
@@ -25,10 +25,9 @@ export default async function handler(req: any, res: any) {
     if (!caseId) return res.status(400).json({ error: 'معرّف ملف القضية مطلوب للتحليل.' });
 
     rateLimit(req, 'gemini-strategic-analysis', 5, 10 * 60 * 1000);
-    await enforceAiCooldown(req);
+    const { session } = await requireActiveSession(req);
+    await enforceAiCooldown(req, session);
     limitBodyString(body.additionalInstructions, 12000, 'التعليمات الإضافية');
-
-    const { session } = await (await import('../auth.ts')).requireActiveSession(req);
     const loaded = await loadOwnedCaseFile(session.userId, caseId);
     const caseFile = loaded.caseFile;
 
