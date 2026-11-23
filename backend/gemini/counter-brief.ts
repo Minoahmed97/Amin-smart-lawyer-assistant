@@ -150,7 +150,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           segmentPrefixResolved = true;
         }, undefined, undefined, false, {
           deadlineAt,
-          avoidPairs: Array.from(usedPairs),
+          avoidPairs: [],
           attemptedPairs: usedPairs,
           startKey: continuationGeminiStartKey || undefined,
         });
@@ -254,7 +254,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         };
       }, undefined, undefined, false, {
         deadlineAt,
-        avoidPairs: Array.from(usedPairs),
+        avoidPairs: [],
         attemptedPairs: usedPairs,
         startKey: continuationGeminiStartKey || undefined,
       });
