@@ -89,6 +89,10 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
       masked: string;
       prefix?: string;
       isActive: boolean;
+      runtimeStatus?: 'not_tested' | 'working' | 'invalid' | 'quota' | 'temporary' | 'error';
+      lastModel?: string | null;
+      lastError?: string | null;
+      lastAttemptAt?: string | null;
     }>;
     rotationEnabled: boolean;
   }>({
@@ -393,7 +397,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || 'تعذر حفظ المفتاح على الخادم المركزي.');
 
-      setKeyActionMsg({ type: 'success', text: 'تم اختبار المفتاح وحفظه على الخادم المركزي بنجاح.' });
+      setKeyActionMsg({ type: 'success', text: data?.message || 'تم حفظ المفتاح دون فحص؛ ستتحدث حالته بعد أول استخدام فعلي.' });
       setNewApiKeyInput('');
       fetchKeysStatus();
     } catch (err: any) {
@@ -829,12 +833,12 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                           {keyAddingLoading ? (
                             <>
                               <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                              <span>جارٍ الفحص والحفظ...</span>
+                              <span>جارٍ الحفظ...</span>
                             </>
                           ) : (
                             <>
                               <CheckCircle2 className="w-3.5 h-3.5" />
-                              <span>فحص وحفظ وإضافة للتدوير</span>
+                              <span>حفظ وإضافة للتدوير دون فحص</span>
                             </>
                           )}
                         </button>
@@ -868,23 +872,42 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                                     <span>{k.name}</span>
                                     {k.isActive ? (
                                       <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-full font-bold">
-                                        مفعل وجاهز للخدمة
+                                        مفعل في التدوير
                                       </span>
                                     ) : (
                                       <span className="text-[10px] bg-sky-500/10 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded-full font-bold">
-                                        احتياطي جاهز
+                                        احتياطي في التدوير
                                       </span>
                                     )}
                                   </div>
                                   <div className="text-[11px] text-slate-400 font-mono mt-0.5">
                                     البادئة: <b className="text-amber-300 font-bold">{k.prefix || 'AQ'}</b> | المقنع: {k.masked}
                                   </div>
+                                  <div className="mt-1 text-[11px] leading-relaxed">
+                                    <span className={`font-bold ${
+                                      k.runtimeStatus === 'working' ? 'text-emerald-300' :
+                                      k.runtimeStatus === 'invalid' ? 'text-rose-300' :
+                                      k.runtimeStatus === 'quota' ? 'text-amber-300' :
+                                      k.runtimeStatus === 'temporary' || k.runtimeStatus === 'error' ? 'text-orange-300' :
+                                      'text-slate-400'
+                                    }`}>
+                                      {k.runtimeStatus === 'working' ? 'آخر استخدام: المفتاح عمل بنجاح' :
+                                       k.runtimeStatus === 'invalid' ? 'آخر استخدام: Google رفض المفتاح' :
+                                       k.runtimeStatus === 'quota' ? 'آخر استخدام: الحصة مستنفدة لهذا النموذج' :
+                                       k.runtimeStatus === 'temporary' ? 'آخر استخدام: عطل مؤقت' :
+                                       k.runtimeStatus === 'error' ? 'آخر استخدام: فشل الطلب' :
+                                       'الحالة: لم يُستخدم بعد'}
+                                    </span>
+                                    {k.lastModel && <span className="text-slate-400"> • النموذج: <b dir="ltr">{k.lastModel}</b></span>}
+                                    {k.lastAttemptAt && <span className="text-slate-500"> • {new Date(k.lastAttemptAt).toLocaleString('ar-EG')}</span>}
+                                    {k.lastError && <div className="mt-1 text-rose-300/90 break-words">{k.lastError}</div>}
+                                  </div>
                                 </div>
                               </div>
                               <div className="flex items-center gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => handleTestSavedKey(k.index)}
+                                  onClick={() => handleTestSavedKey(k.index)
                                   disabled={keyAddingLoading}
                                   className="px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-950/20 text-emerald-300 hover:bg-emerald-950/50 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1"
                                   title="فحص هذا المفتاح المحفوظ"
