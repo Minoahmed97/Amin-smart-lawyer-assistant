@@ -345,7 +345,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setDraftError('');
     setGeneratedBrief('');
     try {
-      const strategicCaseContext = await prepareStrategicTaskContext(userId, 'drafting');
+      const strategicCaseContext = await prepareStrategicTaskContext(userId, 'drafting', formData);
       const aiText = await draftCounterBrief({
         ...formData,
         strategicCaseContext,
