@@ -49,7 +49,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   const maxContinuations = 5;
-  // Shared ledger: every attempted Gemini/OpenRouter pair is retained across continuation segments.
+  // Shared ledger: every attempted Gemini key/model pair is retained across continuation segments.
   const usedPairs = new Set<string>();
   const deadlineAt = Date.now() + 270000;
   let accumulatedText = '';
@@ -77,11 +77,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
       try {
         await executeWithKeyRotationStream(async (ai, key, model) => {
-          activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
+          activePair = `${key}::${model}`;
           activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-          const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-            ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-            : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+          const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
 
           return (async function* () {
             let pendingMarkerTail = '';
@@ -171,7 +169,18 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
       if (activePair) {
         usedPairs.add(activePair);
-        if (!activePair.startsWith('openrouter::')) continuationGeminiStartKey = activePair.split('::')[0];
+        continuationGeminiStartKey = activePair.split('::')[0];
+      }
+      if (segmentError) {
+        console.warn('[counter-brief] segment failed; retaining partial output for Gemini continuation', {
+          reason: String(segmentError?.message || segmentError).slice(0, 500),
+          providerModel: activePairLabel || 'unknown',
+          partialCharacters: segmentBuffer.length,
+          accumulatedCharacters: accumulatedText.length,
+          continuationCount,
+          willResume: Boolean(accumulatedText.trim()),
+        });
+        if (segmentError.partialCharacters === undefined) segmentError.partialCharacters = segmentBuffer.length;
       }
       if (segmentError?.blockedResponse) throw segmentError;
       if (!segmentPrefixResolved && segmentBuffer) {
@@ -228,9 +237,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
         activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
         activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
-        const providerSearchEnabled = options.legalResearch && (key === 'openrouter'
-          ? process.env.OPENROUTER_ENABLE_WEB_SEARCH === 'true'
-          : process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true');
+        const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
