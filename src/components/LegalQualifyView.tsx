@@ -127,7 +127,11 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     setIsLoading(true);
     setQualifyError('');
     void resumeSavedAiTask('qualify', jobId, (chunk) => {
-      if (active && operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
+      if (active && operationId === resultOperationRef.current) setQualificationResult((current) => {
+        const next = current + chunk;
+        persistentStorage.setItem('judicial_qualify_result', next);
+        return next;
+      });
     }, userId).then((result) => {
       if (!active || operationId !== resultOperationRef.current) return;
       setQualificationResult(result);
@@ -155,7 +159,11 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     setQualificationResult('');
     try {
       const result = await qualifyLegalCase(disputeDetails, clientGoals, (chunk) => {
-        if (operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
+        if (operationId === resultOperationRef.current) setQualificationResult((current) => {
+          const next = current + chunk;
+          persistentStorage.setItem('judicial_qualify_result', next);
+          return next;
+        });
       }, userId);
       if (result && operationId === resultOperationRef.current) {
         setQualificationResult(result);
