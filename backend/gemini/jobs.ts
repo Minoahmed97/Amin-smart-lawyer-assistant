@@ -25,8 +25,8 @@ const PUSH_TABLE = 'app_push_subscriptions';
 const OCR_STORAGE_BUCKET = 'amin-ocr-private';
 const MAX_OCR_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_OCR_BATCH_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_FACTS = 750_000;
-const MAX_CONTEXT = 200_000;
+const MAX_FACTS = 900_000;
+const MAX_CONTEXT = 300_000;
 const JOB_STALE_TIMEOUT_MS = 5 * 60 * 1000 + 20 * 1000;
 const USER_CANCELLED_OCR_MESSAGE = 'ألغى المستخدم معالجة الملف.';
 
