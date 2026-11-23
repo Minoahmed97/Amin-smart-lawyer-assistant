@@ -57,6 +57,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let lastError: any = null;
   let previousPair = '';
   let continuationGeminiStartKey = '';
+  let continuationGeminiStartModel = '';
 
   const makeContinuationPrompt = () => accumulatedText
     ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
@@ -158,9 +159,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           segmentPrefixResolved = true;
         }, undefined, undefined, false, {
           deadlineAt,
-          avoidPairs: Array.from(usedPairs),
-          attemptedPairs: usedPairs,
           startKey: continuationGeminiStartKey || undefined,
+          startModel: continuationGeminiStartModel || undefined,
+          draftingMode: true,
         });
       } catch (error: any) {
         segmentError = error;
@@ -170,6 +171,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       if (activePair) {
         usedPairs.add(activePair);
         continuationGeminiStartKey = activePair.split('::')[0];
+      continuationGeminiStartModel = activePair.split('::')[1] || '';
+        continuationGeminiStartModel = activePair.split('::')[1] || '';
       }
       if (segmentError) {
         console.warn('[counter-brief] segment failed; retaining partial output for Gemini continuation', {
@@ -271,9 +274,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         };
       }, undefined, undefined, false, {
         deadlineAt,
-        avoidPairs: Array.from(usedPairs),
-        attemptedPairs: usedPairs,
         startKey: continuationGeminiStartKey || undefined,
+        startModel: continuationGeminiStartModel || undefined,
+        draftingMode: true,
       });
     } catch (error: any) {
       lastError = error;
