@@ -943,7 +943,15 @@ export default async function handler(req: any, res: any) {
         });
       }
       const taskType = String(requestBody?.taskType || 'counter-brief');
-      const payload = safePayload(requestBody?.payload || requestBody, taskType);
+      const incomingPayload = requestBody?.payload || requestBody;
+      // A missing draft row can be recreated after a browser/network interruption.
+      // Seed the new durable row with the already-generated text so resuming the
+      // same job never discards the partial Gemini output.
+      const initialPartialResult = taskType === 'counter-brief' && typeof incomingPayload?._resumePartialText === 'string'
+        ? incomingPayload._resumePartialText
+        : '';
+      if (initialPartialResult) limitBodyString(initialPartialResult, MAX_FACTS, 'النص الجزئي المحفوظ');
+      const payload = safePayload(incomingPayload, taskType);
       
       scheduleBackground((async () => {
         try {
@@ -969,7 +977,7 @@ export default async function handler(req: any, res: any) {
           task_type: storedTaskType,
           status: 'queued',
           payload,
-          partial_result: '',
+          partial_result: initialPartialResult,
           result: '',
           error: null,
         }),
