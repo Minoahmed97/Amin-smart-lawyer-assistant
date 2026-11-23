@@ -46,6 +46,7 @@ export default async function handler(req: any, res: any) {
     const usage = await consumeOperation(req, 'gemini-operation');
 
     const createdAt = new Date().toISOString();
+    const fullReevaluationCompleted = result.completedStages.length === 7;
     const memoryEntries: CaseMemoryEntry[] = result.completedStages.map((stage) => {
       const snapshot = result.stageResults[stage]!;
       return {
@@ -67,11 +68,13 @@ export default async function handler(req: any, res: any) {
       ...caseFile,
       analysisSnapshots: [...caseFile.analysisSnapshots, ...result.completedStages.map((stage) => result.stageResults[stage]!)].slice(-100),
       memory: [...caseFile.memory, ...memoryEntries].slice(-1000),
-      contextChanges: caseFile.contextChanges.map((change) =>
-        change.reevaluationStatus === 'pending'
-          ? { ...change, reevaluationStatus: 'completed' as const }
-          : change,
-      ),
+      contextChanges: fullReevaluationCompleted
+        ? caseFile.contextChanges.map((change) =>
+            change.reevaluationStatus === 'pending'
+              ? { ...change, reevaluationStatus: 'completed' as const }
+              : change,
+          )
+        : caseFile.contextChanges,
       lastAnalyzedAt: createdAt,
       ...(result.strategy ? { strategy: result.strategy } : {}),
     };
@@ -88,7 +91,13 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({
       result: {
         ...result,
-        warnings: [...result.warnings, ...(persistenceWarning ? [persistenceWarning] : [])],
+        warnings: [
+          ...result.warnings,
+          ...(!fullReevaluationCompleted && caseFile.contextChanges.some((change: any) => change.reevaluationStatus === 'pending')
+            ? ['تم تنفيذ المراحل المحددة فقط؛ تظل تغييرات القضية معلّقة حتى اكتمال إعادة التقييم الشامل.']
+            : []),
+          ...(persistenceWarning ? [persistenceWarning] : []),
+        ],
       },
       persisted,
       remainingCredits: usage.remainingCredits,
