@@ -339,6 +339,114 @@ export async function getStrategicAnalysisJob(jobId: string): Promise<StrategicA
 }
 
 
+export type StrategicTaskType = 'deconstruct' | 'drafting' | 'qualification';
+
+const STRATEGIC_TASK_STAGES: Record<StrategicTaskType, import('./types.ts').StrategicStage[]> = {
+  deconstruct: ['intake', 'evidence_review', 'defense_analysis', 'opponent_analysis', 'strategy', 'final_review'],
+  drafting: ['intake', 'evidence_review', 'legal_qualification', 'defense_analysis', 'strategy', 'final_review'],
+  qualification: ['intake', 'evidence_review', 'legal_qualification', 'final_review'],
+};
+
+const STRATEGIC_TASK_LABELS: Record<StrategicTaskType, string> = {
+  deconstruct: 'تفكيك مستند الخصم وتحديد الرد والإجراء القضائي المقابل',
+  drafting: 'إعداد العمل القضائي المطلوب في ضوء ملف القضية والمذكرات والدفوع السابقة',
+  qualification: 'تكييف النزاع وتحديد المسار والإجراء القانوني الأنسب',
+};
+
+/**
+ * Runs the case-analysis engine before a linked legal task, waits for its
+ * durable result, then returns the refreshed shared case context plus the
+ * task-specific strategic findings. With no active case, the legacy flow is
+ * intentionally preserved and an empty context is returned.
+ */
+export async function prepareStrategicTaskContext(
+  userId: string,
+  taskType: StrategicTaskType,
+): Promise<string> {
+  const caseId = getActiveStrategicCaseId(userId);
+  if (!caseId) return '';
+
+  const taskLabel = STRATEGIC_TASK_LABELS[taskType];
+  const { jobId } = await enqueueStrategicAnalysis(
+    caseId,
+    STRATEGIC_TASK_STAGES[taskType],
+    `تحليل تمهيدي إلزامي قبل تنفيذ المهمة التالية: ${taskLabel}. افحص ملف القضية الموحد ونتائج التحليل السابقة، وحدد المسار القانوني الأنسب ومخاطر المهمة والنقاط التي يجب مراعاتها عند تنفيذها. لا تصغ المستند المطلوب في هذه المرحلة؛ أخرج تحليلاً استراتيجياً منظماً، وميّز الثابت من الادعاء والاستنتاج وما يحتاج تحققاً. لا تفترض أن كل ما سبق بحثه أو تقديمه ينطبق على المهمة الحالية دون مراجعة.`,
+  );
+
+  if (!jobId) throw new Error('لم يتم إنشاء مهمة التحليل الاستراتيجي التمهيدي.');
+
+  let completed: StrategicAnalysisJobStatus | null = null;
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    const status = await getStrategicAnalysisJob(jobId);
+    if (status.status === 'completed') {
+      completed = status;
+      break;
+    }
+    if (status.status === 'failed') {
+      throw new Error(status.error || 'تعذر إتمام التحليل الاستراتيجي التمهيدي؛ لم تبدأ المهمة القانونية.');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  if (!completed) {
+    throw new Error('استغرق التحليل الاستراتيجي التمهيدي وقتاً أطول من الحد المسموح. لم تبدأ المهمة القانونية؛ يمكنك إعادة المحاولة ومتابعة حالة التحليل.');
+  }
+
+  let jobPayload: any;
+  try { jobPayload = JSON.parse(completed.result); } catch {
+    throw new Error('اكتملت مهمة التحليل، لكن تعذر قراءة نتيجتها المنظمة. لم تبدأ المهمة القانونية.');
+  }
+  if (jobPayload?.persisted !== true || !jobPayload?.result?.caseId || jobPayload.result.caseId !== caseId) {
+    throw new Error('لم يتم حفظ التحليل الاستراتيجي في ملف القضية أو لم يتطابق مع القضية المختارة. لم تبدأ المهمة القانونية.');
+  }
+
+  const baseContext = await getActiveStrategicCaseContext(userId);
+  if (!baseContext) throw new Error('تعذر استرجاع سياق القضية بعد التحليل الاستراتيجي.');
+
+  const result = jobPayload.result;
+  const stageResults = result.stageResults && typeof result.stageResults === 'object'
+    ? Object.entries(result.stageResults).map(([stage, value]: [string, any]) => ({
+        stage,
+        summary: String(value?.summary || ''),
+        findings: Array.isArray(value?.findings) ? value.findings.filter((item: unknown) => typeof item === 'string') : [],
+        unresolvedQuestions: Array.isArray(value?.unresolvedQuestions) ? value.unresolvedQuestions.filter((item: unknown) => typeof item === 'string') : [],
+        contradictions: Array.isArray(value?.contradictions) ? value.contradictions.filter((item: unknown) => typeof item === 'string') : [],
+        missingEvidence: Array.isArray(value?.missingEvidence) ? value.missingEvidence.filter((item: unknown) => typeof item === 'string') : [],
+      }))
+    : [];
+
+  const strategy = result.strategy && typeof result.strategy === 'object' ? {
+    objective: String(result.strategy.objective || ''),
+    primaryApproach: String(result.strategy.primaryApproach || ''),
+    nextBestAction: String(result.strategy.nextBestAction || ''),
+    rebuttalPoints: Array.isArray(result.strategy.rebuttalPoints) ? result.strategy.rebuttalPoints : [],
+    evidenceGaps: Array.isArray(result.strategy.evidenceGaps) ? result.strategy.evidenceGaps : [],
+    risks: Array.isArray(result.strategy.risks) ? result.strategy.risks : [],
+    priorities: Array.isArray(result.strategy.priorities) ? result.strategy.priorities : [],
+    avoidActions: Array.isArray(result.strategy.avoidActions) ? result.strategy.avoidActions : [],
+  } : null;
+
+  const directive = {
+    task: taskLabel,
+    caseId,
+    completedStages: result.completedStages || [],
+    stageResults,
+    strategy,
+    warnings: Array.isArray(result.warnings) ? result.warnings : [],
+    mandatoryUse: [
+      'ابدأ بفهم المهمة الحالية على ضوء التحليل التمهيدي وملف القضية المحدث، ولا تتعامل معها كطلب منفصل عن القضية.',
+      'اختر الإجراء أو نوع العمل القانوني الذي تسنده الوقائع والإجراءات فعلاً، ولا تنفذ طلباً غير ملائم دون تنبيه المحامي وبيان السبب.',
+      'راجع المذكرات والطلبات والدفوع السابقة ذات الصلة، وميّز ما سبق بحثه عما استجد وما يحتاج رداً جديداً.',
+      'اربط كل نتيجة جوهرية بمصدرها، ولا تحول الاستنتاجات أو أقوال الخصوم أو OCR غير المتحقق إلى حقائق.',
+      'إذا كان هناك نقص جوهري أو تعارض يمنع اختيار مسار آمن، اذكره بوضوح بدلاً من اختراع جواب.',
+      'التحليل التمهيدي أداة مساعدة لا تعتمد إلا بعد مراجعة المحامي.',
+    ],
+  };
+
+  return baseContext + '\\n\\n[توجيه المعاون القانوني الاستراتيجي الناتج عن تحليل فعلي محفوظ للقضية قبل تنفيذ المهمة الحالية]\\n' + JSON.stringify(directive);
+}
+
+
 const ACTIVE_STRATEGIC_CASE_PREFIX = 'amin_active_strategic_case_v1:';
 
 export function getActiveStrategicCaseId(userId: string): string {
