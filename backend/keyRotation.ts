@@ -115,7 +115,7 @@ function createGeminiClient(apiKey: string, timeoutMs?: number): GoogleGenAI {
 function getGeminiErrorKind(err: any): 'quota' | 'invalid' | 'temporary' | 'other' {
   const msg = String(err?.message || err?.error?.message || err?.response?.data?.error?.message || '').toLowerCase();
   const status = Number(err?.status || err?.statusCode || err?.response?.status || err?.response?.statusCode);
-  const confirmedQuota = /quota[^.]{0,100}(exceed|exhaust|limit)|(?:exceed|exhaust)[^.]{0,100}quota|current quota|daily quota|per day quota|limit:\\s*0/.test(msg);
+  const confirmedQuota = /quota[^.]{0,100}(exceed|exhaust|limit)|(?:exceed|exhaust)[^.]{0,100}quota|current quota|daily quota|per day quota|limit:\s*0/.test(msg);
   const rateLimit = /rate.?limit|too many requests|requests per minute|requests per second/.test(msg);
   if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.*(invalid|revoked|deleted)|credential.*invalid/.test(msg)) return 'invalid';
   if (confirmedQuota && !rateLimit) return 'quota';
@@ -649,7 +649,7 @@ export async function executeWithKeyRotationStream(
             kind,
             status,
             partialCharacters,
-            reason: String(error?.message || error).slice(0, 500),
+            reason: safeGeminiDiagnostic(error),
           });
 
           markRotationFailure(currentKey, model, error, 'general');
