@@ -1005,8 +1005,14 @@ export default async function handler(req: any, res: any) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
-            if (existing.status === 'queued' && requestBody?.deferQueue !== true) {
-              await enqueueDurableAiJob(existing.id);
+            if (existing.status === 'queued') {
+              if (isPdfOcrPayload(taskType, payload)) {
+                scheduleBackground(dispatchQueuedJob(existing.id));
+              } else if (taskType !== 'ocr') {
+                if (requestBody?.deferQueue !== true) await enqueueDurableAiJob(existing.id);
+              } else if (requestBody?.deferQueue !== true) {
+                await send('amin-ai-jobs', { jobId: existing.id });
+              }
             }
             return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
           }
@@ -1015,10 +1021,15 @@ export default async function handler(req: any, res: any) {
       }
 
       try {
-        // All legal AI jobs use the same durable queue consumer. This avoids
-        // acknowledging a POST while a best-effort self-fetch/ background task
-        // may never reach the worker in a serverless invocation.
-        if (requestBody?.deferQueue !== true) {
+        if (taskType === 'ocr') {
+          // Keep the existing OCR dispatchers unchanged.
+          if (isPdfOcrPayload(taskType, payload)) {
+            scheduleBackground(dispatchQueuedJob(id));
+          } else if (requestBody?.deferQueue !== true) {
+            await send('amin-ai-jobs', { jobId: id });
+          }
+        } else if (requestBody?.deferQueue !== true) {
+          // Legal analysis and drafting use the durable queue consumer.
           await enqueueDurableAiJob(id);
         }
       } catch (queueError: any) {
@@ -1070,9 +1081,14 @@ export default async function handler(req: any, res: any) {
         if (queuedAgain.ok) {
           const changedRows = await queuedAgain.json().catch(() => []);
           if (Array.isArray(changedRows) && changedRows.length) {
-            await enqueueDurableAiJob(id).catch((error) => {
-              console.warn('Queued AI job redelivery deferred:', safeDiagnosticMessage((error as any)?.message || error));
-            });
+            if (job.task_type === 'ocr') {
+              if (isPdfJob) scheduleBackground(dispatchQueuedJob(id));
+              else await send('amin-ai-jobs', { jobId: id });
+            } else {
+              await enqueueDurableAiJob(id).catch((error) => {
+                console.warn('Queued AI job redelivery deferred:', safeDiagnosticMessage((error as any)?.message || error));
+              });
+            }
           }
         }
       }
@@ -1091,7 +1107,12 @@ export default async function handler(req: any, res: any) {
           );
           const changedRows = requeued.ok ? await requeued.json() : [];
           if (Array.isArray(changedRows) && changedRows.length) {
-            await enqueueDurableAiJob(id);
+            if (job.task_type === 'ocr') {
+              if (isPdfJob) scheduleBackground(dispatchQueuedJob(id));
+              else await send('amin-ai-jobs', { jobId: id });
+            } else {
+              await enqueueDurableAiJob(id);
+            }
           }
           const refreshed = await supabase(jobPath);
           const refreshedRows = await refreshed.json();
