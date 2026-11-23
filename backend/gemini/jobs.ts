@@ -8,6 +8,7 @@ import deconstructHandler from './deconstruct.ts';
 import qualifyHandler from './qualify.ts';
 import refineHandler from './refine.ts';
 import chatHandler from './chat.ts';
+import strategicAnalysisHandler from '../strategic/analyze.ts';
 import ocrHandler from '../ocr.ts';
 import { validateBase64Payload, limitBodyString } from '../security.ts';
 
@@ -17,6 +18,7 @@ const TASK_HANDLERS: Record<string, (req: any, res: any) => any> = {
   qualify: qualifyHandler,
   refine: refineHandler,
   'legal-chat': chatHandler,
+  'strategic-analysis': strategicAnalysisHandler,
   ocr: ocrHandler,
 };
 
