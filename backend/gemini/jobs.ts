@@ -443,6 +443,21 @@ function scheduleBackground(task: Promise<unknown>) {
   }
 }
 
+async function enqueueDurableAiJob(jobId: string): Promise<void> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await send('amin-ai-jobs', { jobId });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+  }
+  const message = safeDiagnosticMessage((lastError as any)?.message || lastError);
+  throw new Error(`تعذر إدخال المهمة إلى طابور المعالجة الدائم بعد ثلاث محاولات: ${message}`);
+}
+
 function toPayload(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.fromEntries(
@@ -990,12 +1005,8 @@ export default async function handler(req: any, res: any) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
-            if (existing.status === 'queued') {
-              if (isPdfOcrPayload(taskType, payload) || taskType !== 'ocr') {
-                scheduleBackground(dispatchQueuedJob(existing.id));
-              } else if (requestBody?.deferQueue !== true) {
-                await send('amin-ai-jobs', { jobId: existing.id });
-              }
+            if (existing.status === 'queued' && requestBody?.deferQueue !== true) {
+              await enqueueDurableAiJob(existing.id);
             }
             return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
           }
@@ -1004,19 +1015,21 @@ export default async function handler(req: any, res: any) {
       }
 
       try {
-        if (isPdfOcrPayload(taskType, payload) || taskType !== 'ocr') {
-          scheduleBackground(dispatchQueuedJob(id));
-        } else if (requestBody?.deferQueue !== true) {
-          await send('amin-ai-jobs', { jobId: id });
+        // All legal AI jobs use the same durable queue consumer. This avoids
+        // acknowledging a POST while a best-effort self-fetch/ background task
+        // may never reach the worker in a serverless invocation.
+        if (requestBody?.deferQueue !== true) {
+          await enqueueDurableAiJob(id);
         }
       } catch (queueError: any) {
+        const queueMessage = String((queueError as any)?.message || 'تعذر إدخال المهمة إلى الطابور الدائم.').slice(0, 500);
         await patchJob(id, session.userId, {
           status: 'failed',
-          error: 'تعذر إدخال مهمة الصور إلى الطابور الخلفي. أعد المحاولة.',
+          error: queueMessage,
           payload: {},
           completed_at: new Date().toISOString(),
         });
-        throw new Error('تعذر تشغيل طابور الصور الخلفي على الخادم.');
+        throw new Error(queueMessage);
       }
       return res.status(202).json({ jobId: id, status: 'queued' });
     }
@@ -1055,8 +1068,7 @@ export default async function handler(req: any, res: any) {
           );
           const changedRows = requeued.ok ? await requeued.json() : [];
           if (Array.isArray(changedRows) && changedRows.length) {
-            if (isPdfJob || job.task_type !== 'ocr') scheduleBackground(dispatchQueuedJob(id));
-            else await send('amin-ai-jobs', { jobId: id });
+            await enqueueDurableAiJob(id);
           }
           const refreshed = await supabase(jobPath);
           const refreshedRows = await refreshed.json();
