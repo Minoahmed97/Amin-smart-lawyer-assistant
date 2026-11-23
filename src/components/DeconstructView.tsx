@@ -154,10 +154,9 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setDeconstructError('');
     void resumeSavedAiTask('deconstruct', jobId, (chunk) => {
       if (active && operationId === resultOperationRef.current) setAnalysisResult((current) => {
-        if (!current) return chunk;
-        if (chunk.startsWith(current)) return chunk;
-        if (current.startsWith(chunk)) return current;
-        return current + chunk;
+        const next = !current ? chunk : chunk.startsWith(current) ? chunk : current.startsWith(chunk) ? current : current + chunk;
+        persistentStorage.setItem('judicial_deconstruct_result', next);
+        return next;
       });
     }, userId).then((result) => {
       if (!active || operationId !== resultOperationRef.current) return;
@@ -194,7 +193,11 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
         caseContext,
         userId,
       }, (chunk) => {
-        if (operationId === resultOperationRef.current) setAnalysisResult((current) => current + chunk);
+        if (operationId === resultOperationRef.current) setAnalysisResult((current) => {
+          const next = current + chunk;
+          persistentStorage.setItem('judicial_deconstruct_result', next);
+          return next;
+        });
       });
       if (result && operationId === resultOperationRef.current) {
         setAnalysisResult(result);
