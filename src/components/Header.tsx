@@ -26,7 +26,7 @@ interface BeforeInstallPromptEvent extends Event {
 
 interface HeaderProps {
   activeTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community' | 'strategic';
-  setActiveTab: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community') => void;
+  setActiveTab: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community' | 'strategic') => void;
   onOpenAdmin?: () => void;
   userName?: string;
   vaultModelsCount?: number;
