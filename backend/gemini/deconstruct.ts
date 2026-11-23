@@ -34,9 +34,9 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-deconstruct', 8, 10 * 60 * 1000);
     await enforceAiCooldown(req);
 
-    limitBodyString(opponentBriefText, 200000, 'مذكرة الخصم');
+    limitBodyString(opponentBriefText, 900000, 'مذكرة الخصم');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
-    limitBodyString(caseContext, 30000, 'ملف القضية');
+    limitBodyString(caseContext, 150000, 'ملف القضية');
     let caseContextText = '';
     if (typeof caseContext === 'string' && caseContext.trim()) {
       try {
