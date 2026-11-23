@@ -69,7 +69,8 @@ function markRotationFailure(key: string, model: string, error: any, pool: 'gene
     invalidKeys.add(key);
     keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
   } else if (kind === 'quota') {
-    if (pool === 'ocr') keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
+    // A key is skipped globally only after Gemini confirms quota exhaustion.
+    keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
     pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
   } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
     pairCooldowns.set(pair, now + MODEL_BUSY_COOLDOWN_MS);
