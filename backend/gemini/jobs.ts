@@ -247,7 +247,7 @@ function safePayload(input: any, taskType: string) {
       error.statusCode = 400;
       throw error;
     }
-    limitBodyString(input?.additionalInstructions, 12000, 'تعليمات التحليل الاستراتيجي');
+    limitBodyString(input?.additionalInstructions, 110000, 'تعليمات التحليل الاستراتيجي');
     const allowedStages = ['intake', 'evidence_review', 'legal_qualification', 'defense_analysis', 'opponent_analysis', 'strategy', 'final_review'];
     const stages = input?.requestedStages === undefined ? allowedStages : input.requestedStages;
     if (!Array.isArray(stages) || !stages.length || stages.length > allowedStages.length || stages.some((stage: unknown) => !allowedStages.includes(String(stage)))) {
