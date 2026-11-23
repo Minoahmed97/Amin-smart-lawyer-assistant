@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getSessionToken } from '../services/authService.ts';
+import { getActiveStrategicCaseContext } from '../strategic/caseFileService.ts';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -191,6 +192,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
         try { localStorage.setItem(pendingKey, JSON.stringify({ jobId, question, resultFingerprint: fingerprint(result) })); } catch {}
       }
 
+      const strategicCaseContext = await getActiveStrategicCaseContext(String(userId || ''));
       const headers = {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${sessionToken}`,
@@ -211,6 +213,7 @@ export const LegalFollowupChat: React.FC<Props> = ({ taskType, userId, originalC
               taskType,
               originalContext: requestOriginalContext,
               result: requestResult,
+              strategicCaseContext,
               messages: [{ role: 'user', content: question }],
             },
             }),
