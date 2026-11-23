@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle, BookOpen, BrainCircuit, BriefcaseBusiness, CheckCircle2,
-  ChevronDown, ChevronUp, CircleHelp, FilePlus2, Loader2, Plus, RefreshCw,
-  Save, ShieldAlert, Sparkles, X,
+  FilePlus2, Loader2, Plus, RefreshCw,
+  Save, ShieldAlert, Sparkles,
 } from 'lucide-react';
 import type { UnifiedCaseFile, StrategicStage, CaseAnalysisSnapshot } from '../strategic/types.ts';
 import {
-  addCaseFact, createCaseFile, createEmptyCaseFile, enqueueStrategicAnalysis,
-  getCaseFile, getStrategicAnalysisJob, listCaseFiles, makeCaseFact,
+  addCaseFact, addCaseParty, addCaseRequest, createCaseFile, createEmptyCaseFile, enqueueStrategicAnalysis,
+  getCaseFile, getStrategicAnalysisJob, listCaseFiles, makeCaseFact, makeCaseParty,
 } from '../strategic/caseFileService.ts';
 
 const STAGES: { id: StrategicStage; label: string }[] = [
@@ -54,6 +54,10 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
   const [court, setCourt] = useState('');
   const [caseNumber, setCaseNumber] = useState('');
   const [newFact, setNewFact] = useState('');
+  const [partyName, setPartyName] = useState('');
+  const [partyRole, setPartyRole] = useState<'client' | 'opponent' | 'intervenor' | 'other'>('client');
+  const [partyCapacity, setPartyCapacity] = useState('');
+  const [requestText, setRequestText] = useState('');
   const [instructions, setInstructions] = useState('');
   const [selectedStages, setSelectedStages] = useState<StrategicStage[]>(STAGES.map((stage) => stage.id));
   const [jobId, setJobId] = useState('');
@@ -118,6 +122,41 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
       setJobResult(null);
     } catch (e: any) {
       setError(e?.message || 'تعذر حفظ الواقعة.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddParty = async () => {
+    if (!activeCase || !partyName.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await addCaseParty(activeCase, makeCaseParty(partyName, partyRole, partyCapacity));
+      setActiveCase(updated);
+      setCases((previous) => previous.map((item) => item.id === updated.id ? updated : item));
+      setPartyName('');
+      setPartyCapacity('');
+      setJobResult(null);
+    } catch (e: any) {
+      setError(e?.message || 'تعذر حفظ بيانات الطرف.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddRequest = async () => {
+    if (!activeCase || !requestText.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await addCaseRequest(activeCase, requestText);
+      setActiveCase(updated);
+      setCases((previous) => previous.map((item) => item.id === updated.id ? updated : item));
+      setRequestText('');
+      setJobResult(null);
+    } catch (e: any) {
+      setError(e?.message || 'تعذر حفظ الطلب.');
     } finally {
       setSaving(false);
     }
@@ -265,6 +304,28 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
                     ['المسائل', activeCase.legalIssues.length],
                     ['الدفوع', activeCase.defenses.length],
                   ].map(([label, count]) => <div key={label} className={`rounded-xl p-3 text-center ${isLight ? 'bg-slate-50' : 'bg-slate-900'}`}><strong className="block text-xl text-amber-500">{count}</strong><span className={`text-xs ${muted}`}>{label}</span></div>)}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className={`rounded-xl border p-3 space-y-2 ${isLight ? 'border-slate-200 bg-slate-50' : 'border-slate-700 bg-slate-900/50'}`}>
+                    <h4 className="text-sm font-bold">أطراف القضية</h4>
+                    <input className={inputClass} value={partyName} onChange={(event) => setPartyName(event.target.value)} placeholder="اسم الطرف" maxLength={180} />
+                    <select className={inputClass} value={partyRole} onChange={(event) => setPartyRole(event.target.value as typeof partyRole)}>
+                      <option value="client">الموكل</option>
+                      <option value="opponent">الخصم</option>
+                      <option value="intervenor">متدخل</option>
+                      <option value="other">طرف آخر</option>
+                    </select>
+                    <input className={inputClass} value={partyCapacity} onChange={(event) => setPartyCapacity(event.target.value)} placeholder="الصفة القانونية (اختياري)" maxLength={180} />
+                    <button onClick={() => void handleAddParty()} disabled={saving || !partyName.trim()} className="w-full rounded-lg border border-amber-500/50 px-3 py-2 text-sm font-bold text-amber-600 disabled:opacity-50">إضافة الطرف</button>
+                    {activeCase.parties.length > 0 && <ul className="space-y-1 text-xs leading-6">{activeCase.parties.map((party) => <li key={party.id}>• {party.name} — {party.role === 'client' ? 'الموكل' : party.role === 'opponent' ? 'الخصم' : party.role === 'intervenor' ? 'متدخل' : 'طرف آخر'}{party.capacity ? ` (${party.capacity})` : ''}</li>)}</ul>}
+                  </div>
+                  <div className={`rounded-xl border p-3 space-y-2 ${isLight ? 'border-slate-200 bg-slate-50' : 'border-slate-700 bg-slate-900/50'}`}>
+                    <h4 className="text-sm font-bold">طلبات الموكل</h4>
+                    <textarea className={inputClass} rows={3} value={requestText} onChange={(event) => setRequestText(event.target.value)} placeholder="أدخل طلباً أصلياً أو احتياطياً كما حدده المحامي." />
+                    <button onClick={() => void handleAddRequest()} disabled={saving || !requestText.trim()} className="w-full rounded-lg border border-amber-500/50 px-3 py-2 text-sm font-bold text-amber-600 disabled:opacity-50">إضافة الطلب</button>
+                    {activeCase.requests.length > 0 && <ol className="list-decimal pr-5 space-y-1 text-xs leading-6">{activeCase.requests.map((request, index) => <li key={index}>{request}</li>)}</ol>}
+                  </div>
                 </div>
 
                 <div className="space-y-2">
