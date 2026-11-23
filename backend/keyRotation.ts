@@ -60,8 +60,10 @@ function markRotationFailure(key: string, model: string, error: any, pool: 'gene
   const keyCooldowns = pool === 'ocr' ? ocrKeyCooldownUntil : keyCooldownUntil;
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const invalidKeys = pool === 'ocr' ? permanentlyInvalidOCRKeys : permanentlyInvalidKeys;
-  const kind = getGeminiErrorKind(error);
   const status = Number(error?.status || error?.statusCode || error?.response?.status);
+  // Keep the pre-existing OCR quota classification unchanged; the stricter
+  // confirmed-quota rule applies to the general legal-drafting key pool.
+  const kind = pool === 'ocr' && status === 429 ? 'quota' : getGeminiErrorKind(error);
   const pair = rotationPairKey(key, model);
   const message = String(error?.message || '').toLowerCase();
   const now = Date.now();
