@@ -109,12 +109,12 @@ function reserveStartIndex(count: number, pool: 'general' | 'ocr'): number {
   return start;
 }
 
-function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, ): string[] {
+function selectModelsForKey( models: string[], key: string, pool: 'general' | 'ocr' = 'general', now = Date.now(), avoidPairs?: Set<string>, quotaOnlyMode = false, ): string[] {
   const pairCooldowns = pool === 'ocr' ? ocrKeyModelCooldownUntil : keyModelCooldownUntil;
   const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
   const available = models.filter((model) =>
-    !isCooling(modelCooldowns, model, now) &&
-    !isCooling(pairCooldowns, rotationPairKey(key, model), now) &&
+    (quotaOnlyMode || !isCooling(modelCooldowns, model, now)) &&
+    (quotaOnlyMode || !isCooling(pairCooldowns, rotationPairKey(key, model), now)) &&
     !avoidPairs?.has(`${key}::${model}`)
   );
   return available;
@@ -529,7 +529,7 @@ export async function executeWithKeyRotation<T>(
     const currentKeyIndex = (startIndex + offset) % keys.length;
     const currentKey = keys[currentKeyIndex];
     if (isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey) || (!draftingMode && permanentlyInvalidKeys.has(currentKey))) continue;
-    const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+    const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, draftingMode);
     if (draftingMode && currentKey === executionOptions?.startKey && executionOptions?.startModel) {
       const preferredModelIndex = models.indexOf(executionOptions.startModel);
       if (preferredModelIndex > 0) models.unshift(...models.splice(preferredModelIndex, 1));
@@ -637,7 +637,7 @@ export async function executeWithKeyRotationStream(
     const currentKeyIndex = (startIndex + offset) % keys.length;
     const currentKey = keys[currentKeyIndex];
     if (isCooling(draftingMode ? quotaKeyCooldownUntil : keyCooldownUntil, currentKey) || (!draftingMode && permanentlyInvalidKeys.has(currentKey))) continue;
-    const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs);
+    const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, draftingMode);
     if (draftingMode && currentKey === executionOptions?.startKey && executionOptions?.startModel) {
       const preferredModelIndex = models.indexOf(executionOptions.startModel);
       if (preferredModelIndex > 0) models.unshift(...models.splice(preferredModelIndex, 1));
