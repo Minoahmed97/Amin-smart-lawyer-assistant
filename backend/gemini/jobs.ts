@@ -466,7 +466,7 @@ function startClaimedJob(job: any) {
   const storedTaskType = String(job?.task_type || '');
   const payload = toPayload(job?.payload);
   // Keep the database task_type within the existing supported values while
-  // routing legal-chat jobs to the dedicated chat handler in the worker.
+  // routing specialized job handlers from the payload in the worker.
   const actualTaskType = payload._actualTaskType;
   const taskType = actualTaskType === 'legal-chat' || actualTaskType === 'strategic-analysis' ? actualTaskType : storedTaskType;
   delete payload._actualTaskType;
