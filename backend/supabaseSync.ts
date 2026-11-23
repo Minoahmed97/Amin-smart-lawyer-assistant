@@ -61,6 +61,82 @@ export async function fetchServerCloudGeminiKeys(timeoutMs?: number, forceRefres
   }
 }
 
+export type GeminiKeyRuntimeStatus = 'not_tested' | 'working' | 'invalid' | 'quota' | 'temporary' | 'error';
+
+function maskManagedGeminiKey(key: string): string {
+  const clean = String(key || '');
+  return clean.length > 8 ? `${clean.slice(0, 4)}...${clean.slice(-4)}` : '****';
+}
+
+/** Read the last real-use result for each centrally managed Gemini key. */
+export async function fetchServerCloudGeminiKeyRuntimeStatuses(): Promise<Array<{
+  masked: string;
+  runtimeStatus: GeminiKeyRuntimeStatus;
+  lastModel: string | null;
+  lastError: string | null;
+  lastAttemptAt: string | null;
+}>> {
+  const { supabaseUrl, supabaseKey } = getSupabaseServerConfig();
+  if (!supabaseUrl || !supabaseKey) return [];
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/app_gemini_keys?select=api_key,last_status,last_model,last_error,last_attempt_at&order=created_at.asc,id.asc`,
+    {
+      headers: {
+        apikey: supabaseKey,
+        ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(7000),
+    },
+  );
+  if (!response.ok) throw new Error(`تعذر قراءة حالات مفاتيح Gemini من Supabase (HTTP ${response.status}).`);
+  const rows = await response.json().catch(() => []);
+  if (!Array.isArray(rows)) throw new Error('بيانات حالة مفاتيح Gemini غير صالحة.');
+  return rows.filter((row: any) => row?.api_key).map((row: any) => ({
+    masked: maskManagedGeminiKey(sanitizeGeminiKey(row.api_key)),
+    runtimeStatus: (['not_tested', 'working', 'invalid', 'quota', 'temporary', 'error'].includes(row.last_status)
+      ? row.last_status : 'not_tested') as GeminiKeyRuntimeStatus,
+    lastModel: typeof row.last_model === 'string' ? row.last_model : null,
+    lastError: typeof row.last_error === 'string' ? row.last_error : null,
+    lastAttemptAt: typeof row.last_attempt_at === 'string' ? row.last_attempt_at : null,
+  }));
+}
+
+/** Persist only the result of a real Gemini request; never sends a test request. */
+export async function recordServerCloudGeminiKeyAttempt(
+  geminiKey: string,
+  model: string,
+  runtimeStatus: Exclude<GeminiKeyRuntimeStatus, 'not_tested'>,
+  errorMessage?: string,
+): Promise<void> {
+  const { supabaseUrl, supabaseKey } = requireSupabaseServerConfig();
+  const cleanKey = sanitizeGeminiKey(geminiKey);
+  if (!isValidKeyFormat(cleanKey)) return;
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/app_gemini_keys?api_key=eq.${encodeURIComponent(cleanKey)}`,
+    {
+      method: 'PATCH',
+      headers: {
+        apikey: supabaseKey,
+        ...(supabaseKey.startsWith('sb_') ? {} : { Authorization: `Bearer ${supabaseKey}` }),
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        last_status: runtimeStatus,
+        last_model: String(model || '').slice(0, 120),
+        last_error: errorMessage ? String(errorMessage).slice(0, 500) : null,
+        last_attempt_at: new Date().toISOString(),
+      }),
+      signal: AbortSignal.timeout(5000),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`تعذر تحديث حالة مفتاح Gemini في Supabase (HTTP ${response.status})${detail ? `: ${detail.slice(0, 180)}` : ''}`);
+  }
+}
+
 export async function saveServerCloudGeminiKey(geminiKey: string): Promise<boolean> {
   const { supabaseUrl, supabaseKey } = requireSupabaseServerConfig();
   const cleanKey = sanitizeGeminiKey(geminiKey);
