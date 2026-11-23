@@ -467,7 +467,8 @@ function startClaimedJob(job: any) {
   const payload = toPayload(job?.payload);
   // Keep the database task_type within the existing supported values while
   // routing legal-chat jobs to the dedicated chat handler in the worker.
-  const taskType = payload._actualTaskType === 'legal-chat' ? 'legal-chat' : storedTaskType;
+  const actualTaskType = payload._actualTaskType;
+  const taskType = actualTaskType === 'legal-chat' || actualTaskType === 'strategic-analysis' ? actualTaskType : storedTaskType;
   delete payload._actualTaskType;
   if (!userId || !jobId || !TASK_HANDLERS[taskType]) {
     void patchJob(jobId, userId, { status: 'failed', error: 'بيانات المهمة المحفوظة غير صالحة.', payload: {} }).catch(() => undefined);
@@ -518,7 +519,8 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   const userId = String(claimed.user_id || '');
   const storedTaskType = String(claimed.task_type || '');
   const payload = toPayload(claimed.payload);
-  const taskType = payload._actualTaskType === 'legal-chat' ? 'legal-chat' : storedTaskType;
+  const actualTaskType = payload._actualTaskType;
+  const taskType = actualTaskType === 'legal-chat' || actualTaskType === 'strategic-analysis' ? actualTaskType : storedTaskType;
   delete payload._actualTaskType;
   if (!userId || !TASK_HANDLERS[taskType]) {
     await patchJob(jobId, userId, { status: 'failed', error: 'بيانات المهمة المحفوظة غير صالحة.', payload: {} });
@@ -956,7 +958,8 @@ export default async function handler(req: any, res: any) {
       }
       // Keep the stored task_type compatible with existing production DB constraints.
       // The actual handler for legal chat is recorded in payload._actualTaskType.
-      const storedTaskType = taskType === 'legal-chat' ? 'refine' : taskType;
+      const storedTaskType = taskType === 'legal-chat' || taskType === 'strategic-analysis' ? 'refine' : taskType;
+      if (taskType === 'strategic-analysis') payload._actualTaskType = 'strategic-analysis';
       const insert = await supabase(JOB_TABLE, {
         method: 'POST',
         headers: { Prefer: 'return=minimal' },
