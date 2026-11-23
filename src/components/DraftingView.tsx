@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { DraftingFormData } from '../types.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
-import { getActiveStrategicCaseContext } from '../strategic/caseFileService.ts';
+import { prepareStrategicTaskContext } from '../strategic/caseFileService.ts';
 import { StrategicCaseSelector } from './StrategicCaseSelector.tsx';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import {
@@ -345,7 +345,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setDraftError('');
     setGeneratedBrief('');
     try {
-      const strategicCaseContext = await getActiveStrategicCaseContext(userId);
+      const strategicCaseContext = await prepareStrategicTaskContext(userId, 'drafting');
       const aiText = await draftCounterBrief({
         ...formData,
         strategicCaseContext,
