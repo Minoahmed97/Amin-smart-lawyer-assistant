@@ -77,7 +77,10 @@ function markRotationFailure(key: string, model: string, error: any, pool: 'gene
     const status = Number(error?.status || error?.statusCode || error?.response?.status);
     const message = String(error?.message || '').toLowerCase();
     const pair = rotationPairKey(key, model);
-    if (status === 429 || status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
+    if (status === 429) {
+      keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
+      pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
+    } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
       pairCooldowns.set(pair, now + MODEL_BUSY_COOLDOWN_MS);
     } else if (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message)) {
       pairCooldowns.set(pair, now + CONNECTION_COOLDOWN_MS);
