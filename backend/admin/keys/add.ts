@@ -1,4 +1,4 @@
-import { testGeminiKey, getKeysStatus } from '../../keyRotation.ts';
+import { getKeysStatus } from '../../keyRotation.ts';
 import { saveServerCloudGeminiKey } from '../../supabaseSync.ts';
 import { requireAdmin } from '../../auth.ts';
 
@@ -20,21 +20,13 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ error: 'يرجى تقديم مفتاح Gemini صالح (يبدأ بـ AIza أو AQ).' });
     }
     const cleanKey = apiKey.trim();
-    const testRes = await testGeminiKey(cleanKey);
-    // Only reject when Google explicitly confirms the credential itself is
-    // invalid/revoked. Quota, model availability, provider errors and timeouts
-    // are inconclusive: keep the key and report its current status to the admin.
-    const definitelyInvalid = !testRes.success && /أكدت Google أن مفتاح Gemini غير صالح|Google رفض مفتاح Gemini|مفتاح Gemini غير صالح شكلياً/i.test(testRes.message || '');
-    if (definitelyInvalid) {
-      return res.status(400).json({ error: testRes.message });
-    }
-    // Do not report success or rely on an ephemeral local file: the key must
-    // be committed to persistent server-side storage before this request succeeds.
+    // Saving a key is deliberately not a connectivity test. Its runtime status
+    // changes only after an actual Gemini request uses this managed key.
     await saveServerCloudGeminiKey(cleanKey);
 
     return res.json({
       ok: true,
-      message: testRes.success ? 'تم حفظ المفتاح. ' + testRes.message : 'تم حفظ المفتاح، لكن تعذّر تأكيد عمله الآن. الحالة: ' + testRes.message,
+      message: 'تم حفظ المفتاح في إدارة المنصة دون فحص. ستظهر حالته بعد أول استخدام فعلي له.',
       status: getKeysStatus(),
     });
   } catch (err: any) {
