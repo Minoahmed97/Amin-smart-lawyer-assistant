@@ -57,24 +57,40 @@ export async function testSupabaseConnection(
   urlInput: string,
   keyInput: string
 ): Promise<{ success: boolean; message: string }> {
-  const url = urlInput.trim().replace(/\/$/, '');
+  const url = urlInput.trim().replace(/\\/$/, '');
   const key = keyInput.trim();
+
   if (!url.startsWith('https://')) {
     return { success: false, message: 'يجب أن يبدأ الرابط بـ https:// (مثال: https://xyz.supabase.co)' };
   }
-  if (!key || key.length < 20) {
-    return { success: false, message: 'مفتاح المشروع غير صحيح (يجب أن يكون anon public key صالحاً).' };
-  }
   try {
-    // The browser only verifies the public Supabase project connection here.
-    // The protected app_gemini_keys table is intentionally server-only and
-    // is accessed by the protected server-side central API with its private server credentials.
-    // Do not probe that table from the browser: its RLS protection is expected.
+    const parsedUrl = new URL(url);
+    if (!parsedUrl.hostname || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+      return { success: false, message: 'رابط Supabase غير صحيح. أدخل رابط المشروع فقط دون بيانات إضافية.' };
+    }
+  } catch {
+    return { success: false, message: 'رابط Supabase غير صحيح. أدخل رابط المشروع الكامل.' };
+  }
+
+  if (!key || key.length < 20) {
+    return { success: false, message: 'مفتاح المشروع غير صحيح. أدخل مفتاح anon public أو publishable الخاص بالمشروع.' };
+  }
+  // Fetch header values must be ASCII. Reject hidden/non-ASCII characters
+  // instead of allowing the browser to throw an opaque RequestInit error.
+  if (!/^[\\x21-\\x7E]+$/.test(key)) {
+    return {
+      success: false,
+      message: 'مفتاح Supabase يحتوي على مسافات داخلية أو محارف غير صالحة. انسخ مفتاح anon public أو publishable مرة أخرى كما هو دون علامات اقتباس أو نص إضافي.',
+    };
+  }
+
+  try {
+    // This verifies the public project connection only. The protected
+    // app_gemini_keys table remains server-only and uses Vercel server secrets.
     const authRes = await fetch(`${url}/auth/v1/settings`, {
       method: 'GET',
       headers: {
         apikey: key,
-        Authorization: `Bearer ${key}`,
       },
     });
 
@@ -82,12 +98,12 @@ export async function testSupabaseConnection(
       return { success: false, message: 'فشل التحقق من مفتاح Supabase: المفتاح العام غير صالح أو غير مقبول من المشروع.' };
     }
     if (!authRes.ok) {
-      return { success: false, message: `تعذر التحقق من مفتاح Supabase (${authRes.status}). تحقق من رابط المشروع والمفتاح.` };
+      return { success: false, message: `تعذر التحقق من اتصال Supabase (HTTP ${authRes.status}). تحقق من رابط المشروع والمفتاح.` };
     }
 
     return {
       success: true,
-      message: 'تم الاتصال بـ Supabase والتحقق من المفتاح بنجاح. تخزين مفاتيح Gemini المركزي يتم عبر خادم المنصة بصلاحية Service Role ولا يعتمد على فتح جدول app_gemini_keys للمتصفح.',
+      message: 'تم الاتصال بـ Supabase والتحقق من المفتاح بنجاح. مفاتيح Gemini المركزية تُقرأ من الخادم بصلاحية Service Role ولا تُرسل إلى المتصفح.',
     };
   } catch (err: any) {
     return { success: false, message: `تعذر الاتصال بـ Supabase: ${err?.message || 'خطأ في الشبكة'}` };
