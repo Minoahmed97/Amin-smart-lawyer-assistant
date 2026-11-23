@@ -687,7 +687,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
       (total, [key, value]) => total + (key !== 'caseAnalysisContext' && ['string', 'number', 'boolean'].includes(typeof value) ? String(value).length : 0),
       0,
     );
-    const contextBudget = Math.max(0, Math.min(28000, 230000 - existingPayloadLength - 1024));
+    const contextBudget = Math.max(0, Math.min(50000, 560000 - existingPayloadLength - 1024));
     if (contextBudget && params.caseAnalysisContext?.trim()) {
       requestPayload.caseAnalysisContext = params.caseAnalysisContext.trim().slice(0, contextBudget);
     }
