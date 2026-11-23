@@ -178,7 +178,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setDeconstructError('');
     setAnalysisResult('');
     try {
-      const strategicCaseContext = await prepareStrategicTaskContext(userId, 'deconstruct');
+      const strategicCaseContext = await prepareStrategicTaskContext(userId, 'deconstruct', { opponentBriefText, courtType, caseNature, judicialWorkType: responseWorkType === '__smart__' ? '' : responseWorkType, ourPosition, additionalFacts });
       const result = await deconstructBrief({
         opponentBriefText,
         courtType,
