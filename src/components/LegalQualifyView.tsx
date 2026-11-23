@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { qualifyLegalCase, resumeSavedAiTask } from '../services/aiService.ts';
 import { FileUploadZone } from './FileUploadZone.tsx';
+import { getActiveStrategicCaseContext } from '../strategic/caseFileService.ts';
 import { VoiceDictateButton } from './VoiceDictateButton.tsx';
 import { persistentStorage } from '../utils/persistentStorage.ts';
 import { LegalFollowupChat } from './LegalFollowupChat.tsx';
@@ -149,9 +150,10 @@ export const LegalQualifyView: React.FC<LegalQualifyViewProps> = ({
     setQualifyError('');
     setQualificationResult('');
     try {
+      const strategicCaseContext = await getActiveStrategicCaseContext(userId);
       const result = await qualifyLegalCase(disputeDetails, clientGoals, (chunk) => {
         if (operationId === resultOperationRef.current) setQualificationResult((current) => current + chunk);
-      }, userId);
+      }, userId, strategicCaseContext);
       if (result && operationId === resultOperationRef.current) {
         setQualificationResult(result);
         persistentStorage.setItem('judicial_qualify_result', result);
