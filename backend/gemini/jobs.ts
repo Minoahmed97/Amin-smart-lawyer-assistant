@@ -23,7 +23,8 @@ const TASK_HANDLERS: Record<string, (req: any, res: any) => any> = {
 const JOB_TABLE = 'app_ai_generation_jobs';
 const PUSH_TABLE = 'app_push_subscriptions';
 const OCR_STORAGE_BUCKET = 'amin-ocr-private';
-const MAX_OCR_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_OCR_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_OCR_BATCH_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_FACTS = 500_000;
 const MAX_CONTEXT = 60_000;
 const JOB_STALE_TIMEOUT_MS = 5 * 60 * 1000 + 20 * 1000;
@@ -72,7 +73,19 @@ async function ensureOcrStorageBucket() {
   const existing = await fetch(`${url}/storage/v1/bucket/${OCR_STORAGE_BUCKET}`, {
     method: 'GET', headers, signal: AbortSignal.timeout(10000),
   });
-  if (existing.ok) return;
+  if (existing.ok) {
+    const update = await fetch(`${url}/storage/v1/bucket/${OCR_STORAGE_BUCKET}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ file_size_limit: MAX_OCR_FILE_BYTES }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!update.ok) {
+      const detail = await update.text().catch(() => '');
+      throw new Error(`تعذر زيادة حد تخزين ملفات القضايا (${update.status})${detail ? `: ${detail.slice(0, 160)}` : ''}`);
+    }
+    return;
+  }
   const response = await fetch(`${url}/storage/v1/bucket`, {
     method: 'POST',
     headers,
@@ -106,7 +119,7 @@ async function downloadOcrObjectAsBase64(objectPath: string): Promise<string> {
   const response = await fetch(`${url}/storage/v1/object/${OCR_STORAGE_BUCKET}/${encodedPath}`, { headers: getSupabaseStorageHeaders('application/octet-stream'), signal: AbortSignal.timeout(60000) });
   if (!response.ok) throw new Error(`تعذر استرجاع ملف PDF من التخزين (${response.status}).`);
   const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > MAX_OCR_FILE_BYTES) throw new Error('حجم ملف OCR غير صالح أو يتجاوز 20 ميجابايت.');
+  if (!bytes.length || bytes.length > MAX_OCR_FILE_BYTES) throw new Error('حجم ملف OCR غير صالح أو يتجاوز 50 ميجابايت.');
   return bytes.toString('base64');
 }
 
@@ -259,7 +272,7 @@ function safePayload(input: any, taskType: string) {
         const base64 = validateBase64Payload(image?.base64Data, MAX_OCR_FILE_BYTES);
         const bytes = Math.floor(base64.length * 3 / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
         totalBytes += bytes;
-        if (totalBytes > MAX_OCR_FILE_BYTES) {
+        if (totalBytes > MAX_OCR_BATCH_IMAGE_BYTES) {
           const error: any = new Error('حجم صور صفحات PDF بعد الضغط أكبر من الحد الآمن للإرسال.'); error.statusCode = 413; throw error;
         }
         return { pageNumber, mimeType: imageMime, base64Data: base64 };
@@ -829,7 +842,7 @@ export default async function handler(req: any, res: any) {
         const fileSize = Number(requestBody?.fileSize || 0);
         if (!/^[0-9a-f-]{36}$/i.test(jobId)) return res.status(400).json({ error: 'معرّف المهمة غير صالح.' });
         if (!fileName || !/\.(pdf|doc|docx|jpe?g|png|webp|bmp)$/i.test(fileName) || !Number.isFinite(fileSize) || fileSize < 1 || fileSize > MAX_OCR_FILE_BYTES) {
-          return res.status(413).json({ error: 'حجم الملف أو صيغته غير مدعومين. الحد الأقصى 20 ميجابايت.' });
+          return res.status(413).json({ error: 'حجم الملف أو صيغته غير مدعومين. الحد الأقصى 50 ميجابايت.' });
         }
         const allowedMimeTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'application/octet-stream'];
         if (mimeType && !allowedMimeTypes.includes(mimeType)) return res.status(400).json({ error: 'نوع الملف غير مدعوم.' });
