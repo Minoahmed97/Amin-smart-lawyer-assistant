@@ -356,9 +356,9 @@ export default async function handler(req: any, res: any) {
     rateLimit(req, 'gemini-counter-brief', 8, 10 * 60 * 1000);
     await enforceAiCooldown(req);
 
-    limitBodyString(facts, 500000, 'الوقائع');
+    limitBodyString(facts, 750000, 'الوقائع');
     limitBodyString(vaultContext, 30000, 'سياق الخزانة');
-    limitBodyString(caseAnalysisContext, 28000, 'سياق التحليل القانوني السابق');
+    limitBodyString(caseAnalysisContext, 100000, 'سياق التحليل القانوني السابق');
     if (typeof vaultContext !== 'string' || !vaultContext.includes('[بصمة أسلوب المحامي')) {
       const err: any = new Error('لم يتم العثور على نموذج شخصي من خزانة هذا الحساب. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف أو استعد نماذجك الشخصية أولاً.');
       err.statusCode = 400;
