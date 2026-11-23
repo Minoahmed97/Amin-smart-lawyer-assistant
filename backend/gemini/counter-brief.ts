@@ -78,7 +78,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
       try {
         await executeWithKeyRotationStream(async (ai, key, model) => {
           activePair = `${key}::${model}`;
-          activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
+          activePairLabel = `Gemini / ${model}`;
           const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
 
           return (async function* () {
@@ -235,8 +235,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     let segmentResult: any;
     try {
       segmentResult = await executeWithKeyRotation(async (ai, key, model) => {
-        activePair = key === 'openrouter' ? `openrouter::${model}` : `${key}::${model}`;
-        activePairLabel = `${key === 'openrouter' ? 'OpenRouter' : 'Gemini'} / ${model}`;
+        activePair = `${key}::${model}`;
+        activePairLabel = `Gemini / ${model}`;
         const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
         const response = await ai.models.generateContent({
           model,
@@ -284,7 +284,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
     if (activePair) {
       usedPairs.add(activePair);
-      if (!activePair.startsWith('openrouter::')) continuationGeminiStartKey = activePair.split('::')[0];
+      continuationGeminiStartKey = activePair.split('::')[0];
     }
     const addition = mergeContinuation(accumulatedText, segmentResult.text || '');
     accumulatedText += addition;
