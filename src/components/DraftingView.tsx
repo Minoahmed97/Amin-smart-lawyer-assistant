@@ -411,12 +411,19 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setIsLoading(true);
     setDraftError('');
     void resumeDraftCounterBrief(jobId, (chunk) => {
-      if (active && operationId === resultOperationRef.current) setGeneratedBrief((current) => {
-        if (!current) return chunk;
-        if (chunk.startsWith(current)) return chunk;
-        if (current.startsWith(chunk)) return current;
-        return current + chunk;
-      });
+      if (active && operationId === resultOperationRef.current) {
+        const savedPartial = persistentStorage.getItem('amin_judicial_draft_result', '');
+        persistentStorage.setItem(
+          'amin_judicial_draft_result',
+          chunk.startsWith(savedPartial) ? chunk : savedPartial + chunk,
+        );
+        setGeneratedBrief((current) => {
+          if (!current) return chunk;
+          if (chunk.startsWith(current)) return chunk;
+          if (current.startsWith(chunk)) return current;
+          return current + chunk;
+        });
+      }
     }, userId).then(async (result) => {
       if (!active || operationId !== resultOperationRef.current) return;
       setGeneratedBrief(result);
@@ -491,7 +498,11 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
           : formData.briefType,
         userId,
       }, (chunk) => {
-        if (operationId === resultOperationRef.current) setGeneratedBrief((current) => current + chunk);
+        if (operationId === resultOperationRef.current) {
+          const savedPartial = persistentStorage.getItem('amin_judicial_draft_result', '');
+          persistentStorage.setItem('amin_judicial_draft_result', savedPartial + chunk);
+          setGeneratedBrief((current) => current + chunk);
+        }
       });
       if (aiText && operationId === resultOperationRef.current) {
         setGeneratedBrief(aiText);
