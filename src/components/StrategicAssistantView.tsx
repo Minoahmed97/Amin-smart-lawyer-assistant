@@ -8,7 +8,7 @@ import type { UnifiedCaseFile, StrategicStage, CaseAnalysisSnapshot } from '../s
 import { FileUploadZone } from './FileUploadZone.tsx';
 import {
   addCaseDocument, addCaseFact, addCaseParty, addCaseRequest, createCaseFile, createEmptyCaseFile, enqueueStrategicAnalysis,
-  getCaseFile, getStrategicAnalysisJob, listCaseFiles, makeCaseDocument, makeCaseFact, makeCaseParty,
+  getCaseFile, getStrategicAnalysisJob, listCaseFiles, makeCaseDocument, makeCaseFact, makeCaseParty, setActiveStrategicCase,
 } from '../strategic/caseFileService.ts';
 
 const STAGES: { id: StrategicStage; label: string }[] = [
@@ -76,10 +76,21 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
       const targetId = selectId || activeCase?.id;
       if (targetId) {
         const selected = items.find((item) => item.id === targetId);
-        if (selected) setActiveCase(await getCaseFile(selected.id));
-        else setActiveCase(null);
+        if (selected) {
+          const fullCase = await getCaseFile(selected.id);
+          setActiveCase(fullCase);
+          setActiveStrategicCase(userId, fullCase.id);
+        } else {
+          setActiveCase(null);
+          setActiveStrategicCase(userId, '');
+        }
       } else if (items.length && !activeCase) {
-        setActiveCase(await getCaseFile(items[0].id));
+        const fullCase = await getCaseFile(items[0].id);
+        setActiveCase(fullCase);
+        setActiveStrategicCase(userId, fullCase.id);
+      } else if (!items.length) {
+        setActiveCase(null);
+        setActiveStrategicCase(userId, '');
       }
     } catch (e: any) {
       setError(e?.message || 'تعذر تحميل ملفات القضايا.');
@@ -103,6 +114,7 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
       setCourt('');
       setCaseNumber('');
       setActiveCase(created);
+      setActiveStrategicCase(userId, created.id);
       setCases((previous) => [created, ...previous]);
     } catch (e: any) {
       setError(e?.message || 'تعذر إنشاء ملف القضية.');
@@ -298,7 +310,7 @@ export const StrategicAssistantView: React.FC<StrategicAssistantViewProps> = ({ 
           {loading ? <div className={`text-sm py-4 text-center ${muted}`}>جارٍ تحميل ملفات القضايا...</div> : cases.length ? (
             <div className="space-y-2 max-h-[420px] overflow-y-auto">
               {cases.map((item) => (
-                <button key={item.id} onClick={() => { setActiveCase(item); setJobResult(null); setJobError(''); setJobId(''); setJobStatus(''); }} className={`w-full text-right rounded-xl border p-3 transition-colors ${activeCase?.id === item.id ? 'border-amber-500 bg-amber-500/10' : isLight ? 'border-slate-200 hover:bg-slate-50' : 'border-slate-700 hover:bg-slate-800'}`}>
+                <button key={item.id} onClick={() => { setActiveCase(item); setActiveStrategicCase(userId, item.id); setJobResult(null); setJobError(''); setJobId(''); setJobStatus(''); }} className={`w-full text-right rounded-xl border p-3 transition-colors ${activeCase?.id === item.id ? 'border-amber-500 bg-amber-500/10' : isLight ? 'border-slate-200 hover:bg-slate-50' : 'border-slate-700 hover:bg-slate-800'}`}>
                   <span className="block font-bold text-sm truncate">{item.title}</span>
                   <span className={`block mt-1 text-xs ${muted}`}>{item.caseNumber || 'رقم الدعوى غير محدد'} · {item.originalFacts.length} واقعة · {item.documents.length} مستند</span>
                 </button>
