@@ -238,6 +238,27 @@ function safePayload(input: any, taskType: string) {
     return payload;
   }
 
+  if (taskType === 'strategic-analysis') {
+    const caseId = String(input?.caseId || '').trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(caseId)) {
+      const error: any = new Error('معرّف ملف القضية غير صالح للتحليل.');
+      error.statusCode = 400;
+      throw error;
+    }
+    limitBodyString(input?.additionalInstructions, 12000, 'تعليمات التحليل الاستراتيجي');
+    const allowedStages = ['intake', 'evidence_review', 'legal_qualification', 'defense_analysis', 'opponent_analysis', 'strategy', 'final_review'];
+    const stages = input?.requestedStages === undefined ? allowedStages : input.requestedStages;
+    if (!Array.isArray(stages) || !stages.length || stages.length > allowedStages.length || stages.some((stage: unknown) => !allowedStages.includes(String(stage)))) {
+      const error: any = new Error('مراحل التحليل الاستراتيجي المحددة غير صالحة.');
+      error.statusCode = 400;
+      throw error;
+    }
+    payload.caseId = caseId;
+    payload.requestedStages = JSON.stringify([...new Set(stages)]);
+    payload.additionalInstructions = String(input?.additionalInstructions || '');
+    return payload;
+  }
+
   if (taskType === 'ocr') {
     const hasBatchImages = typeof input?.images === 'string' && input.images.length > 0;
     if (hasBatchImages) {
