@@ -336,6 +336,8 @@ function safePayload(input: any, taskType: string) {
     error.statusCode = 400;
     throw error;
   }
+  // This field is injected only from the trusted persisted job record, never from client input.
+  delete payload._resumePartialText;
   return payload;
 }
 
@@ -442,6 +444,10 @@ function startClaimedJob(job: any) {
   const jobId = String(job?.id || '');
   const storedTaskType = String(job?.task_type || '');
   const payload = toPayload(job?.payload);
+  delete payload._resumePartialText;
+  if (storedTaskType === 'counter-brief' && typeof job?.partial_result === 'string' && job.partial_result.trim()) {
+    payload._resumePartialText = job.partial_result;
+  }
   // Keep the database task_type within the existing supported values while
   // routing legal-chat jobs to the dedicated chat handler in the worker.
   const taskType = payload._actualTaskType === 'legal-chat' ? 'legal-chat' : storedTaskType;
@@ -495,6 +501,10 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
   const userId = String(claimed.user_id || '');
   const storedTaskType = String(claimed.task_type || '');
   const payload = toPayload(claimed.payload);
+  delete payload._resumePartialText;
+  if (storedTaskType === 'counter-brief' && typeof claimed?.partial_result === 'string' && claimed.partial_result.trim()) {
+    payload._resumePartialText = claimed.partial_result;
+  }
   const taskType = payload._actualTaskType === 'legal-chat' ? 'legal-chat' : storedTaskType;
   delete payload._actualTaskType;
   if (!userId || !TASK_HANDLERS[taskType]) {
@@ -517,7 +527,7 @@ export async function runDurableQueuedJob(jobId: string): Promise<void> {
 }
 
 async function loadQueueJob(jobId: string) {
-  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status,updated_at&id=eq.${encodeURIComponent(jobId)}&limit=1`);
+  const response = await supabase(`${JOB_TABLE}?select=id,user_id,task_type,payload,status,updated_at,partial_result&id=eq.${encodeURIComponent(jobId)}&limit=1`);
   if (!response.ok) throw new Error(`تعذر قراءة المهمة من الطابور (${response.status}).`);
   const rows = await response.json();
   return Array.isArray(rows) ? rows[0] || null : null;
@@ -631,9 +641,8 @@ async function retryTransientOcrJob(jobId: string, userId: string, payload: Reco
 }
 
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
-  let fullText = '';
+  let fullText = typeof payload._resumePartialText === 'string' ? payload._resumePartialText : '';
   let pendingWrite = Promise.resolve();
-  let persistedLength = 0;
   let streamError = '';
   let handlerJson: any = null;
   let phase = 'start';
@@ -665,11 +674,10 @@ async function processJob(jobId: string, userId: string, token: string, taskType
           const event = JSON.parse(candidate);
           if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
-            if (fullText.length - persistedLength >= 800) {
-              persistedLength = fullText.length;
-              const snapshot = fullText;
-              pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
-            }
+            // Persist each received model chunk so a worker interruption never loses
+            // the most recent Gemini output before the next continuation attempt.
+            const snapshot = fullText;
+            pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
           } else if (event.type === 'error') {
             streamError = String(event.error || 'فشلت المهمة.');
           }
