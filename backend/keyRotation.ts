@@ -156,7 +156,7 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
   // Google embeds help URLs in some 429 messages. A URL containing
   // "rate-limits" must not override the actual "current quota exceeded" text.
   const rawMessage = String(error?.message || error?.error?.message || error?.response?.data?.error?.message || error || '');
-  const messageWithoutUrls = rawMessage.replace(/https?:\\/\\/[^\\s"'<>]+/gi, ' ');
+  const messageWithoutUrls = rawMessage.replace(/https?:\/\/[^\s"'<>]+/gi, ' ');
   return getGeminiErrorKind({ ...(error && typeof error === 'object' ? error : {}), message: messageWithoutUrls });
 }
 
