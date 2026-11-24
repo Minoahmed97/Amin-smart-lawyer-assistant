@@ -40,7 +40,7 @@ function splitLegalSourceIntoChunks(source: string, maxChars = 20000): Array<{ t
 
 async function buildDraftingEvidenceLedger(source: string, sourceLabel: string, deadlineAt: number): Promise<string> {
   const trimmed = typeof source === 'string' ? source.trim() : '';
-  if (!trimmed || trimmed.length <= 22000) return source;
+  if (!trimmed || trimmed.length <= 18000) return source;
   const chunks = splitLegalSourceIntoChunks(source);
   const ledgerParts: string[] = [];
   console.info('[counter-brief] staged source analysis started', {
@@ -201,7 +201,10 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const attemptedGeminiPairs = new Set<string>();
 
   const makeContinuationPrompt = () => accumulatedText
-    ? \`\${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] سبق توليد جزء من المستند. للحفاظ على سياق الاتصال دون إعادة إرسال المسودة كاملة، هذا آخر مقطع من النص الناتج (حتى 12000 حرف) للربط الأسلوبي فقط؛ ما قبله مكتمل ولا تعِد كتابته: \${accumulatedText.slice(-12000)}\n\nتابع مباشرة من آخر موضع في المقطع، دون إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال \${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل.\`
+    ? optimizedPrompt + ' [استكمال إلزامي للنتيجة غير المكتملة] سبق توليد جزء من المستند. للحفاظ على سياق الاتصال دون إعادة إرسال المسودة كاملة، هذا آخر مقطع من النص الناتج (حتى 12000 حرف) للربط الأسلوبي فقط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
+      accumulatedText.slice(-12000) +
+      '\n\nتابع مباشرة من آخر موضع في المقطع، دون إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ' +
+      completionMarker + ' في نهاية المستند فقط بعد إتمامه بالكامل.'
     : optimizedPrompt;
 
   if (onChunk) {
