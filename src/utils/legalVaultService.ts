@@ -445,7 +445,7 @@ function documentFamily(value: string): string {
   return text;
 }
 
-export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | string, userId?: string): string {
+export function getCachedLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | string, userId?: string): string {
   let criteria: LawVaultSearchCriteria = {};
   if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
   else if (searchCriteria) criteria = searchCriteria;
@@ -456,9 +456,6 @@ export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | 
 [لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تدّعِ استخدام أسلوب مرجعي؛ اكتب وفق المعلومات الحالية فقط.]`;
   }
 
-  // Reuse the one-time local analysis for every model, then rank all saved
-  // models against this case using compact token descriptors, not their full
-  // historical document bodies.
   const cachedAnalysis = getCachedVaultAnalysis(sourceModels, userId);
   const analysisById = new Map(cachedAnalysis.models.map((item) => [item.id, item]));
   const rankingModels = sourceModels.map((model) => ({
@@ -482,8 +479,6 @@ export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | 
   const familyLine = requestedLegalFamily ? `الفرع القانوني الأقرب: ${requestedLegalFamily}.` : 'يراعى الفرع القانوني الثابت من وقائع المهمة.';
   const courtLine = criteria.courtType ? `المحكمة أو الجهة: ${criteria.courtType}.` : 'تراعى جهة القضاء المحددة في المهمة.';
 
-  // Do not transmit the source template or its case-specific text to Gemini.
-  // The selected model contributes only its cached, compact style fingerprint.
   return `[بصمة أسلوب المحامي — ملف محلي مستخلص مسبقاً من خزنة هذا الحساب]
 ${typeLine}
 ${familyLine}
@@ -499,4 +494,60 @@ ${courtLine}
 - النموذج المختار مرجع أسلوبي فقط؛ لا تنقل منه أي وقائع أو أسماء أو تواريخ أو أرقام أو مستندات أو دفوع أو طلبات تخص قضية أخرى.
 - لا تجعل النموذج المرجعي يغيّر نوع المستند الذي طلبه المحامي أو يضيف طلبات لم يحددها.
 - صحة القضية الحالية وطلبات المحامي تتقدم على التشابه الأسلوبي؛ لا تختلق واقعة أو سنداً قانونياً.`;
+}
+
+export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | string, userId?: string): string {
+  let criteria: LawVaultSearchCriteria = {};
+  if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
+  else if (searchCriteria) criteria = searchCriteria;
+
+  const models = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
+  const requestedType = criteria.judicialWorkType || criteria.briefType || '';
+  const requestedLegalFamily = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
+  if (!models.length) {
+    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]
+[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تدّعِ استخدام أسلوب مرجعي؛ اكتب وفق المعلومات الحالية فقط.]`;
+  }
+
+  const best = rankVaultModels(models, criteria)[0];
+  if (!best) {
+    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]
+[لا يوجد نموذج يحتوي على نص قابل للاستخدام في خزنة هذا الحساب. اكتب وفق المعلومات الحالية فقط.]`;
+  }
+
+  const content = String(best.model.content || '').trim();
+  const excerpt = content.length <= 5200
+    ? content
+    : [
+        content.slice(0, 2400),
+        '[مقتطف من متن النموذج المرجعي]',
+        content.slice(Math.max(2400, Math.floor(content.length / 2) - 500), Math.max(2400, Math.floor(content.length / 2) - 500) + 1000),
+        '[الخاتمة والتوقيع من النموذج المرجعي]',
+        content.slice(-1200),
+      ].join('\\n\\n');
+  const styleProfile = deriveStyleProfile(content, true);
+  const metadata = [best.model.title, best.model.judicialWorkType, best.model.category].filter(Boolean).join(' — ');
+  const typeLine = requestedType ? `نوع المستند المطلوب: ${requestedType}.` : 'يُحدد نوع المستند من طلب المستخدم ووقائعه.';
+  const familyLine = requestedLegalFamily ? `الفرع القانوني الأقرب: ${requestedLegalFamily}.` : 'يراعى الفرع القانوني الثابت من وقائع المهمة.';
+  const courtLine = criteria.courtType ? `المحكمة أو الجهة: ${criteria.courtType}.` : 'تراعى جهة القضاء المحددة في المهمة.';
+  const referenceBlock = `[النموذج المرجعي المختار${metadata ? `: ${metadata}` : ''}]\\n${excerpt}${content.length > excerpt.length ? '\\n[عينة منتقاة من بداية النموذج ووسطه وخاتمته.]' : ''}`;
+
+  return `[بصمة أسلوب المحامي — مرجع فعلي من خزنة هذا الحساب]
+${typeLine}
+${familyLine}
+${courtLine}
+تمت مقارنة جميع نماذج الحساب واختيار الأقرب للمهمة. النموذج التالي مرجع للأسلوب والبناء فقط، وليس مصدراً لوقائع القضية الحالية.
+
+[ملامح الأسلوب المستخلصة]
+${styleProfile}
+
+${referenceBlock}
+
+[قواعد تطبيق المرجع]
+- حافظ على الديباجة والترويسة وبصمة المحامي وتسلسل الأقسام والعبارات وطريقة عرض الحجج والطلبات والخاتمة بقدر ملاءمتها لنوع العمل الحالي.
+- استفد من بنية النموذج، ولا تنقل منه تحليلاً أو دفعاً أو طلباً إلا إذا سنده ملف القضية الحالية.
+- لا تنقل أسماء أو وقائع أو تواريخ أو أرقاماً أو مستندات أو طلبات تخص القضية المرجعية.
+- استخدم بيانات المكتب والتوقيع الثابتة إذا كانت واضحة، ولا تخترع بيانات.
+- صحة القضية الحالية وطلبات المحامي تتقدم على التشابه الأسلوبي؛ لا تختلق واقعة أو سنداً قانونياً.
+- إذا اختلف نوع المستند الحالي عن النموذج، فاحتفظ بالبصمة وعدّل الهيكل بالقدر اللازم دون تحويله إلى نوع آخر.`;
 }
