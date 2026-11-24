@@ -31,8 +31,7 @@ let activeKeyIndex = 0;
 const permanentlyInvalidKeys = new Set<string>();
 const permanentlyInvalidOCRKeys = new Set<string>();
 const keyCooldownUntil = new Map<string, number>();
-// Drafting tracks quota exhaustion per key/model pair because Gemini quotas
-// can be model-specific; other models on the same key remain eligible.
+// Drafting skips the entire key only after Google explicitly confirms quota exhaustion.
 const draftingQuotaKeyCooldownUntil = new Map<string, number>();
 const keyModelCooldownUntil = new Map<string, number>();
 const modelCooldownUntil = new Map<string, number>();
@@ -85,8 +84,7 @@ function markRotationFailure(
       keyCooldowns.set(key, Number.MAX_SAFE_INTEGER);
     }
   } else if (kind === 'quota') {
-    // In legal drafting, quota exhaustion excludes only this exact key/model
-    // pair. Other models on the same key must remain eligible.
+    // In legal drafting, confirmed quota exhaustion excludes this key from all model attempts.
     if (quotaOnlyKeyExclusion && pool === 'general') {
       draftingQuotaKeyCooldownUntil.set(key, now + KEY_QUOTA_COOLDOWN_MS);
     } else {
