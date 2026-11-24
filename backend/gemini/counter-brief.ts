@@ -21,7 +21,7 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
 
-function splitLegalSourceIntoChunks(source: string, maxChars = 26000): Array<{ text: string; start: number; end: number }> {
+function splitLegalSourceIntoChunks(source: string, maxChars = 20000): Array<{ text: string; start: number; end: number }> {
   const chunks: Array<{ text: string; start: number; end: number }> = [];
   let start = 0;
   while (start < source.length) {
@@ -83,11 +83,56 @@ async function buildDraftingEvidenceLedger(source: string, sourceLabel: string, 
     }, undefined, undefined, false, { deadlineAt, draftingMode: true });
     ledgerParts.push('[سجل المصدر: ' + sourceLabel + ' — الجزء ' + (index + 1) + '/' + chunks.length + ' — الحروف ' + (chunk.start + 1) + '-' + chunk.end + ']\n' + extracted);
   }
+  let reducedParts = ledgerParts;
+  let reductionRound = 0;
+  while (reducedParts.length > 1) {
+    reductionRound += 1;
+    const nextParts: string[] = [];
+    for (let offset = 0; offset < reducedParts.length; offset += 4) {
+      if (Date.now() >= deadlineAt) {
+        const timeoutError: any = new Error('انتهى الوقت المتاح لربط نتائج تحليل النص الطويل قبل بدء الصياغة.');
+        timeoutError.statusCode = 504;
+        throw timeoutError;
+      }
+      const batch = reducedParts.slice(offset, offset + 4);
+      const mergePrompt =
+        '[دمج وربط سجلات تحليل مصدر قانوني طويل — الجولة ' + reductionRound + ']\n' +
+        'ادمج السجلات التالية في ملف وقائع وأدلة موحد ومركز، مع الحفاظ على جميع الوقائع الجوهرية والأسماء والصفات والأرقام والمبالغ والتواريخ والطلبات والدفوع والمستندات والتناقضات ومواطن النقص. احتفظ بإحالات كل معلومة إلى الجزء وموضع الحروف الأصلي. اربط ما بين الأجزاء، واكشف التعارضات العابرة لها، ولا تكرر المعلومة إلا إذا كان التكرار نفسه ذا دلالة. لا تسقط معلومة مؤثرة ولا تختلق واقعة أو سنداً قانونياً. ميّز بين الثابت والادعاء والاستنتاج والاحتمال وما يحتاج تحققاً. هذا سجل تحليلي لا مسودة مستند قضائي.\n\n' +
+        batch.join('\n\n[فاصل سجل]\n\n');
+      const merged = await executeWithKeyRotation(async (ai, _key, model) => {
+        const count = await ai.models.countTokens({
+          model, contents: mergePrompt,
+          config: { systemInstruction: 'أنت محلل قانوني مصري يربط الأدلة والوقائع بدقة دون اختلاق أو إسقاط.' },
+        }).catch(() => null);
+        console.info('[counter-brief] staged ledger reduction token count', {
+          source: sourceLabel, round: reductionRound, batch: Math.floor(offset / 4) + 1,
+          inputTokens: Number(count?.totalTokens) || null, model,
+        });
+        const response = await ai.models.generateContent({
+          model, contents: mergePrompt,
+          config: {
+            systemInstruction: 'أنت محلل قانوني مصري يربط الأدلة والوقائع بدقة دون اختلاق أو إسقاط.',
+            temperature: 0.1, maxOutputTokens: 4096,
+          },
+        });
+        const text = typeof response.text === 'string' ? response.text.trim() : '';
+        if (!text) {
+          const emptyError: any = new Error('تعذر ربط سجلات تحليل النص الطويل.');
+          emptyError.statusCode = 503;
+          throw emptyError;
+        }
+        return text;
+      }, undefined, undefined, false, { deadlineAt, draftingMode: true });
+      nextParts.push(merged);
+    }
+    reducedParts = nextParts;
+  }
   console.info('[counter-brief] staged source analysis completed', {
     source: sourceLabel, sourceCharacters: source.length, chunkCount: chunks.length,
-    ledgerCharacters: ledgerParts.reduce((total, part) => total + part.length, 0),
+    ledgerCharacters: reducedParts.reduce((total, part) => total + part.length, 0),
+    reductionRounds: reductionRound,
   });
-  return '[سجل استخلاص مرحلي كامل من النص الأصلي غير المقتطع. عولجت جميع الأجزاء بالترتيب، والإحالات أدناه تشير إلى مواضعها في النص الأصلي. أعد الربط بين الأجزاء واختبر التناقضات العابرة لها.]\n' + ledgerParts.join('\n\n');
+  return '[سجل استخلاص مرحلي كامل من النص الأصلي غير المقتطع. عولجت جميع الأجزاء بالترتيب، والإحالات أدناه تشير إلى مواضعها في النص الأصلي. أعد الربط بين الأجزاء واختبر التناقضات العابرة لها.]\n' + reducedParts.join('\n\n');
 }
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
