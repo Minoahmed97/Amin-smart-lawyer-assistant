@@ -606,7 +606,8 @@ export async function executeWithKeyRotation<T>(
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
-  const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  const explicitlyAvoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  const avoidedPairs = new Set([...explicitlyAvoidedPairs, ...(executionOptions?.attemptedPairs || [])]);
   const quotaExhaustedKeys = new Set<string>(keys.filter((key) => draftingMode
     ? preferredModels.every((model) => isCooling(quotaPairCooldownUntil, rotationPairKey(key, model)))
     : isCooling(keyCooldownUntil, key)));
@@ -635,7 +636,6 @@ export async function executeWithKeyRotation<T>(
         break;
       }
       attemptedModelCount++;
-      executionOptions?.attemptedPairs?.add(pair);
 
       let pairSucceeded = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -660,6 +660,7 @@ export async function executeWithKeyRotation<T>(
           return result;
         } catch (error: any) {
           lastError = error;
+          executionOptions?.attemptedPairs?.add(pair);
           const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
           const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
           console.warn('[Gemini rotation] attempt failed', {
@@ -692,7 +693,7 @@ export async function executeWithKeyRotation<T>(
     }
   }
 
-  if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
+  if (attemptedModelCount === 0 && explicitlyAvoidedPairs.size > 0 && Date.now() < deadlineAt) {
     return executeWithKeyRotation(action, preferredModels, _ignoredClientFallbackKey, false, {
       ...executionOptions,
       avoidPairs: undefined,
@@ -723,7 +724,8 @@ export async function executeWithKeyRotationStream(
   const keys = (await getAvailableGeminiKeys(undefined, draftingMode, draftingMode)).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
 
-  const avoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  const explicitlyAvoidedPairs = new Set(executionOptions?.avoidPairs || []);
+  const avoidedPairs = new Set([...explicitlyAvoidedPairs, ...(executionOptions?.attemptedPairs || [])]);
   let attemptedModelCount = 0;
   let lastError: any = null;
   const quotaExhaustedKeys = new Set<string>(keys.filter((key) => draftingMode
@@ -751,7 +753,6 @@ export async function executeWithKeyRotationStream(
         break;
       }
       attemptedModelCount++;
-      executionOptions?.attemptedPairs?.add(pair);
       console.info('[Gemini drafting rotation] trying key/model', {
         keyPosition: currentKeyIndex + 1,
         totalKeys: keys.length,
@@ -792,6 +793,7 @@ export async function executeWithKeyRotationStream(
           return;
         } catch (error: any) {
           lastError = error;
+          executionOptions?.attemptedPairs?.add(pair);
           const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
           const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
           console.warn('[Gemini stream rotation] attempt failed', {
@@ -836,7 +838,7 @@ export async function executeWithKeyRotationStream(
     }
   }
 
-  if (attemptedModelCount === 0 && avoidedPairs.size > 0 && Date.now() < deadlineAt) {
+  if (attemptedModelCount === 0 && explicitlyAvoidedPairs.size > 0 && Date.now() < deadlineAt) {
     return executeWithKeyRotationStream(action, onChunk, preferredModels, _ignoredClientFallbackKey, false, {
       ...executionOptions,
       avoidPairs: undefined,
