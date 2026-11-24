@@ -133,8 +133,8 @@ async function buildDraftingEvidenceLedger(source: string, sourceLabel: string, 
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
 async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
-  // executeWithKeyRotation supplies an adaptive wrapper exposing generation methods only.
-  // Keep this diagnostic non-blocking and label the character-based token figure as an estimate.
+  // The key-rotation adapter exposes generation methods, not the SDK token-count endpoint.
+  // Never call ai.models.countTokens here: estimate request size from characters only, non-blockingly.
   const systemCharacters = EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length;
   console.info('[counter-brief] Gemini request size estimate', {
     model,
