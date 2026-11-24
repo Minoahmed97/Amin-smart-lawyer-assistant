@@ -183,34 +183,52 @@ function safeGeminiDiagnostic(error: any): string {
 }
 
 function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporary' | 'other' {
-  // Gemini sometimes wraps its JSON error inside error.message and includes a
-  // help URL containing "rate-limits". Parse nested payloads and remove URLs
-  // before classifying so that a confirmed quota exhaustion is not downgraded
-  // to a generic temporary 429.
+  // The Google SDK may expose the REST error as a JSON string nested inside
+  // message, or as an object. Normalize both forms before classifying 429s.
   const messages: string[] = [];
-  const addMessage = (value: any) => {
-    if (typeof value !== 'string' || !value.trim()) return;
-    messages.push(value);
-    try {
-      const parsed = JSON.parse(value);
-      const nested = parsed?.error || parsed;
-      if (typeof nested?.message === 'string' && nested.message !== value) messages.push(nested.message);
-      if (typeof nested?.status === 'string') messages.push(nested.status);
-    } catch {}
+  const seen = new Set<any>();
+  const visit = (value: any, depth = 0): void => {
+    if (value == null || depth > 5 || seen.has(value)) return;
+    if (typeof value === 'string') {
+      const normalized = value
+        .replace(/\\\\_/g, '_')
+        .replace(/&#91;|&#x5b;/gi, '[')
+        .replace(/&#93;|&#x5d;/gi, ']')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;|&apos;/gi, "'");
+      messages.push(normalized);
+      const firstBrace = normalized.indexOf('{');
+      const lastBrace = normalized.lastIndexOf('}');
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        try { visit(JSON.parse(normalized.slice(firstBrace, lastBrace + 1)), depth + 1); } catch {}
+      }
+      return;
+    }
+    if (typeof value === 'object') {
+      seen.add(value);
+      for (const candidate of [value.message, value.status, value.code, value.error, value.details, value.data]) {
+        if (candidate !== undefined) visit(candidate, depth + 1);
+      }
+    }
   };
-  addMessage(error?.message);
-  addMessage(error?.error?.message);
-  addMessage(error?.response?.data?.error?.message);
-  if (!messages.length) addMessage(String(error || ''));
-  const messageWithoutUrls = messages.join(' ').replace(/https?:\/\/[^\s"'<>]+/gi, ' ').toLowerCase();
-  const status = Number(error?.status || error?.statusCode || error?.response?.status || error?.response?.statusCode || 0);
+  visit(error);
+  const normalizedMessage = messages.join(' ')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, ' ')
+    .toLowerCase()
+    .replace(/\\_/g, '_');
+  const status = Number(error?.status || error?.statusCode || error?.code ||
+    error?.response?.status || error?.response?.statusCode || error?.error?.code || 0);
+
+  // RESOURCE_EXHAUSTED is Google's explicit quota signal. A generic 429
+  // without quota evidence remains temporary and is retried/rotated normally.
   const confirmedQuota =
-    /resource[_\s-]*exhausted|exceeded.{0,80}current quota|current quota.{0,80}(exceed|exhaust)|quota.{0,80}(exceed|exhaust)|(?:exceed|exhaust).{0,80}quota|daily quota|per day quota|limit\s*:\s*0/.test(messageWithoutUrls);
+    /resource[_\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota|limit\s*:\s*0/.test(normalizedMessage);
   if (confirmedQuota) return 'quota';
-  if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.{0,20}(invalid|revoked|deleted)|credential.{0,20}invalid/.test(messageWithoutUrls)) return 'invalid';
+  if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.{0,20}(invalid|revoked|deleted)|credential.{0,20}invalid/.test(normalizedMessage)) return 'invalid';
   return getGeminiErrorKind({
     ...(error && typeof error === 'object' ? error : {}),
-    message: messageWithoutUrls,
+    message: normalizedMessage,
+    status,
   });
 }
 
@@ -734,6 +752,13 @@ export async function executeWithKeyRotationStream(
       }
       attemptedModelCount++;
       executionOptions?.attemptedPairs?.add(pair);
+      console.info('[Gemini drafting rotation] trying key/model', {
+        keyPosition: currentKeyIndex + 1,
+        totalKeys: keys.length,
+        modelPosition: models.indexOf(model) + 1,
+        modelsForKey: models.length,
+        model,
+      });
 
       for (let attempt = 1; attempt <= 2; attempt++) {
         if (deadlineAt - Date.now() < 3000) {
@@ -756,7 +781,11 @@ export async function executeWithKeyRotationStream(
           if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, 'success');
           console.info('[Gemini stream rotation] attempt succeeded', {
             key: maskGeminiKey(currentKey),
+            keyPosition: currentKeyIndex + 1,
+            totalKeys: keys.length,
             model,
+            modelPosition: models.indexOf(model) + 1,
+            modelsForKey: models.length,
             attempt,
             partialCharacters,
           });
@@ -767,7 +796,11 @@ export async function executeWithKeyRotationStream(
           const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
           console.warn('[Gemini stream rotation] attempt failed', {
             key: maskGeminiKey(currentKey),
+            keyPosition: currentKeyIndex + 1,
+            totalKeys: keys.length,
             model,
+            modelPosition: models.indexOf(model) + 1,
+            modelsForKey: models.length,
             attempt,
             kind,
             status,
