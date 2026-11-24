@@ -1,4 +1,4 @@
-import { getLawyerStyleContext } from '../utils/legalVaultService.ts';
+import { getCachedLawyerStyleContext, getLawyerStyleContext } from '../utils/legalVaultService.ts';
 import { getSessionToken } from './authService.ts';
 import type { LegalCaseContext } from '../types.ts';
 
@@ -507,7 +507,7 @@ export async function resumeDraftCounterBrief(
   let payload = readDraftJobPayload(userId) || fallbackPayload || {};
   if (typeof payload.facts === 'string' && payload.facts.trim() && !payload.vaultContext) {
     const effectiveWorkType = String(payload.customJudicialWorkType || payload.judicialWorkType || payload.briefType || '').trim();
-    const vaultContext = getLawyerStyleContext({
+    const vaultContext = getCachedLawyerStyleContext({
       courtType: payload.courtType,
       briefType: payload.briefType,
       judicialWorkType: effectiveWorkType,
@@ -777,7 +777,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
       ? params.customJudicialWorkType.trim()
       : params.judicialWorkType || params.briefType || '';
 
-  const lawyerVaultContext = getLawyerStyleContext({
+  const lawyerVaultContext = getCachedLawyerStyleContext({
     courtType: params.courtType,
     briefType: params.briefType,
     judicialWorkType: effectiveWorkType,
