@@ -181,12 +181,17 @@ function safeGeminiDiagnostic(error: any): string {
 }
 
 function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporary' | 'other' {
-  // The Google SDK may expose the REST error as a JSON string nested inside
-  // message, or as an object. Normalize both forms before classifying 429s.
+  // Google 429 responses can represent either a model-specific limit or a
+  // project-wide limit. Only exclude the whole drafting key when the response
+  // explicitly identifies a project-wide quota or a spend/billing cap.
   const messages: string[] = [];
   const seen = new Set<any>();
+  let hasQuotaFailure = false;
+  let hasModelScopedQuota = false;
+  let hasProjectScopedQuota = false;
+
   const visit = (value: any, depth = 0): void => {
-    if (value == null || depth > 5 || seen.has(value)) return;
+    if (value == null || depth > 7) return;
     if (typeof value === 'string') {
       const normalized = value
         .replace(/\\_/g, '_')
@@ -202,27 +207,58 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
       }
       return;
     }
-    if (typeof value === 'object') {
-      seen.add(value);
-      for (const candidate of [value.message, value.status, value.code, value.error, value.details, value.data]) {
-        if (candidate !== undefined) visit(candidate, depth + 1);
+    if (typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+
+    const type = String(value['@type'] || value.type || '');
+    if (/QuotaFailure/i.test(type)) {
+      hasQuotaFailure = true;
+      const violations = Array.isArray(value.violations) ? value.violations : [];
+      for (const violation of violations) {
+        const dimensions = violation?.quotaDimensions || {};
+        const quotaId = String(violation?.quotaId || '');
+        const quotaMetric = String(violation?.quotaMetric || '');
+        if (dimensions.model || /PerModel/i.test(quotaId) || /per_model/i.test(quotaMetric)) {
+          hasModelScopedQuota = true;
+        } else if (/PerProject/i.test(quotaId) || /per_project/i.test(quotaMetric)) {
+          hasProjectScopedQuota = true;
+        }
       }
     }
+
+    for (const candidate of [value.message, value.status, value.code, value.error, value.details, value.data]) {
+      if (candidate !== undefined) visit(candidate, depth + 1);
+    }
   };
+
   visit(error);
   const normalizedMessage = messages.join(' ')
-    .replace(/https?:\/\/[^\s"'<>]+/gi, ' ')
+    .replace(/https?:\\/\\/[^\\s"'<>]+/gi, ' ')
     .toLowerCase()
-    .replace(/\\_/g, '_');
+    .replace(/\\\\_/g, '_');
   const status = Number(error?.status || error?.statusCode || error?.code ||
     error?.response?.status || error?.response?.statusCode || error?.error?.code || 0);
 
-  // RESOURCE_EXHAUSTED is Google's explicit quota signal. A generic 429
-  // without quota evidence remains temporary and is retried/rotated normally.
-  const confirmedQuota =
-    /resource[_\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota|limit\s*:\s*0/.test(normalizedMessage);
-  if (confirmedQuota) return 'quota';
-  if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.{0,20}(invalid|revoked|deleted)|credential.{0,20}invalid/.test(normalizedMessage)) return 'invalid';
+  const explicitSpendCap = /spend[- ]based.{0,80}(limit|cap)|billing.{0,80}(limit|cap|exhaust)|prepaid.{0,80}(balance|credit).{0,80}(exhaust|deplet)|account.{0,80}spend.{0,40}(limit|cap)/.test(normalizedMessage);
+
+  if (explicitSpendCap || (hasQuotaFailure && hasProjectScopedQuota && !hasModelScopedQuota)) {
+    return 'quota';
+  }
+  if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.{0,20}(invalid|revoked|deleted)|credential.{0,20}invalid/.test(normalizedMessage)) {
+    return 'invalid';
+  }
+  // Model-scoped quotas, generic RESOURCE_EXHAUSTED, and 429s without
+  // machine-readable scope must not blacklist the key. The rotation loop
+  // records this key/model pair and proceeds to the next Gemini model.
+  if (hasModelScopedQuota || hasQuotaFailure || status === 429 ||
+      /resource[_\\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota/.test(normalizedMessage)) {
+    return 'temporary';
+  }
   return getGeminiErrorKind({
     ...(error && typeof error === 'object' ? error : {}),
     message: normalizedMessage,
