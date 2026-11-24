@@ -175,7 +175,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; deadlineAt?: number } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; deadlineAt?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -186,19 +186,19 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
   const maxContinuations = 5;
-  // Shared ledger: every attempted Gemini key/model pair is retained across continuation segments.
+  // Keep the last successful Gemini connection preferred while continuing this document.
   const deadlineAt = Number(options.deadlineAt || (Date.now() + 270000));
   let accumulatedText = typeof options.resumeText === 'string' ? options.resumeText : '';
   let continuationCount = 0;
   let lastError: any = null;
   let previousPair = '';
-  let continuationGeminiStartKey = '';
-  let continuationGeminiStartModel = '';
+  let continuationGeminiStartKey = String(options.resumeGeminiKey || '');
+  let continuationGeminiStartModel = String(options.resumeGeminiModel || '');
   const attemptedGeminiPairs = new Set<string>();
 
   const makeContinuationPrompt = () => accumulatedText
     ? optimizedPrompt + ' [استكمال إلزامي للنتيجة غير المكتملة] سبق توليد جزء من المستند. للحفاظ على سياق الاتصال دون إعادة إرسال المسودة كاملة، هذا آخر مقطع من النص الناتج (حتى 12000 حرف) للربط الأسلوبي فقط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
-      accumulatedText.slice(-12000) +
+      accumulatedText.slice(-6000) +
       '\n\nتابع مباشرة من آخر موضع في المقطع، دون إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ' +
       completionMarker + ' في نهاية المستند فقط بعد إتمامه بالكامل.'
     : optimizedPrompt;
