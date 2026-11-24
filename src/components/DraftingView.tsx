@@ -479,13 +479,12 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         verificationNotes: formData.caseContext.verificationNotes,
         materials: (Array.isArray(formData.caseContext.materials) ? formData.caseContext.materials : [])
           .filter((item) => item.content.trim() && item.content.trim() !== String(formData.facts || '').trim())
-          .slice(-6)
           .map((item) => ({
             kind: item.kind,
             title: item.title,
             sourceView: item.sourceView,
             capturedAt: item.capturedAt,
-            content: item.content.slice(0, 5000),
+            content: item.content,
           })),
       } : null;
       const caseAnalysisContextForPrompt = [
