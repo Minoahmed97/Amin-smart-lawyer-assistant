@@ -33,7 +33,7 @@ const permanentlyInvalidOCRKeys = new Set<string>();
 const keyCooldownUntil = new Map<string, number>();
 // Drafting tracks quota exhaustion per key/model pair because Gemini quotas
 // can be model-specific; other models on the same key remain eligible.
-const quotaPairCooldownUntil = new Map<string, number>();
+const draftingQuotaKeyCooldownUntil = new Map<string, number>();
 const keyModelCooldownUntil = new Map<string, number>();
 const modelCooldownUntil = new Map<string, number>();
 const ocrKeyCooldownUntil = new Map<string, number>();
@@ -88,7 +88,7 @@ function markRotationFailure(
     // In legal drafting, quota exhaustion excludes only this exact key/model
     // pair. Other models on the same key must remain eligible.
     if (quotaOnlyKeyExclusion && pool === 'general') {
-      quotaPairCooldownUntil.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
+      draftingQuotaKeyCooldownUntil.set(key, now + KEY_QUOTA_COOLDOWN_MS);
     } else {
       keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
       pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
@@ -119,7 +119,7 @@ function selectModelsForKey( models: string[], key: string, pool: 'general' | 'o
   const available = models.filter((model) =>
     (quotaOnlyMode || !isCooling(modelCooldowns, model, now)) &&
     (quotaOnlyMode
-      ? !isCooling(quotaPairCooldownUntil, rotationPairKey(key, model), now)
+      ? !isCooling(draftingQuotaKeyCooldownUntil, key, now)
       : !isCooling(pairCooldowns, rotationPairKey(key, model), now)) &&
     !avoidPairs?.has(`${key}::${model}`)
   );
@@ -609,7 +609,7 @@ export async function executeWithKeyRotation<T>(
   const explicitlyAvoidedPairs = new Set(executionOptions?.avoidPairs || []);
   const avoidedPairs = new Set([...explicitlyAvoidedPairs, ...(executionOptions?.attemptedPairs || [])]);
   const quotaExhaustedKeys = new Set<string>(keys.filter((key) => draftingMode
-    ? preferredModels.every((model) => isCooling(quotaPairCooldownUntil, rotationPairKey(key, model)))
+    ? isCooling(draftingQuotaKeyCooldownUntil, key)
     : isCooling(keyCooldownUntil, key)));
   let lastError: any = null;
   let attemptedModelCount = 0;
@@ -620,7 +620,7 @@ export async function executeWithKeyRotation<T>(
     const currentKeyIndex = (startIndex + offset) % keys.length;
     const currentKey = keys[currentKeyIndex];
     if ((draftingMode
-      ? preferredModels.every((model) => isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, model)))
+      ? isCooling(draftingQuotaKeyCooldownUntil, currentKey)
       : isCooling(keyCooldownUntil, currentKey)) || (!draftingMode && permanentlyInvalidKeys.has(currentKey))) continue;
     const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, draftingMode);
     if (draftingMode && currentKey === executionOptions?.startKey && executionOptions?.startModel) {
@@ -680,15 +680,14 @@ export async function executeWithKeyRotation<T>(
 
           markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
           if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
-          if (kind === 'quota' && preferredModels.every((candidateModel) =>
-            isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, candidateModel)))) quotaExhaustedKeys.add(currentKey);
+          if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
           if (!draftingMode && permanentlyInvalidKeys.has(currentKey)) break;
           break;
         }
       }
       if (pairSucceeded) break;
       if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || (draftingMode
-        ? preferredModels.every((candidateModel) => isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, candidateModel)))
+        ? isCooling(draftingQuotaKeyCooldownUntil, currentKey)
         : isCooling(keyCooldownUntil, currentKey))) break;
     }
   }
@@ -729,7 +728,7 @@ export async function executeWithKeyRotationStream(
   let attemptedModelCount = 0;
   let lastError: any = null;
   const quotaExhaustedKeys = new Set<string>(keys.filter((key) => draftingMode
-    ? preferredModels.every((model) => isCooling(quotaPairCooldownUntil, rotationPairKey(key, model)))
+    ? isCooling(draftingQuotaKeyCooldownUntil, key)
     : isCooling(keyCooldownUntil, key)));
   const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
   const startIndex = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
@@ -738,7 +737,7 @@ export async function executeWithKeyRotationStream(
     const currentKeyIndex = (startIndex + offset) % keys.length;
     const currentKey = keys[currentKeyIndex];
     if ((draftingMode
-      ? preferredModels.every((model) => isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, model)))
+      ? isCooling(draftingQuotaKeyCooldownUntil, currentKey)
       : isCooling(keyCooldownUntil, currentKey)) || (!draftingMode && permanentlyInvalidKeys.has(currentKey))) continue;
     const models = selectModelsForKey(preferredModels, currentKey, 'general', Date.now(), avoidedPairs, draftingMode);
     if (draftingMode && currentKey === executionOptions?.startKey && executionOptions?.startModel) {
@@ -810,8 +809,7 @@ export async function executeWithKeyRotationStream(
           });
 
           markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
-          if (kind === 'quota' && preferredModels.every((candidateModel) =>
-            isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, candidateModel)))) quotaExhaustedKeys.add(currentKey);
+          if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
 
           // Once a stream has delivered text, preserve it and let the document
           // continuation layer resume from that exact partial output on another pair.
@@ -828,13 +826,13 @@ export async function executeWithKeyRotationStream(
           executionOptions?.attemptedPairs?.add(pair);
           if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
           if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || (draftingMode
-            ? preferredModels.every((candidateModel) => isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, candidateModel)))
+            ? isCooling(draftingQuotaKeyCooldownUntil, currentKey)
             : isCooling(keyCooldownUntil, currentKey))) break;
           break;
         }
       }
       if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || (draftingMode
-        ? preferredModels.every((candidateModel) => isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, candidateModel)))
+        ? isCooling(draftingQuotaKeyCooldownUntil, currentKey)
         : isCooling(keyCooldownUntil, currentKey))) break;
     }
   }
