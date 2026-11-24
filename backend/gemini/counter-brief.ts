@@ -61,13 +61,11 @@ async function buildDraftingEvidenceLedger(source: string, sourceLabel: string, 
       'حلّل هذا الجزء وحده تحليلاً استخلاصياً شاملاً، ولا تصغ مذكرة ولا تختصر الوقائع الجوهرية. استخرج كل واقعة وادعاء وإقرار، وكل اسم وصفة ورقم ومبلغ وتاريخ ومدة ومكان وتسلسل زمني، وكل مستند أو دليل ومضمونه وما يثبته وما لا يثبته، وكل طلب أو دفع أو دفاع أو حجة أو رد أو تناقض أو فجوة أو معلومة ناقصة. اربط كل نقطة بموضعها في الجزء، وحافظ على الأرقام والتواريخ والعبارات الحاسمة. ميّز بين الثابت والادعاء والاستنتاج والاحتمال والنقص. لا تضف قاعدة قانونية أو واقعة غير موجودة ولا تسقط معلومة قد يكون لها أثر قانوني أو إثباتي.\n' +
       '[النص الأصلي لهذا الجزء — يُحلل كاملاً دون إعادة صياغة مخلّة]\n' + chunk.text + '\n[نهاية الجزء]';
     const extracted = await executeWithKeyRotation(async (ai, _key, model) => {
-      const count = await ai.models.countTokens({
-        model, contents: chunkPrompt,
-        config: { systemInstruction: 'أنت محلل قانوني مصري دقيق. استخرج البيانات من النص دون اختلاق، وحافظ على الإحالات والأرقام والتواريخ.' },
-      }).catch(() => null);
-      console.info('[counter-brief] staged chunk token count', {
+      console.info('[counter-brief] staged chunk size estimate', {
         source: sourceLabel, chunk: index + 1, totalChunks: chunks.length,
-        inputTokens: Number(count?.totalTokens) || null, chunkCharacters: chunk.text.length, model,
+        promptCharacters: chunkPrompt.length,
+        estimatedInputTokens: Math.ceil(chunkPrompt.length / 3),
+        tokenCountIsEstimate: true, model,
       });
       const response = await ai.models.generateContent({
         model, contents: chunkPrompt,
@@ -100,13 +98,11 @@ async function buildDraftingEvidenceLedger(source: string, sourceLabel: string, 
         'ادمج السجلات التالية في ملف وقائع وأدلة موحد ومركز، مع الحفاظ على جميع الوقائع الجوهرية والأسماء والصفات والأرقام والمبالغ والتواريخ والطلبات والدفوع والمستندات والتناقضات ومواطن النقص. احتفظ بإحالات كل معلومة إلى الجزء وموضع الحروف الأصلي. اربط ما بين الأجزاء، واكشف التعارضات العابرة لها، ولا تكرر المعلومة إلا إذا كان التكرار نفسه ذا دلالة. لا تسقط معلومة مؤثرة ولا تختلق واقعة أو سنداً قانونياً. ميّز بين الثابت والادعاء والاستنتاج والاحتمال وما يحتاج تحققاً. هذا سجل تحليلي لا مسودة مستند قضائي.\n\n' +
         batch.join('\n\n[فاصل سجل]\n\n');
       const merged = await executeWithKeyRotation(async (ai, _key, model) => {
-        const count = await ai.models.countTokens({
-          model, contents: mergePrompt,
-          config: { systemInstruction: 'أنت محلل قانوني مصري يربط الأدلة والوقائع بدقة دون اختلاق أو إسقاط.' },
-        }).catch(() => null);
-        console.info('[counter-brief] staged ledger reduction token count', {
+        console.info('[counter-brief] staged ledger reduction size estimate', {
           source: sourceLabel, round: reductionRound, batch: Math.floor(offset / 4) + 1,
-          inputTokens: Number(count?.totalTokens) || null, model,
+          promptCharacters: mergePrompt.length,
+          estimatedInputTokens: Math.ceil(mergePrompt.length / 3),
+          tokenCountIsEstimate: true, model,
         });
         const response = await ai.models.generateContent({
           model, contents: mergePrompt,
@@ -136,30 +132,19 @@ async function buildDraftingEvidenceLedger(source: string, sourceLabel: string, 
 }
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
-async function logDraftingPromptTokens(ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
-  try {
-    const result = await ai.models.countTokens({
-      model,
-      contents: prompt,
-      config: { systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION },
-    });
-    console.info('[counter-brief] Gemini request size', {
-      model,
-      promptCharacters: prompt.length,
-      systemInstructionCharacters: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length,
-      inputTokens: Number(result?.totalTokens) || null,
-      continuationCount,
-      accumulatedCharacters,
-    });
-  } catch (error: any) {
-    // Token diagnostics must never prevent the actual drafting request.
-    console.warn('[counter-brief] token count unavailable', {
-      model,
-      promptCharacters: prompt.length,
-      continuationCount,
-      reason: String(error?.message || error).slice(0, 240),
-    });
-  }
+async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
+  // executeWithKeyRotation supplies an adaptive wrapper exposing generation methods only.
+  // Keep this diagnostic non-blocking and label the character-based token figure as an estimate.
+  const systemCharacters = EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length;
+  console.info('[counter-brief] Gemini request size estimate', {
+    model,
+    promptCharacters: prompt.length,
+    systemInstructionCharacters: systemCharacters,
+    estimatedInputTokens: Math.ceil((prompt.length + systemCharacters) / 3),
+    tokenCountIsEstimate: true,
+    continuationCount,
+    accumulatedCharacters,
+  });
 }
 
 function isBlockedFinishReason(reason: unknown): boolean {
