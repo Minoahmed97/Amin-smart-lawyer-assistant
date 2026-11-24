@@ -234,7 +234,7 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
     error?.response?.status || error?.response?.statusCode || error?.error?.code || 0);
 
   const explicitSpendCap = /spend[- ]based.{0,80}(limit|cap)|billing.{0,80}(limit|cap|exhaust)|prepaid.{0,80}(balance|credit).{0,80}(exhaust|deplet)|account.{0,80}spend.{0,40}(limit|cap)/.test(normalizedMessage);
-  const explicitQuotaExhaustion = /resource[_\\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota/.test(normalizedMessage);
+  const explicitQuotaExhaustion = /resource[_\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota/.test(normalizedMessage);
 
   if (explicitSpendCap || hasQuotaFailure || explicitQuotaExhaustion) {
     return 'quota';
@@ -691,7 +691,7 @@ export async function executeWithKeyRotation<T>(
         } catch (error: any) {
           lastError = error;
           const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
-          const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
+          const status = Number(error?.status || error?.statusCode || error?.response?.status || error?.response?.statusCode || error?.code || error?.error?.code || 0);
           console.warn('[Gemini rotation] attempt failed', {
             key: maskGeminiKey(currentKey),
             model,
@@ -823,7 +823,7 @@ export async function executeWithKeyRotationStream(
         } catch (error: any) {
           lastError = error;
           const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
-          const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
+          const status = Number(error?.status || error?.statusCode || error?.response?.status || error?.response?.statusCode || error?.code || error?.error?.code || 0);
           console.warn('[Gemini stream rotation] attempt failed', {
             key: maskGeminiKey(currentKey),
             keyPosition: currentKeyIndex + 1,
