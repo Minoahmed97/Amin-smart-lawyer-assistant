@@ -506,7 +506,10 @@ export async function resumeDraftCounterBrief(
 ): Promise<string> {
   let payload = readDraftJobPayload(userId) || fallbackPayload || {};
   if (typeof payload.facts === 'string' && payload.facts.trim() && !payload.vaultContext) {
-    const effectiveWorkType = String(payload.customJudicialWorkType || payload.judicialWorkType || payload.briefType || '').trim();
+    const effectiveWorkType = String(
+      payload.customJudicialWorkType || payload.judicialWorkType || payload.briefType ||
+      payload.caseContext?.selectedDocumentType || '',
+    ).trim();
     const vaultContext = getCachedLawyerStyleContext({
       courtType: payload.courtType,
       briefType: payload.briefType,
@@ -775,7 +778,11 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
   const effectiveWorkType =
     params.customJudicialWorkType?.trim()
       ? params.customJudicialWorkType.trim()
-      : params.judicialWorkType || params.briefType || '';
+      : params.judicialWorkType?.trim()
+        ? params.judicialWorkType.trim()
+        : params.briefType?.trim()
+          ? params.briefType.trim()
+          : String((params as typeof params & { caseContext?: LegalCaseContext }).caseContext?.selectedDocumentType || '').trim();
 
   const lawyerVaultContext = getCachedLawyerStyleContext({
     courtType: params.courtType,
