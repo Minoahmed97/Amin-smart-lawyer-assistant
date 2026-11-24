@@ -377,7 +377,7 @@ function documentFamily(value: string): string {
 
 function styleFingerprintCacheKey(userId?: string): string {
   const safeUserId = String(userId || getActiveLawyerUserId()).replace(/[^a-zA-Z0-9_-]/g, '_');
-  return \`amin_lawyer_style_fingerprint_v1_\${safeUserId}\`;
+  return `amin_lawyer_style_fingerprint_v1_${safeUserId}`;
 }
 
 function styleFingerprintSignature(models: LawModelItem[]): string {
@@ -395,7 +395,7 @@ function styleFingerprintSignature(models: LawModelItem[]): string {
     hash ^= source.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return \`\${models.length}_\${(hash >>> 0).toString(36)}\`;
+  return `${models.length}_${(hash >>> 0).toString(36)}`;
 }
 
 function detectOpeningStyle(content: string): string {
@@ -457,7 +457,7 @@ export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | 
 
   const models = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
   const requestedType = criteria.judicialWorkType || criteria.briefType || '';
-  const requestedLegalFamily = legalFamily(\`\${criteria.courtType || ''} \${requestedType} \${criteria.factsOrSubject || ''}\`);
+  const requestedLegalFamily = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
 
   if (!models.length) {
     return '[بصمة أسلوب المحامي — لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب؛ لا تدّعِ استخدام بصمة غير متاحة.]';
@@ -502,10 +502,10 @@ export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | 
   }
 
   const workLine = requestedType
-    ? \`نوع العمل الحالي: \${requestedType}.\`
+    ? `نوع العمل الحالي: ${requestedType}.`
     : 'يُحدد نوع العمل من طلب المحامي ووقائع المهمة، ولا يُفترض نوع مستند بعينه.';
-  const courtLine = criteria.courtType ? \`جهة القضاء: \${criteria.courtType}.\` : '';
-  const familyLine = requestedLegalFamily ? \`الفرع القانوني: \${requestedLegalFamily}.\` : '';
+  const courtLine = criteria.courtType ? `جهة القضاء: ${criteria.courtType}.` : '';
+  const familyLine = requestedLegalFamily ? `الفرع القانوني: ${requestedLegalFamily}.` : '';
 
   return [
     '[بصمة أسلوب المحامي — ملف أسلوبي مختصر محفوظ لهذا الحساب]',
