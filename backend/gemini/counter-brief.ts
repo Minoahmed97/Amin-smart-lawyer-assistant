@@ -21,7 +21,7 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
 
-function splitLegalSourceIntoChunks(source: string, maxChars = 20000): Array<{ text: string; start: number; end: number }> {
+function splitLegalSourceIntoChunks(source: string, maxChars = 6000): Array<{ text: string; start: number; end: number }> {
   const chunks: Array<{ text: string; start: number; end: number }> = [];
   let start = 0;
   while (start < source.length) {
@@ -48,7 +48,7 @@ async function buildDraftingEvidenceLedger(
   state: DraftingLedgerState, persist: () => Promise<void>,
 ): Promise<string> {
   const trimmed = typeof source === 'string' ? source.trim() : '';
-  if (!trimmed || trimmed.length <= 18000) return source;
+  if (!trimmed || trimmed.length <= 6000) return source;
   const chunks = splitLegalSourceIntoChunks(source);
   let sourceState = state.sources[sourceLabel];
   if (!sourceState || sourceState.sourceLength !== source.length) {
