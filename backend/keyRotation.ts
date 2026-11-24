@@ -91,9 +91,9 @@ function markRotationFailure(
       keyCooldowns.set(key, now + KEY_QUOTA_COOLDOWN_MS);
       pairCooldowns.set(pair, now + KEY_QUOTA_COOLDOWN_MS);
     }
-  } else if (!quotaOnlyKeyExclusion && (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message))) {
+  } else if (status === 503 || /high demand|service unavailable|temporarily unavailable/.test(message)) {
     pairCooldowns.set(pair, now + MODEL_BUSY_COOLDOWN_MS);
-  } else if (!quotaOnlyKeyExclusion && (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message))) {
+  } else if (kind === 'temporary' || status === 408 || status === 504 || /network|fetch failed|connection|socket|econn|timed out|timeout|aborted/.test(message)) {
     pairCooldowns.set(pair, now + (status === 504 || /timeout|timed out|network|connection|socket|econn|fetch failed/.test(message) ? CONNECTION_COOLDOWN_MS : MODEL_PAIR_COOLDOWN_MS));
   }
   return kind;
@@ -223,7 +223,7 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
     error?.response?.status || error?.response?.statusCode || error?.error?.code || 0);
 
   const explicitSpendCap = /spend[- ]based.{0,80}(limit|cap)|billing.{0,80}(limit|cap|exhaust)|prepaid.{0,80}(balance|credit).{0,80}(exhaust|deplet)|account.{0,80}spend.{0,40}(limit|cap)/.test(normalizedMessage);
-  const explicitProjectQuota = /(?:project|google cloud project).{0,100}(?:quota|limit).{0,100}(?:exceed|exhaust|reached)|(?:quota|limit).{0,100}(?:for|of) (?:the )?(?:entire )?project|project[- ]wide quota/.test(normalizedMessage);
+  const explicitProjectQuota = /\\b(?:project[- ]wide|whole project|entire project)\\b.{0,100}\\b(?:quota|limit)\\b.{0,100}\\b(?:exceed|exhaust|reach|cap)\\b|\\b(?:quota|limit)\\b.{0,100}\\b(?:for|of)\\s+(?:the\\s+)?(?:whole|entire)\\s+project\\b.{0,100}\\b(?:exceed|exhaust|reach)\\b/.test(normalizedMessage);
 
   // Google may return 429 / RESOURCE_EXHAUSTED / QuotaFailure for a
   // model-specific or rate-specific limit. Try the other models and keys.
@@ -624,6 +624,11 @@ export async function executeWithKeyRotation<T>(
   const draftingMode = executionOptions?.draftingMode === true;
   const keys = (await getAvailableGeminiKeys(undefined, draftingMode, draftingMode)).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح في إعدادات الخادم.');
+  if (draftingMode) console.info('[Gemini drafting rotation] managed key pool loaded', {
+    totalKeys: keys.length,
+    configuredModels: preferredModels.length,
+    keyFingerprints: keys.map(maskGeminiKey),
+  });
 
   if (activeKeyIndex >= keys.length) activeKeyIndex = 0;
   const explicitlyAvoidedPairs = new Set(executionOptions?.avoidPairs || []);
@@ -660,6 +665,15 @@ export async function executeWithKeyRotation<T>(
         break;
       }
       attemptedModelCount++;
+      if (draftingMode) console.info('[Gemini drafting rotation] trying key/model', {
+        keyPosition: currentKeyIndex + 1,
+        totalKeys: keys.length,
+        key: maskGeminiKey(currentKey),
+        modelPosition: models.indexOf(model) + 1,
+        modelsForKey: models.length,
+        model,
+        attemptedModelCount,
+      });
 
       let pairSucceeded = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -748,6 +762,11 @@ export async function executeWithKeyRotationStream(
   const draftingMode = executionOptions?.draftingMode === true;
   const keys = (await getAvailableGeminiKeys(undefined, draftingMode, draftingMode)).filter((key) => draftingMode || !permanentlyInvalidKeys.has(key));
   if (keys.length === 0) throw new Error('لم يتم العثور على مفتاح Gemini صالح.');
+  if (draftingMode) console.info('[Gemini drafting rotation] managed key pool loaded', {
+    totalKeys: keys.length,
+    configuredModels: preferredModels.length,
+    keyFingerprints: keys.map(maskGeminiKey),
+  });
 
   const explicitlyAvoidedPairs = new Set(executionOptions?.avoidPairs || []);
   const avoidedPairs = new Set([...explicitlyAvoidedPairs, ...(executionOptions?.attemptedPairs || [])]);
@@ -852,6 +871,8 @@ export async function executeWithKeyRotationStream(
             continue;
           }
           executionOptions?.attemptedPairs?.add(pair);
+          markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
+          if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
           if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
           if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || (draftingMode
             ? isCooling(draftingQuotaKeyCooldownUntil, currentKey)
