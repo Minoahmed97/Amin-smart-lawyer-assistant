@@ -179,7 +179,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; deadlineAt?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -191,7 +191,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
   const maxContinuations = 5;
   // Shared ledger: every attempted Gemini key/model pair is retained across continuation segments.
-  const deadlineAt = Date.now() + 270000;
+  const deadlineAt = Number(options.deadlineAt || (Date.now() + 270000));
   let accumulatedText = typeof options.resumeText === 'string' ? options.resumeText : '';
   let continuationCount = 0;
   let lastError: any = null;
@@ -541,7 +541,7 @@ export default async function handler(req: any, res: any) {
       priorAnalysis: caseAnalysisContext,
     });
 
-    const draftingAnalysisDeadline = Date.now() + 240000;
+    const draftingAnalysisDeadline = Date.now() + 270000;
     const draftingFactsContext = await buildDraftingEvidenceLedger(facts, 'وقائع الدعوى والمعلومات الأصلية', draftingAnalysisDeadline);
     const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string'
       ? await buildDraftingEvidenceLedger(caseAnalysisContext, 'التحليل القانوني السابق', draftingAnalysisDeadline)
@@ -578,7 +578,7 @@ export default async function handler(req: any, res: any) {
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '' });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', deadlineAt: draftingAnalysisDeadline });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -594,7 +594,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '' });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', deadlineAt: draftingAnalysisDeadline });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
