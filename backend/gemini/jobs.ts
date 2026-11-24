@@ -738,11 +738,46 @@ async function retryDeadlineDraftingJob(
   return true;
 }
 
+async function requeueDraftingStage(jobId: string, userId: string, partialText: string): Promise<void> {
+  const currentResponse = await supabase(
+    `${JOB_TABLE}?select=payload,partial_result&id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running&limit=1`,
+  );
+  if (!currentResponse.ok) throw new Error(`تعذر استرجاع نقطة حفظ مرحلة الصياغة (${currentResponse.status}).`);
+  const rows = await currentResponse.json().catch(() => []);
+  if (!Array.isArray(rows) || !rows.length) throw new Error('تعذر العثور على مهمة الصياغة الجارية لحفظ المرحلة التالية.');
+  const latest = rows[0];
+  const savedPayload = toPayload(latest.payload);
+  const savedPartial = partialText || String(latest.partial_result || '');
+  const updated = await supabase(
+    `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ status: 'queued', error: null, payload: savedPayload, partial_result: savedPartial, updated_at: new Date().toISOString() }),
+    },
+  );
+  if (!updated.ok) throw new Error(`تعذر إعادة مرحلة الصياغة إلى الطابور (${updated.status}).`);
+  const changed = await updated.json().catch(() => []);
+  if (!Array.isArray(changed) || !changed.length) return;
+  try {
+    await enqueueDurableAiJob(jobId);
+  } catch (queueError: any) {
+    scheduleBackground(dispatchQueuedJob(jobId));
+    console.warn('Drafting stage continuation delivery deferred:', safeDiagnosticMessage(queueError?.message || queueError));
+  }
+  console.info('Drafting stage checkpoint queued:', JSON.stringify({
+    jobId,
+    savedOutputCharacters: savedPartial.length,
+    hasLedgerCheckpoint: Boolean(savedPayload._draftingState),
+  }));
+}
+
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
   let fullText = typeof payload._resumePartialText === 'string' ? payload._resumePartialText : '';
   let persistedLength = fullText.length;
   let pendingWrite = Promise.resolve();
   let streamError = '';
+  let stageYielded = false;
   let handlerJson: any = null;
   let phase = 'start';
   
@@ -771,7 +806,9 @@ async function processJob(jobId: string, userId: string, token: string, taskType
         const candidate = line.startsWith('data:') ? line.slice(5).trim() : line.trim();
         try {
           const event = JSON.parse(candidate);
-          if (event.type === 'chunk' && typeof event.text === 'string') {
+          if (event.type === 'yield') {
+            stageYielded = true;
+          } else if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
             // Persist every legal-drafting chunk immediately. Preserve the existing
             // OCR/other-task batching behavior to keep this change scoped to drafting.
@@ -808,6 +845,11 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     phase = 'flush-partial-result';
     await pendingWrite;
+    if (stageYielded && taskType === 'counter-brief') {
+      phase = 'queue-next-drafting-stage';
+      await requeueDraftingStage(jobId, userId, fullText);
+      return;
+    }
     if (!fullText.trim() && taskType === 'ocr' && typeof handlerJson?.text === 'string') {
       fullText = handlerJson.text.trim();
     }
