@@ -526,12 +526,15 @@ async function getAvailableGeminiKeys(
   // single source of truth. Do not silently fall back to Vercel env vars or
   // local files if the managed-key read fails.
   if (managedOnly) {
+    // Supabase remains required, while server-side Vercel keys join the same
+    // drafting rotation so configured env keys are not silently ignored.
     const managedKeys = await fetchServerCloudGeminiKeys(timeoutMs, forceRefresh);
     const validManagedKeys = managedKeys.filter(isValidGeminiApiKey);
     if (validManagedKeys.length === 0) {
       throw new Error('لم يتم العثور على مفاتيح Gemini نشطة في إدارة المنصة على Supabase. تعذر بدء الصياغة دون مفاتيح الإدارة المحفوظة.');
     }
-    return [...new Set(validManagedKeys)];
+    const serverEnvKeys = getVercelGeminiKeys().filter(isValidGeminiApiKey);
+    return [...new Set([...validManagedKeys, ...serverEnvKeys])];
   }
 
   const keys = getVercelGeminiKeys();
@@ -712,7 +715,7 @@ export async function executeWithKeyRotation<T>(
             partialCharacters: Number(error?.partialCharacters || 0),
           });
 
-          if (kind === 'temporary' && !isGeminiModelUnavailable(error, status) && attempt === 1 && deadlineAt - Date.now() > 5000) {
+          if (kind === 'temporary' && status !== 429 && !isGeminiModelUnavailable(error, status) && attempt === 1 && deadlineAt - Date.now() > 5000) {
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
           }
@@ -867,7 +870,7 @@ export async function executeWithKeyRotationStream(
             error.partialCharacters = partialCharacters;
             throw error;
           }
-          if (kind === 'temporary' && !isGeminiModelUnavailable(error, status) && attempt === 1 && deadlineAt - Date.now() > 5000) {
+          if (kind === 'temporary' && status !== 429 && !isGeminiModelUnavailable(error, status) && attempt === 1 && deadlineAt - Date.now() > 5000) {
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
           }
