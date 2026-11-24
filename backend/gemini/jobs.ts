@@ -672,9 +672,16 @@ async function retryDeadlineDraftingJob(
   jobId: string, userId: string, payload: Record<string, string>, partialText: string, error: unknown,
 ): Promise<boolean> {
   const message = String((error as any)?.message || error || '');
-  const status = Number((error as any)?.statusCode || (error as any)?.status || (message.match(/(?:HTTP|statusCode|code)[^0-9]{0,8}(503|504)/i) || [])[1] || 0);
-  const deadlineFailure = status === 503 || status === 504 || /deadline.?exceeded|deadline expired|انتهى الوقت المتاح|timed?\s*out|high demand|service unavailable|temporarily unavailable/i.test(message);
-  if (!deadlineFailure) return false;
+  const status = Number((error as any)?.statusCode || (error as any)?.status || (message.match(/"(?:code|status)"\s*:\s*(\d{3})/i) || message.match(/(?:HTTP|statusCode|code)[^0-9]{0,8}(429|503|504)/i) || [])[1] || 0);
+  // A model-scoped Gemini Free Tier quota does not mean every model/key is exhausted.
+  // Retry the same durable job so its saved drafting ledger can continue.
+  const modelScopedQuota = status === 429 &&
+    /RESOURCE_EXHAUSTED|GenerateRequestsPerDayPerProjectPerModel|PerProjectPerModel/i.test(message) &&
+    /quotaDimensions[\s\S]{0,300}model|model[\s\S]{0,100}gemini/i.test(message) &&
+    !/project[- ]wide|quota for (?:the )?(?:entire )?project|spend.?cap|billing.?limit/i.test(message);
+  const deadlineFailure = status === 503 || status === 504 ||
+    /deadline.?exceeded|deadline expired|انتهى الوقت المتاح|timed?\s*out|high demand|service unavailable|temporarily unavailable/i.test(message);
+  if (!deadlineFailure && !modelScopedQuota) return false;
 
   // The drafting handler checkpoints its chunk/reduction ledger directly in
   // the running job payload. The worker's local payload is an older snapshot;
@@ -708,7 +715,7 @@ async function retryDeadlineDraftingJob(
       headers: { Prefer: 'return=representation' },
       body: JSON.stringify({
         status: 'queued',
-        error: 'توقفت مرحلة الصياغة عند حد التنفيذ؛ حُفظت الأجزاء المكتملة وستُستكمل تلقائياً.',
+        error: 'توقفت محاولة Gemini مؤقتاً (مهلة تنفيذ أو حصة نموذج)؛ حُفظت الأجزاء المكتملة ونقطة الاستكمال وستُعاد المحاولة تلقائياً.',
         payload: nextPayload,
         partial_result: partialText,
         updated_at: new Date().toISOString(),
@@ -822,7 +829,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
         });
         if (!finalized) return;
       } else {
-        await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: {} });
+        await patchJob(jobId, userId, { status: 'failed', error, partial_result: fullText, payload: taskType === 'counter-brief' ? payload : {} });
       }
       await sendCompletionPush(userId, jobId, taskType, 'failed', payload.fileName || '');
       return;
@@ -859,7 +866,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
         });
         if (!finalized) return;
       } else {
-        await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: {} });
+        await patchJob(jobId, userId, { status: 'failed', error: message, partial_result: fullText, payload: taskType === 'counter-brief' ? payload : {} });
       }
       await sendCompletionPush(userId, jobId, taskType, 'failed', payload.fileName || '');
     } catch (persistError: any) {
@@ -1189,7 +1196,7 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({
         jobId: job.id,
         status: job.status,
-        partialResult: job.task_type === 'counter-brief' && job.status !== 'completed' ? '' : (job.partial_result || ''),
+        partialResult: job.partial_result || '',
         result: job.result || '',
         error: job.error || null,
         updatedAt: job.updated_at || null,
