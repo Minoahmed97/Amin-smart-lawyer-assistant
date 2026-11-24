@@ -601,7 +601,7 @@ ${vaultContext}
       `التحليل السابق: ${String(draftingPriorAnalysisContext || '').slice(0, 2500)}`,
       `بصمة الخزانة: ${String(vaultContext || '').slice(0, 1800)}`,
       'التزم بالنوع والطلبات المحددة، ولا تختلق وقائع أو أسانيد. أكمل المستند من حيث انتهى النص السابق وبنفس بصمة المحامي.'
-    ].join('\\n\\n');
+    ].join('\n\n');
 
     if (body?.stream === true) {
       res.statusCode = 200;
