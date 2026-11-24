@@ -707,6 +707,8 @@ export async function executeWithKeyRotation<T>(
             partialCharacters: Number(error?.partialCharacters || 0),
           });
 
+          markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
+          if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
           if (kind === 'temporary' && !isGeminiModelUnavailable(error, status) && attempt === 1 && deadlineAt - Date.now() > 5000) {
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
@@ -844,9 +846,6 @@ export async function executeWithKeyRotationStream(
             reason: safeGeminiDiagnostic(error),
           });
 
-          markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
-          if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
-
           // A transient interruption after text was emitted does not invalidate
           // the provider pair. Preserve the partial output and let drafting resume
           // with this same key/model before considering another pair.
@@ -854,6 +853,7 @@ export async function executeWithKeyRotationStream(
             if (kind !== 'temporary') {
               executionOptions?.attemptedPairs?.add(pair);
               markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
+              if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
               if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
             }
             error.partialCharacters = partialCharacters;
