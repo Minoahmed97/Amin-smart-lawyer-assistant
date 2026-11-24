@@ -668,6 +668,47 @@ async function retryTransientOcrJob(jobId: string, userId: string, payload: Reco
   return true;
 }
 
+async function retryDeadlineDraftingJob(
+  jobId: string, userId: string, payload: Record<string, string>, partialText: string, error: unknown,
+): Promise<boolean> {
+  const message = String((error as any)?.message || error || '');
+  const status = Number((error as any)?.statusCode || (error as any)?.status || (message.match(/(?:HTTP|statusCode|code)[^0-9]{0,8}(504)/i) || [])[1] || 0);
+  const deadlineFailure = status === 504 || /deadline.?exceeded|deadline expired|انتهى الوقت المتاح|timed?\s*out/i.test(message);
+  const attempts = Math.max(0, Number(payload._draftingRetryCount || 0));
+  if (!deadlineFailure || attempts >= 8) return false;
+
+  const nextPayload = { ...payload, _draftingRetryCount: String(attempts + 1) };
+  delete nextPayload._resumePartialText;
+  const response = await supabase(
+    `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({
+        status: 'queued',
+        error: 'توقفت مرحلة الصياغة عند حد التنفيذ؛ حُفظت الأجزاء المكتملة وستُستكمل تلقائياً.',
+        payload: nextPayload,
+        partial_result: partialText,
+        updated_at: new Date().toISOString(),
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`تعذر حفظ حالة استكمال الصياغة بعد انتهاء المهلة (${response.status}).`);
+  const rows = await response.json().catch(() => []);
+  if (!Array.isArray(rows) || !rows.length) return false;
+  try {
+    await enqueueDurableAiJob(jobId);
+  } catch (queueError: any) {
+    scheduleBackground(dispatchQueuedJob(jobId));
+    console.warn('Drafting deadline retry delivery deferred:', safeDiagnosticMessage(queueError?.message || queueError));
+  }
+  console.info('Drafting job checkpoint retained for automatic resume:', JSON.stringify({
+    jobId, retryCount: attempts + 1, savedOutputCharacters: partialText.length,
+    hasLedgerCheckpoint: Boolean(nextPayload._draftingState),
+  }));
+  return true;
+}
+
 async function processJob(jobId: string, userId: string, token: string, taskType: string, payload: Record<string, string>, originalReq: any) {
   let fullText = typeof payload._resumePartialText === 'string' ? payload._resumePartialText : '';
   let persistedLength = fullText.length;
@@ -731,7 +772,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       ...originalReq,
       method: 'POST',
       headers: { ...(originalReq?.headers || {}), authorization: `Bearer ${token}` },
-      body: { ...payload, stream: true },
+      body: { ...payload, stream: true, _jobId: jobId, _jobUserId: userId },
     };
     phase = 'run-handler';
     await TASK_HANDLERS[taskType](fakeReq, fakeRes);
@@ -750,6 +791,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (fakeRes.statusCode >= 400 || streamError || !fullText.trim()) {
       const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
       phase = 'persist-handler-failure';
+      if (taskType === 'counter-brief' && await retryDeadlineDraftingJob(jobId, userId, payload, fullText, error)) return;
       console.error('AI job handler returned failure:', JSON.stringify({ jobId, taskType, phase, statusCode: fakeRes.statusCode, error: safeDiagnosticMessage(error), hasPartialResult: Boolean(fullText.trim()) }));
       if (taskType === 'ocr') {
         if (await retryTransientOcrJob(jobId, userId, payload, error)) return;
@@ -787,6 +829,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     console.error('AI job processing failed:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(message), hasPartialResult: Boolean(fullText.trim()) }));
     try {
       phase = 'persist-caught-failure';
+      if (taskType === 'counter-brief' && await retryDeadlineDraftingJob(jobId, userId, payload, fullText, message)) return;
       if (taskType === 'ocr') {
         if (await retryTransientOcrJob(jobId, userId, payload, message)) return;
         const finalized = await finalizeOcrJob(jobId, userId, {
@@ -1124,7 +1167,7 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({
         jobId: job.id,
         status: job.status,
-        partialResult: job.partial_result || '',
+        partialResult: job.task_type === 'counter-brief' && job.status !== 'completed' ? '' : (job.partial_result || ''),
         result: job.result || '',
         error: job.error || null,
         updatedAt: job.updated_at || null,
