@@ -674,10 +674,32 @@ async function retryDeadlineDraftingJob(
   const message = String((error as any)?.message || error || '');
   const status = Number((error as any)?.statusCode || (error as any)?.status || (message.match(/(?:HTTP|statusCode|code)[^0-9]{0,8}(504)/i) || [])[1] || 0);
   const deadlineFailure = status === 504 || /deadline.?exceeded|deadline expired|انتهى الوقت المتاح|timed?\s*out/i.test(message);
-  const attempts = Math.max(0, Number(payload._draftingRetryCount || 0));
-  if (!deadlineFailure || attempts >= 8) return false;
+  if (!deadlineFailure) return false;
 
-  const nextPayload = { ...payload, _draftingRetryCount: String(attempts + 1) };
+  // The drafting handler checkpoints its chunk/reduction ledger directly in
+  // the running job payload. The worker's local payload is an older snapshot;
+  // rebuilding from it would overwrite the latest checkpoint on retry.
+  const currentResponse = await supabase(
+    `${JOB_TABLE}?select=payload&id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running&limit=1`,
+  );
+  if (!currentResponse.ok) {
+    throw new Error(`تعذر استرجاع نقطة حفظ الصياغة قبل الاستكمال (${currentResponse.status}).`);
+  }
+  const currentRows = await currentResponse.json().catch(() => []);
+  if (!Array.isArray(currentRows) || !currentRows.length) return false;
+  const latestPayload = currentRows[0]?.payload && typeof currentRows[0].payload === 'object'
+    ? currentRows[0].payload as Record<string, unknown>
+    : {};
+  // Prefer the database snapshot, which contains the newest _draftingState,
+  // while retaining any original request fields absent from that snapshot.
+  const mergedPayload: Record<string, string> = { ...payload };
+  for (const [key, value] of Object.entries(latestPayload)) {
+    if (typeof value === 'string') mergedPayload[key] = value;
+  }
+  const attempts = Math.max(0, Number(mergedPayload._draftingRetryCount || 0));
+  if (attempts >= 8) return false;
+
+  const nextPayload = { ...mergedPayload, _draftingRetryCount: String(attempts + 1) };
   delete nextPayload._resumePartialText;
   const response = await supabase(
     `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running`,
