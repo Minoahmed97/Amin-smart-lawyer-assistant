@@ -181,12 +181,8 @@ function safeGeminiDiagnostic(error: any): string {
 }
 
 function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporary' | 'other' {
-  // Google 429 responses can represent either a model-specific limit or a
-  // project-wide limit. Only exclude the whole drafting key when the response
-  // explicitly identifies a project-wide quota or a spend/billing cap.
   const messages: string[] = [];
   const seen = new Set<any>();
-  let hasQuotaFailure = false;
 
   const visit = (value: any, depth = 0): void => {
     if (value == null || depth > 7) return;
@@ -207,19 +203,12 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
     }
     if (typeof value !== 'object' || seen.has(value)) return;
     seen.add(value);
-
     if (Array.isArray(value)) {
       for (const item of value) visit(item, depth + 1);
       return;
     }
-
-    const type = String(value['@type'] || value.type || '');
-    if (/QuotaFailure/i.test(type)) {
-      // Google explicitly identified a quota violation. For drafting, move
-      // to the next configured key instead of trying more models on this key.
-      hasQuotaFailure = true;
-    }
-
+    // QuotaFailure details are retained for diagnostics, but do not by
+    // themselves prove that every model using this key has exhausted quota.
     for (const candidate of [value.message, value.status, value.code, value.error, value.details, value.data]) {
       if (candidate !== undefined) visit(candidate, depth + 1);
     }
@@ -227,25 +216,26 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
 
   visit(error);
   const normalizedMessage = messages.join(' ')
-    .replace(/https?:\/\/[^\s"'<>]+/gi, ' ')
+    .replace(/https?:\\/\\/[^\\s"'<>]+/gi, ' ')
     .toLowerCase()
     .replace(/\\_/g, '_');
   const status = Number(error?.status || error?.statusCode || error?.code ||
     error?.response?.status || error?.response?.statusCode || error?.error?.code || 0);
 
   const explicitSpendCap = /spend[- ]based.{0,80}(limit|cap)|billing.{0,80}(limit|cap|exhaust)|prepaid.{0,80}(balance|credit).{0,80}(exhaust|deplet)|account.{0,80}spend.{0,40}(limit|cap)/.test(normalizedMessage);
-  const explicitQuotaExhaustion = /resource[_\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota/.test(normalizedMessage);
+  const explicitProjectQuota = /(?:project|google cloud project).{0,100}(?:quota|limit).{0,100}(?:exceed|exhaust|reached)|(?:quota|limit).{0,100}(?:for|of) (?:the )?(?:entire )?project|project[- ]wide quota/.test(normalizedMessage);
 
-  if (explicitSpendCap || hasQuotaFailure || explicitQuotaExhaustion) {
-    return 'quota';
-  }
+  // Google may return 429 / RESOURCE_EXHAUSTED / QuotaFailure for a
+  // model-specific or rate-specific limit. Try the other models and keys.
+  // Exclude a whole key only when the response explicitly says project-wide
+  // quota or billing/spend cap.
+  if (explicitSpendCap || explicitProjectQuota) return 'quota';
+
   if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.{0,20}(invalid|revoked|deleted)|credential.{0,20}invalid/.test(normalizedMessage)) {
     return 'invalid';
   }
-  // A bare 429 without an explicit quota-exhaustion signal is treated as a
-  // transient/model-scoped rate limit and advances to the next model.
-  if (status === 429 || status === 408 || status === 503 || status === 504 ||
-      /timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|network|fetch failed|connection|socket|econn/.test(normalizedMessage)) {
+  if (status === 429 || status === 408 || status === 403 || status === 503 || status === 504 ||
+      /resource[_\\s-]*exhausted|quota.{0,100}(exceed|exhaust)|exceeded.{0,100}current quota|timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|network|fetch failed|connection|socket|econn/.test(normalizedMessage)) {
     return 'temporary';
   }
   return getGeminiErrorKind({
@@ -707,8 +697,6 @@ export async function executeWithKeyRotation<T>(
             partialCharacters: Number(error?.partialCharacters || 0),
           });
 
-          markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
-          if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
           if (kind === 'temporary' && !isGeminiModelUnavailable(error, status) && attempt === 1 && deadlineAt - Date.now() > 5000) {
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
