@@ -1,5 +1,4 @@
 import { executeWithKeyRotation, executeWithKeyRotationStream } from '../keyRotation.ts';
-import { createHash } from 'node:crypto';
 
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
@@ -20,217 +19,6 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
-
-type LegalSourceChunk = {
-  text: string;
-  // Context range includes the overlap used to understand boundaries.
-  start: number;
-  end: number;
-  // Core ranges are contiguous, non-overlapping, and cover the source exactly.
-  coreStart: number;
-  coreEnd: number;
-};
-
-function splitLegalSourceIntoChunks(source: string, maxCoreChars = 5600, overlapChars = 350): LegalSourceChunk[] {
-  const chunks: LegalSourceChunk[] = [];
-  let coreStart = 0;
-  while (coreStart < source.length) {
-    let coreEnd = Math.min(source.length, coreStart + maxCoreChars);
-    if (coreEnd < source.length) {
-      const floor = coreStart + Math.floor(maxCoreChars * 0.55);
-      const separators = ['\n\n', '\n', '۔', '.', '؛', '؟'];
-      const candidates = separators
-        .map((separator) => {
-          const position = source.lastIndexOf(separator, coreEnd);
-          return position >= floor ? position + separator.length : -1;
-        })
-        .filter((position) => position > coreStart);
-      if (candidates.length) coreEnd = Math.max(...candidates);
-    }
-    if (coreEnd <= coreStart) coreEnd = Math.min(source.length, coreStart + maxCoreChars);
-
-    const contextStart = Math.max(0, coreStart - overlapChars);
-    const contextEnd = Math.min(source.length, coreEnd + overlapChars);
-    chunks.push({
-      text: source.slice(contextStart, contextEnd),
-      start: contextStart,
-      end: contextEnd,
-      coreStart,
-      coreEnd,
-    });
-    coreStart = coreEnd;
-  }
-  return chunks;
-}
-
-const DRAFTING_STAGE_YIELD_CODE = 'AMIN_DRAFTING_STAGE_YIELD';
-
-function createDraftingStageYieldError(): Error {
-  const error: any = new Error('تم حفظ خطوة التحليل الحالية. ستُستكمل الخطوة التالية تلقائياً.');
-  error.code = DRAFTING_STAGE_YIELD_CODE;
-  return error;
-}
-
-type DraftingLedgerState = {
-  version: 2;
-  sources: Record<string, {
-    sourceLength: number;
-    sourceFingerprint: string;
-    chunks: Record<string, string>;
-    reductions: Record<string, string[]>;
-  }>;
-};
-
-function getLegalSourceFingerprint(source: string): string {
-  return createHash('sha256').update(source, 'utf8').digest('hex');
-}
-
-function isIncompleteLegalAnalysis(response: any): boolean {
-  const finishReason = String(response?.candidates?.[0]?.finishReason || '').trim().toUpperCase();
-  return ['MAX_TOKENS', 'MALFORMED_FUNCTION_CALL'].includes(finishReason);
-}
-
-async function buildDraftingEvidenceLedger(
-  source: string, sourceLabel: string, deadlineAt: number,
-  state: DraftingLedgerState, persist: () => Promise<void>, yieldAfterStep = false,
-): Promise<string> {
-  const trimmed = typeof source === 'string' ? source.trim() : '';
-  if (!trimmed || trimmed.length <= 6000) return source;
-
-  const sourceFingerprint = getLegalSourceFingerprint(source);
-  const chunks = splitLegalSourceIntoChunks(source);
-  let sourceState = state.sources[sourceLabel];
-  // Length alone is not a safe cache key: different documents can have equal lengths.
-  if (!sourceState || sourceState.sourceLength !== source.length || sourceState.sourceFingerprint !== sourceFingerprint) {
-    sourceState = { sourceLength: source.length, sourceFingerprint, chunks: {}, reductions: {} };
-    state.sources[sourceLabel] = sourceState;
-    await persist();
-  }
-
-  const ledgerParts: string[] = [];
-  console.info('[counter-brief] staged source analysis started', {
-    source: sourceLabel, sourceCharacters: source.length, chunkCount: chunks.length,
-    completedChunks: Object.keys(sourceState.chunks).length,
-    coreChunkCharacters: chunks.map((chunk) => chunk.coreEnd - chunk.coreStart),
-    contextChunkCharacters: chunks.map((chunk) => chunk.text.length),
-    overlapCharacters: 350,
-    sourceFingerprint: sourceFingerprint.slice(0, 12),
-  });
-
-  for (let index = 0; index < chunks.length; index += 1) {
-    const saved = sourceState.chunks[String(index)];
-    if (typeof saved === 'string' && saved.trim()) { ledgerParts.push(saved); continue; }
-    if (Date.now() >= deadlineAt) {
-      const timeoutError: any = new Error('انتهى الوقت المتاح لتحليل أجزاء النص الطويل. ستُستكمل المهمة من آخر جزء مكتمل ومحفوظ.');
-      timeoutError.statusCode = 504; throw timeoutError;
-    }
-
-    const chunk = chunks[index];
-    const chunkPrompt =
-      '[تحليل مرحلي لمصدر قانوني طويل — الجزء ' + (index + 1) + ' من ' + chunks.length + ']\n' +
-      'المصدر: ' + sourceLabel + '\n' +
-      'النطاق الأساسي الذي يجب استخلاص جميع معلوماته: من الحرف ' + (chunk.coreStart + 1) + ' إلى الحرف ' + chunk.coreEnd + '.\n' +
-      'نطاق السياق الإضافي المتداخل للفهم والربط فقط: من الحرف ' + (chunk.start + 1) + ' إلى الحرف ' + chunk.end + '.\n' +
-      'النص يتضمن تداخلاً مع الجزء السابق واللاحق. استخرج كل معلومة من النطاق الأساسي لهذا الجزء، واستخدم التداخل لفهم الجمل والوقائع والمستندات التي تعبر حدود الأجزاء. لا تسقط معلومة من النطاق الأساسي، ولا تكرر معلومات التداخل باعتبارها وقائع مستقلة؛ احتفظ بإحالة موضعها الأصلي.\n' +
-      'حلّل النص تحليلاً استخلاصياً شاملاً، ولا تصغ مذكرة ولا تلخص الوقائع. استخرج كل واقعة وادعاء وإقرار، وكل اسم وصفة ورقم ومبلغ وتاريخ ومدة ومكان وتسلسل زمني، وكل مستند أو دليل ومضمونه وما يثبته وما لا يثبته، وكل طلب أو دفع أو دفاع أو حجة أو رد أو تناقض أو فجوة أو معلومة ناقصة. اربط كل نقطة بموضعها في النص الأصلي، وحافظ على الأرقام والتواريخ والعبارات الحاسمة. ميّز بين الثابت والادعاء والاستنتاج والاحتمال والنقص. لا تضف قاعدة قانونية أو واقعة غير موجودة ولا تسقط معلومة قد يكون لها أثر قانوني أو إثباتي.\n' +
-      '[النص الأصلي لهذا الجزء — كاملًا كما ورد دون تعديل]\n' + chunk.text + '\n[نهاية الجزء]';
-
-    const extracted = await executeWithKeyRotation(async (ai, _key, model) => {
-      console.info('[counter-brief] staged chunk size estimate', {
-        source: sourceLabel, chunk: index + 1, totalChunks: chunks.length,
-        coreStart: chunk.coreStart + 1, coreEnd: chunk.coreEnd,
-        contextStart: chunk.start + 1, contextEnd: chunk.end,
-        promptCharacters: chunkPrompt.length, estimatedInputTokens: Math.ceil(chunkPrompt.length / 3),
-        tokenCountIsEstimate: true, model,
-      });
-      const response = await ai.models.generateContent({
-        model, contents: chunkPrompt,
-        config: { systemInstruction: 'أنت محلل قانوني مصري دقيق. استخرج البيانات من النص دون اختلاق أو اختصار، وحافظ على الإحالات والأرقام والتواريخ. لا تعتبر التداخل بين الأجزاء وقائع جديدة.', temperature: 0.1, maxOutputTokens: 8192 },
-      });
-      const text = typeof response.text === 'string' ? response.text.trim() : '';
-      const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
-      if (!text) { const error: any = new Error('تعذر استخراج سجل الجزء ' + (index + 1) + ' من النص الطويل.'); error.statusCode = 503; throw error; }
-      if (isIncompleteLegalAnalysis(response)) {
-        const error: any = new Error('خرج تحليل الجزء ' + (index + 1) + ' غير مكتمل بسبب بلوغ حد الإخراج (MAX_TOKENS). لم تُحفظ النتيجة الجزئية.');
-        error.statusCode = 502; throw error;
-      }
-      if (['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
-        const error: any = new Error('تعذر اعتماد تحليل الجزء ' + (index + 1) + ' بسبب قيد من مزود الذكاء الاصطناعي.');
-        error.statusCode = 502; throw error;
-      }
-      return text;
-    }, undefined, undefined, false, { deadlineAt, draftingMode: true });
-
-    const entry = '[سجل المصدر: ' + sourceLabel + ' — الجزء ' + (index + 1) + '/' + chunks.length +
-      ' — النطاق الأساسي للحروف ' + (chunk.coreStart + 1) + '-' + chunk.coreEnd +
-      ' — نطاق السياق المتداخل ' + (chunk.start + 1) + '-' + chunk.end + ']\n' + extracted;
-    sourceState.chunks[String(index)] = entry;
-    ledgerParts.push(entry);
-    await persist();
-    if (yieldAfterStep) throw createDraftingStageYieldError();
-  }
-
-  // Merge in pairs: smaller batches reduce the chance that the merge itself is truncated.
-  let reducedParts = ledgerParts;
-  let round = 0;
-  while (reducedParts.length > 1) {
-    round += 1;
-    const savedRound = sourceState.reductions[String(round)] || [];
-    const nextParts: string[] = [];
-    for (let offset = 0; offset < reducedParts.length; offset += 2) {
-      const batchIndex = Math.floor(offset / 2);
-      const saved = savedRound[batchIndex];
-      if (typeof saved === 'string' && saved.trim()) { nextParts.push(saved); continue; }
-      if (Date.now() >= deadlineAt) {
-        const error: any = new Error('انتهى الوقت المتاح لربط نتائج تحليل النص الطويل. ستُستكمل المهمة من آخر نتيجة دمج مكتملة ومحفوظة.');
-        error.statusCode = 504; throw error;
-      }
-      const batch = reducedParts.slice(offset, offset + 2);
-      const prompt =
-        '[دمج وربط سجلات تحليل مصدر قانوني طويل — الجولة ' + round + ']\n' +
-        'اربط السجلات التالية دون تحويلها إلى ملخص مختزل. احتفظ بكل واقعة وادعاء وإقرار واسم وصفة ورقم ومبلغ وتاريخ ومدة ومكان وطلب ودفع ومستند وتناقض ومعلومة ناقصة. لا تحذف تفصيلاً لمجرد أنه يبدو ثانوياً؛ قد تكون له قيمة إثباتية أو زمنية.\n' +
-        'عالج التداخل بين نطاقات الأجزاء باعتباره سياقاً مساعداً، ووحّد الإشارة إلى المعلومة ذاتها دون إسقاط أي تفصيل. احتفظ بإحالة كل معلومة إلى موضع الحروف الأصلي. اربط ما بين الأجزاء، واكشف التعارضات العابرة لها، ولا تكرر المعلومة إلا إذا كان التكرار نفسه ذا دلالة. لا تختلق واقعة أو سنداً قانونياً. ميّز بين الثابت والادعاء والاستنتاج والاحتمال وما يحتاج تحققاً. هذا سجل تحليلي لا مسودة مستند قضائي.\n\n' +
-        batch.join('\n\n[فاصل سجل]\n\n');
-      const merged = await executeWithKeyRotation(async (ai, _key, model) => {
-        console.info('[counter-brief] staged ledger reduction size estimate', {
-          source: sourceLabel, round, batch: batchIndex + 1,
-          promptCharacters: prompt.length, estimatedInputTokens: Math.ceil(prompt.length / 3),
-          tokenCountIsEstimate: true, model,
-        });
-        const response = await ai.models.generateContent({
-          model, contents: prompt,
-          config: { systemInstruction: 'أنت محلل قانوني مصري يربط الأدلة والوقائع بدقة دون اختلاق أو إسقاط أو اختزال.', temperature: 0.1, maxOutputTokens: 8192 },
-        });
-        const text = typeof response.text === 'string' ? response.text.trim() : '';
-        const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
-        if (!text) { const error: any = new Error('تعذر ربط سجلات تحليل النص الطويل.'); error.statusCode = 503; throw error; }
-        if (isIncompleteLegalAnalysis(response)) {
-          const error: any = new Error('خرج دمج سجلات النص الطويل غير مكتمل بسبب بلوغ حد الإخراج. لم تُحفظ نتيجة الدمج الجزئية.');
-          error.statusCode = 502; throw error;
-        }
-        if (['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
-          const error: any = new Error('تعذر اعتماد دمج سجلات النص الطويل بسبب قيد من مزود الذكاء الاصطناعي.');
-          error.statusCode = 502; throw error;
-        }
-        return text;
-      }, undefined, undefined, false, { deadlineAt, draftingMode: true });
-
-      sourceState.reductions[String(round)] ||= [];
-      sourceState.reductions[String(round)][batchIndex] = merged;
-      nextParts.push(merged);
-      await persist();
-      if (yieldAfterStep) throw createDraftingStageYieldError();
-    }
-    reducedParts = nextParts;
-  }
-
-  console.info('[counter-brief] staged source analysis completed', {
-    source: sourceLabel, sourceCharacters: source.length, chunkCount: chunks.length,
-    ledgerCharacters: reducedParts.reduce((total, part) => total + part.length, 0), reductionRounds: round,
-    sourceFingerprint: sourceFingerprint.slice(0, 12),
-  });
-  return '[سجل استخلاص مرحلي من النص الأصلي كاملًا. غطت النطاقات الأساسية النص الأصلي من أوله إلى آخره دون فجوات، واستخدم تداخل سياقي عند الحدود. الإحالات تشير إلى مواضع الحروف الأصلية. أعد الربط بين الأجزاء واختبر التناقضات العابرة لها، ولا تعتبر هذا السجل بديلاً عن الوقائع الأصلية عند التعارض.]\n' + reducedParts.join('\n\n');
-}
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
 async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
@@ -600,34 +388,6 @@ export default async function handler(req: any, res: any) {
       throw err;
     }
 
-    const draftingState: DraftingLedgerState = (() => {
-      try {
-        const parsed = typeof body?._draftingState === 'string' ? JSON.parse(body._draftingState) : null;
-        if (parsed && parsed.version === 2 && parsed.sources && typeof parsed.sources === 'object') return parsed;
-      } catch {}
-      return { version: 2, sources: {} };
-    })();
-    const jobId = String(body?._jobId || '').trim();
-    const jobUserId = String(body?._jobUserId || '').trim();
-    const persistDraftingState = async () => {
-      if (!/^[0-9a-f-]{36}$/i.test(jobId) || !jobUserId) return;
-      const supabaseUrl = (process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
-      const supabaseKey = (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || '').trim();
-      if (!supabaseUrl || !supabaseKey) throw new Error('تعذر حفظ تقدم الصياغة المرحلي على الخادم.');
-      const checkpointPayload: Record<string, string> = {};
-      for (const [key, value] of Object.entries(body || {})) {
-        if (typeof value === 'string' && !['_draftingState', '_resumePartialText', '_jobId', '_jobUserId'].includes(key)) checkpointPayload[key] = value;
-      }
-      checkpointPayload._draftingState = JSON.stringify(draftingState);
-      const headers: Record<string, string> = { apikey: supabaseKey, 'Content-Type': 'application/json', Prefer: 'return=minimal' };
-      if (!supabaseKey.startsWith('sb_')) headers.Authorization = 'Bearer ' + supabaseKey;
-      const response = await fetch(
-        supabaseUrl + '/rest/v1/app_ai_generation_jobs?id=eq.' + encodeURIComponent(jobId) + '&user_id=eq.' + encodeURIComponent(jobUserId) + '&status=eq.running',
-        { method: 'PATCH', headers, body: JSON.stringify({ payload: checkpointPayload, updated_at: new Date().toISOString() }), signal: AbortSignal.timeout(10000) },
-      );
-      if (!response.ok) throw new Error('تعذر حفظ نتائج تحليل أجزاء الصياغة في المهمة الدائمة (' + response.status + ').');
-    };
-
     const finalWorkType =
       (customJudicialWorkType && customJudicialWorkType.trim()) ||
       (effectiveWorkType && effectiveWorkType.trim()) ||
@@ -637,13 +397,10 @@ export default async function handler(req: any, res: any) {
       ? `نوع المستند المطلوب من المحامي: ${finalWorkType}. التزم بهذا النوع.`
       : 'نوع المستند غير محدد مسبقاً: حدّد داخلياً أنسب نوع مستند قانوني للرد على المادة المنقولة (مذكرة رد/دفاع، عريضة/صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار أو غير ذلك) بناءً على الغرض والطلبات والوقائع، ولا تفترض تلقائياً أنها مذكرة دفاع.';
 
-    const yieldBetweenDraftingStages = /^[0-9a-f-]{36}$/i.test(jobId) && Boolean(jobUserId);
-    const draftingPreparationDeadline = Date.now() + 210000;
-    const draftingFactsContext = await buildDraftingEvidenceLedger(facts, 'وقائع الدعوى والمعلومات الأصلية', draftingPreparationDeadline, draftingState, persistDraftingState, yieldBetweenDraftingStages);
-    const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string'
-      ? await buildDraftingEvidenceLedger(caseAnalysisContext, 'التحليل القانوني السابق', draftingPreparationDeadline, draftingState, persistDraftingState, yieldBetweenDraftingStages)
-      : caseAnalysisContext;
-    // Preparation has its own durable invocations. Start a fresh full generation window only now.
+    // The caller already supplies the case facts and any prior legal analysis.
+    // Send both unchanged to Gemini; do not spend extra requests re-analyzing them.
+    const draftingFactsContext = facts;
+    const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';
     const draftingAnalysisDeadline = Date.now() + 210000;
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
@@ -688,12 +445,12 @@ ${vaultContext}
       '[سياق استكمال مختصر — مرجع القضية الحالي]',
       workTypeInstruction,
       `المحكمة: ${courtType || ''}؛ الدائرة: ${circuit || ''}؛ الموكل: ${clientName || ''}؛ الصفة: ${clientRole || ''}؛ الخصم: ${opponentName || ''}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}`,
-      `الوقائع وسجل الأدلة: ${String(draftingFactsContext || '').slice(0, 7000)}`,
-      `دفوع المحامي: ${String(defenses || '').slice(0, 1600)}`,
-      `طلبات المحامي: ${String(requests || '').slice(0, 1200)}`,
-      `تعليمات المحامي: ${String(customInstructions || '').slice(0, 900)}`,
-      `التحليل السابق: ${String(draftingPriorAnalysisContext || '').slice(0, 2500)}`,
-      `بصمة الخزانة: ${String(vaultContext || '').slice(0, 1800)}`,
+      `الوقائع الأصلية كاملة: ${String(draftingFactsContext || '')}`,
+      `دفوع المحامي كاملة: ${String(defenses || '')}`,
+      `طلبات المحامي كاملة: ${String(requests || '')}`,
+      `تعليمات المحامي كاملة: ${String(customInstructions || '')}`,
+      `التحليل السابق كاملًا: ${String(draftingPriorAnalysisContext || '')}`,
+      `بصمة الخزانة: ${String(vaultContext || '')}`,
       'التزم بالنوع والطلبات المحددة، ولا تختلق وقائع أو أسانيد. أكمل المستند من حيث انتهى النص السابق وبنفس بصمة المحامي.'
     ].join('\n\n');
 
@@ -745,16 +502,6 @@ ${vaultContext}
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
-    if (err?.code === DRAFTING_STAGE_YIELD_CODE) {
-      if (body?.stream === true) {
-        if (!res.writableEnded) {
-          res.write(JSON.stringify({ type: 'yield' }) + '\n');
-          return res.end();
-        }
-        return;
-      }
-      return res.status(202).json({ deferred: true });
-    }
     console.error('Error in /api/gemini/counter-brief:', err);
     const statusCode = Number(err?.statusCode);
     const status = Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600
