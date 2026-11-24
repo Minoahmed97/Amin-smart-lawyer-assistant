@@ -26,31 +26,35 @@ type CachedVaultModelAnalysis = {
 };
 
 type CachedVaultAnalysis = {
-  version: 1;
+  version: 2;
   vaultSignature: string;
   models: CachedVaultModelAnalysis[];
 };
 
 function getVaultAnalysisStorageKey(userId?: string): string {
-  return getScopedStorageKey(userId) + '_analysis_v1';
+  return getScopedStorageKey(userId) + '_analysis_v2';
 }
 
 function invalidateVaultAnalysis(userId?: string): void {
   try { localStorage.removeItem(getVaultAnalysisStorageKey(userId)); } catch {}
 }
 
+function hashVaultContent(value: string): string {
+  // FNV-1a over the complete content: same-length edits must invalidate the
+  // cached profile just as reliably as additions and deletions.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 function getVaultSignature(models: LawModelItem[]): string {
-  // Content itself is not re-read for analysis on each request. All supported
-  // vault mutations invalidate this cache; this lightweight signature also
-  // detects account/model additions and metadata changes.
   return models.map((model) => [
-    model.id,
-    model.title || '',
-    model.category || '',
-    model.judicialWorkType || '',
-    model.notes || '',
-    String(model.content || '').length,
-    model.createdAt || '',
+    model.id, model.title || '', model.category || '',
+    model.judicialWorkType || '', model.notes || '',
+    hashVaultContent(String(model.content || '')), model.createdAt || '',
   ].join(':')).join('|');
 }
 
@@ -60,7 +64,7 @@ function getCachedVaultAnalysis(models: LawModelItem[], userId?: string): Cached
   try {
     const raw = localStorage.getItem(cacheKey);
     const cached = raw ? JSON.parse(raw) as CachedVaultAnalysis : null;
-    if (cached?.version === 1 && cached.vaultSignature === vaultSignature &&
+    if (cached?.version === 2 && cached.vaultSignature === vaultSignature &&
         Array.isArray(cached.models) && cached.models.length === models.length) {
       return cached;
     }
@@ -69,7 +73,7 @@ function getCachedVaultAnalysis(models: LawModelItem[], userId?: string): Cached
   // This is the one-time local extraction for the current vault version.
   // Only compact descriptors are cached; source pleadings remain in the vault.
   const analysis: CachedVaultAnalysis = {
-    version: 1,
+    version: 2,
     vaultSignature,
     models: models.map((model) => ({
       id: model.id,
@@ -273,9 +277,8 @@ function rankVaultModels(models: LawModelItem[], criteria: LawVaultSearchCriteri
   const courtTokens = topicTokens(criteria.courtType || '');
   const requestedTokens = topicTokens(String(criteria.factsOrSubject || '').slice(0, 16000));
 
-  // Compare every saved model against the current matter. Topic overlap is
-  // deliberately the strongest signal; court, legal branch, and work type are
-  // secondary signals, while saved weight is only a final tie-breaker.
+  // Requested document/work type is the primary constraint. Court and legal
+  // family follow; topic overlap distinguishes only otherwise suitable models.
   const modelTokens = models.map((model) => topicTokens(
     `${model.title || ''} ${model.category || ''} ${model.judicialWorkType || ''} ${model.notes || ''} ${String(model.content || '').slice(0, 24000)}`,
   ));
@@ -297,12 +300,12 @@ function rankVaultModels(models: LawModelItem[], criteria: LawVaultSearchCriteri
       const matchedTopicWeight = [...requestedTokens]
         .filter((token) => modelTokens[index].has(token))
         .reduce((sum, token) => sum + tokenWeight(token), 0);
-      score += Math.round((matchedTopicWeight / totalTopicWeight) * 260);
+      score += Math.round((matchedTopicWeight / totalTopicWeight) * 100);
 
       const matchedMetadataWeight = [...requestedTokens]
         .filter((token) => modelMetaTokens.has(token))
         .reduce((sum, token) => sum + tokenWeight(token), 0);
-      score += Math.round((matchedMetadataWeight / totalTopicWeight) * 18);
+      score += Math.round((matchedMetadataWeight / totalTopicWeight) * 12);
     }
 
     if (normalizedCourt) {
@@ -316,14 +319,15 @@ function rankVaultModels(models: LawModelItem[], criteria: LawVaultSearchCriteri
     }
 
     if (requestedLegalFamily) {
-      if (modelLegalFamily === requestedLegalFamily) score += 22;
-      else if (modelLegalFamily && modelLegalFamily !== requestedLegalFamily) score -= 18;
+      if (modelLegalFamily === requestedLegalFamily) score += 35;
+      else if (modelLegalFamily && modelLegalFamily !== requestedLegalFamily) score -= 28;
     }
 
     if (requestedDocFamily) {
-      if (modelDocFamily === requestedDocFamily) score += 18;
-      else if (modelDocFamily && modelDocFamily !== requestedDocFamily) score -= 4;
-      if (modelMatchesRequestedType(model, requestedType)) score += 16;
+      if (modelDocFamily === requestedDocFamily) score += 55;
+      else if (modelDocFamily && modelDocFamily !== requestedDocFamily) score -= 45;
+      if (modelMatchesRequestedType(model, requestedType)) score += 100;
+      else score -= 35;
     } else if (requestedType) {
       const requestedTypeTokens = topicTokens(requestedType);
       if ([...requestedTypeTokens].some((token) => modelMetaTokens.has(token))) score += 16;
