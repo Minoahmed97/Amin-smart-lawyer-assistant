@@ -238,9 +238,9 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
 
   visit(error);
   const normalizedMessage = messages.join(' ')
-    .replace(/https?:\\/\\/[^\\s"'<>]+/gi, ' ')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, ' ')
     .toLowerCase()
-    .replace(/\\\\_/g, '_');
+    .replace(/\\_/g, '_');
   const status = Number(error?.status || error?.statusCode || error?.code ||
     error?.response?.status || error?.response?.statusCode || error?.error?.code || 0);
 
@@ -256,7 +256,7 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
   // machine-readable scope must not blacklist the key. The rotation loop
   // records this key/model pair and proceeds to the next Gemini model.
   if (hasModelScopedQuota || hasQuotaFailure || status === 429 ||
-      /resource[_\\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota/.test(normalizedMessage)) {
+      /resource[_\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota/.test(normalizedMessage)) {
     return 'temporary';
   }
   return getGeminiErrorKind({
