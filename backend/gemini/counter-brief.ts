@@ -57,6 +57,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let previousPair = '';
   let continuationGeminiStartKey = '';
   let continuationGeminiStartModel = '';
+  const attemptedGeminiPairs = new Set<string>();
 
   const makeContinuationPrompt = () => accumulatedText
     ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
@@ -161,6 +162,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           startKey: continuationGeminiStartKey || undefined,
           startModel: continuationGeminiStartModel || undefined,
           draftingMode: true,
+          attemptedPairs: attemptedGeminiPairs,
+          attemptedPairs: attemptedGeminiPairs,
         });
       } catch (error: any) {
         segmentError = error;
