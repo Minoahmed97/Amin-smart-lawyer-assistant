@@ -135,7 +135,6 @@ export function saveLawModel( model: Omit<LawModelItem, 'id' | 'createdAt'>, use
   try {
     localStorage.setItem(getScopedStorageKey(userId), JSON.stringify(updated));
     invalidateVaultAnalysis(userId);
-    invalidateVaultAnalysis(userId);
   } catch (e) {
     console.warn('LocalStorage save error:', e);
   }
@@ -163,6 +162,7 @@ export function deleteLawModel(id: string, userId?: string): void {
   const updated = current.filter((m) => m.id !== id);
   try {
     localStorage.setItem(getScopedStorageKey(userId), JSON.stringify(updated));
+    invalidateVaultAnalysis(userId);
   } catch (e) {
     console.warn('LocalStorage delete error:', e);
   }
