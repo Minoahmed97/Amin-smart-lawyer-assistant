@@ -21,6 +21,32 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
+async function logDraftingPromptTokens(ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
+  try {
+    const result = await ai.models.countTokens({
+      model,
+      contents: prompt,
+      config: { systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION },
+    });
+    console.info('[counter-brief] Gemini request size', {
+      model,
+      promptCharacters: prompt.length,
+      systemInstructionCharacters: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length,
+      inputTokens: Number(result?.totalTokens) || null,
+      continuationCount,
+      accumulatedCharacters,
+    });
+  } catch (error: any) {
+    // Token diagnostics must never prevent the actual drafting request.
+    console.warn('[counter-brief] token count unavailable', {
+      model,
+      promptCharacters: prompt.length,
+      continuationCount,
+      reason: String(error?.message || error).slice(0, 240),
+    });
+  }
+}
+
 function isBlockedFinishReason(reason: unknown): boolean {
   const normalized = String(reason || '').trim().toUpperCase();
   return ['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY', 'CONTENT_FILTER'].includes(normalized);
@@ -82,6 +108,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           activePairLabel = `Gemini / ${model}`;
           const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
 
+          await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length);
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
@@ -242,6 +269,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         activePair = `${key}::${model}`;
         activePairLabel = `Gemini / ${model}`;
         const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
+        await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length);
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
