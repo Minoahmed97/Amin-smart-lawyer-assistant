@@ -375,6 +375,81 @@ function documentFamily(value: string): string {
   return text;
 }
 
+function styleFingerprintCacheKey(userId?: string): string {
+  const safeUserId = String(userId || getActiveLawyerUserId()).replace(/[^a-zA-Z0-9_-]/g, '_');
+  return \`amin_lawyer_style_fingerprint_v1_\${safeUserId}\`;
+}
+
+function styleFingerprintSignature(models: LawModelItem[]): string {
+  let hash = 2166136261;
+  const source = models.map((model) => [
+    model.id || '',
+    model.title || '',
+    model.category || '',
+    model.judicialWorkType || '',
+    model.updatedAt || '',
+    model.content || '',
+  ].join('\u001f')).join('\u001e');
+
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return \`\${models.length}_\${(hash >>> 0).toString(36)}\`;
+}
+
+function detectOpeningStyle(content: string): string {
+  const lines = String(content || '').replace(/\r/g, '').split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 12);
+  if (lines.some((line) => /^باسم الشعب/.test(normalizeVaultText(line)))) {
+    return 'يفتتح بصيغة «باسم الشعب» عندما تقتضي طبيعة المستند ذلك';
+  }
+  if (lines.some((line) => /^انه في يوم/.test(normalizeVaultText(line)))) {
+    return 'يفتتح ببيان يوم الإجراء وتاريخه ثم صيغة بناءً على طلب';
+  }
+  if (lines.some((line) => /^(لدي محكمه|محكمه|مجلس الدوله)/.test(normalizeVaultText(line)))) {
+    return 'يبدأ بتحديد جهة القضاء والمحكمة قبل عرض موضوع المستند';
+  }
+  if (lines.some((line) => /^(السيد الاستاذ|الي السيد|الى السيد)/.test(normalizeVaultText(line)))) {
+    return 'يبدأ بمخاطبة الجهة أو المسؤول المختص بصيغة رسمية مباشرة';
+  }
+  return 'يعتمد افتتاحاً قانونياً مباشراً مناسباً لطبيعة الإجراء دون تمهيد إنشائي';
+}
+
+function detectClosingStyle(content: string): string {
+  const lines = String(content || '').replace(/\r/g, '').split('\n').map((line) => line.trim()).filter(Boolean).slice(-14);
+  const ending = lines.map(normalizeVaultText).join(' ');
+  const notes: string[] = [];
+  if (/لهذه الاسباب|بناء عليه|لذلك|لما تقدم/.test(ending)) {
+    notes.push('يختم بالانتقال من الأسباب إلى الطلبات بصيغة قضائية مباشرة');
+  }
+  if (/مقدمه لسيادتكم|وكيل الطالب|وكيل المدعي|وكيل المدعى/.test(ending)) {
+    notes.push('يثبت صفة مقدم المستند أو الوكيل في موضع الخاتمة عند لزومها');
+  }
+  if (/وتفضلوا|وتفضلوا بقبول/.test(ending)) {
+    notes.push('تظهر خاتمة احترام رسمية في المكاتبات التي تقتضيها');
+  }
+  return notes.length ? notes.join('؛ ') : 'ينهي العمل بطلباته أو خاتمته الإجرائية دون عبارات محادثية';
+}
+
+function buildLawyerStyleFingerprint(models: LawModelItem[], bestContent: string): string {
+  const combinedSamples = models
+    .map((model) => String(model.content || '').trim().slice(0, 10000))
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, 80000);
+  const generalStyle = deriveStyleProfile(combinedSamples, false);
+  const workTypeStyle = deriveStyleProfile(bestContent, true);
+  return [
+    'بصمة المحامي الثابتة المستخلصة من نماذجه المحفوظة:',
+    generalStyle,
+    'الافتتاح المرصود: ' + detectOpeningStyle(bestContent),
+    'بناء المستند المرجعي الأقرب: ' + workTypeStyle,
+    'الخاتمة المرصودة: ' + detectClosingStyle(bestContent),
+    'طبّق هذه السمات على نوع العمل المطلوب فقط؛ غيّر ترتيب الأقسام بالقدر الذي تفرضه طبيعة الصحيفة أو المذكرة أو الإعلان أو الإنذار أو غيرها.',
+    'حافظ على نبرة المحامي ومفرداته وانتقالاته وطول فقراته، ولا تنقل من النماذج أي وقائع أو أسماء أو أرقام أو تواريخ أو مستندات أو طلبات أو دفوع أو نصوص قانونية خاصة بقضية أخرى.',
+  ].filter(Boolean).join('\n');
+}
+
 export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | string, userId?: string): string {
   let criteria: LawVaultSearchCriteria = {};
   if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
@@ -382,26 +457,62 @@ export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | 
 
   const models = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
   const requestedType = criteria.judicialWorkType || criteria.briefType || '';
-  const requestedDocFamily = documentFamily(requestedType);
-  const requestedLegalFamily = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
+  const requestedLegalFamily = legalFamily(\`\${criteria.courtType || ''} \${requestedType} \${criteria.factsOrSubject || ''}\`);
+
   if (!models.length) {
-    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تدّعِ استخدام أسلوب مرجعي؛ اكتب وفق المعلومات الحالية فقط.]`;
+    return '[بصمة أسلوب المحامي — لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب؛ لا تدّعِ استخدام بصمة غير متاحة.]';
   }
 
-  // All saved models participate in the comparison. The AI receives one best
-  // reference, not an arbitrary fixed batch, to keep one coherent lawyer style.
   const best = rankVaultModels(models, criteria)[0];
   if (!best) {
-    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا يوجد نموذج يحتوي على نص قابل للاستخدام في خزنة هذا الحساب. اكتب وفق المعلومات الحالية فقط.]`;
+    return '[بصمة أسلوب المحامي — لا يوجد نص مرجعي صالح؛ اكتب وفق بيانات القضية الحالية فقط.]';
   }
 
-  const content = String(best.model.content || '').trim();
-  const excerpt = content.slice(0, 18000);
-  const metadata = [best.model.title, best.model.judicialWorkType, best.model.category].filter(Boolean).join(' — ');
-  const typeLine = requestedType ? `نوع المستند المطلوب: ${requestedType}.` : 'يُحدد نوع المستند من طلب المستخدم الحالي ووقائعه.';
-  const familyLine = requestedLegalFamily ? `الفرع القانوني الأقرب: ${requestedLegalFamily}.` : 'حدّد الفرع القانوني من وقائع وطلبات القضية الحالية.';
-  const courtLine = criteria.courtType ? `المحكمة أو الجهة: ${criteria.courtType}.` : 'تُراعى جهة القضاء التي تحددها وقائع المهمة.';
-  const referenceBlock = `[النموذج المرجعي المختار${metadata ? `: ${metadata}` : ''}]\n${excerpt}${content.length > excerpt.length ? '\n[اقتُصر النص على جزء من النموذج بسبب حد السياق.]' : ''}`;
+  const signature = styleFingerprintSignature(models);
+  const cacheKey = styleFingerprintCacheKey(userId);
+  let cachedProfile = '';
+  try {
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+    if (cached?.signature === signature && typeof cached?.profile === 'string') {
+      cachedProfile = cached.profile;
+    }
+  } catch {}
 
-  return `[بصمة أسلوب المحامي — مرجع فعلي من خزنة هذا الحساب]\n${typeLine}\n${familyLine}\n${courtLine}\nتمت مقارنة جميع النماذج المحفوظة في الحساب واختيار المرجع الأقرب لموضوع المهمة، ثم جهة القضاء ونوع العمل القضائي. النموذج التالي هو المرجع الأساسي لهذه المهمة؛ لا تستخدم نماذج أخرى لمجرد أنها محفوظة. النص مرجع أسلوب وبناء وليس مصدراً لوقائع القضية الحالية.\n\n${referenceBlock}\n\n[تعليمات استخدام المرجع]\n1) اقتدِ بالنموذج المرجعي في بصمة المحامي الفعلية: الديباجة، والترويسة، وترتيب الأقسام، وتسلسل عرض الوقائع والحجج، والعبارات الانتقالية، وطول الفقرات، وصياغة الطلبات والخاتمة، بقدر ما يناسب نوع العمل الحالي.\n2) إذا كان المرجع من الموضوع نفسه أو من موضوع قريب، استفد من بنيته وطريقة معالجة هذا النوع من النزاع، لكن لا تنقل أي تحليل أو دفع أو طلب باعتباره صالحاً للقضية الحالية دون أن تسنده وقائعها ومستنداتها.\n3) استخلص نوع المستند المطلوب من اختيار المحامي أو من وقائع المهمة وتعليماته. لا تفترض أن المطلوب مذكرة دفاع لمجرد أن بعض النماذج المحفوظة مذكرات.\n4) لا تنقل أسماء أطراف القضية المرجعية أو وقائعها أو تواريخها أو أرقامها أو مستنداتها أو طلباتها أو دفوعها الخاصة.\n5) انقل عناصر هوية المكتب الثابتة والترويسة والتوقيع من المرجع فقط إذا كانت واضحة وثابتة، ولا تخترع أي بيانات.\n6) صحة التحليل القانوني للقضية الحالية وطلبات المحامي تتقدم دائماً على التشابه الأسلوبي؛ لا تختلق واقعة أو مادة أو حكماً أو رقم طعن.\n7) إذا كان نوع المستند الحالي مختلفاً عن المرجع، فاحتفظ ببصمة المحامي العامة وعدّل هيكل المستند بالقدر اللازم لطبيعة العمل المطلوب، ولا تحوّله إلى نوع المرجع.`;
+  if (!cachedProfile) {
+    cachedProfile = buildLawyerStyleFingerprint(models, String(best.model.content || ''));
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify({ signature, profile: cachedProfile }));
+    } catch (error) {
+      console.warn('Lawyer style fingerprint could not be cached:', error);
+    }
+  } else {
+    // The shared profile is cached; refresh only the short structure notes
+    // when a different judicial-work type selects a different reference.
+    const referenceStyle = deriveStyleProfile(String(best.model.content || ''), true);
+    cachedProfile = cachedProfile.replace(
+      /الافتتاح المرصود:[^\n]*/,
+      'الافتتاح المرصود: ' + detectOpeningStyle(String(best.model.content || '')),
+    ).replace(
+      /بناء المستند المرجعي الأقرب:[^\n]*/,
+      'بناء المستند المرجعي الأقرب: ' + referenceStyle,
+    ).replace(
+      /الخاتمة المرصودة:[^\n]*/,
+      'الخاتمة المرصودة: ' + detectClosingStyle(String(best.model.content || '')),
+    );
+  }
+
+  const workLine = requestedType
+    ? \`نوع العمل الحالي: \${requestedType}.\`
+    : 'يُحدد نوع العمل من طلب المحامي ووقائع المهمة، ولا يُفترض نوع مستند بعينه.';
+  const courtLine = criteria.courtType ? \`جهة القضاء: \${criteria.courtType}.\` : '';
+  const familyLine = requestedLegalFamily ? \`الفرع القانوني: \${requestedLegalFamily}.\` : '';
+
+  return [
+    '[بصمة أسلوب المحامي — ملف أسلوبي مختصر محفوظ لهذا الحساب]',
+    workLine,
+    courtLine,
+    familyLine,
+    cachedProfile,
+    'الخزانة مرجع للأسلوب والبناء فقط؛ وقائع القضية الحالية ومستنداتها وتعليمات المحامي هي المصدر الوحيد لمضمون المستند.',
+  ].filter(Boolean).join('\n');
 }
