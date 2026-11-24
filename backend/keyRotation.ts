@@ -642,6 +642,10 @@ export async function executeWithKeyRotation<T>(
     ? isCooling(draftingQuotaKeyCooldownUntil, key)
     : isCooling(keyCooldownUntil, key)));
   let lastError: any = null;
+  // Keep transient provider failures distinct from quota responses. A mixed
+  // set of 503/504 and model-scoped 429 responses is retryable work, not proof
+  // that every managed key has exhausted its quota.
+  let lastTemporaryError: any = null;
   let attemptedModelCount = 0;
   const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
   const startIndex = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
@@ -692,6 +696,7 @@ export async function executeWithKeyRotation<T>(
           lastError = error;
           const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
           const status = Number(error?.status || error?.statusCode || error?.response?.status || error?.response?.statusCode || error?.code || error?.error?.code || 0);
+          if (draftingMode && kind === 'temporary') lastTemporaryError = error;
           console.warn('[Gemini rotation] attempt failed', {
             key: maskGeminiKey(currentKey),
             model,
@@ -730,6 +735,7 @@ export async function executeWithKeyRotation<T>(
   }
 
   if (quotaExhaustedKeys.size === keys.length && keys.length > 0) {
+    if (draftingMode && lastTemporaryError) throw lastTemporaryError;
     const quotaError: any = new Error('تأكد نفاد حصة جميع مفاتيح Gemini المتاحة؛ لم يُستخدم أي مزود احتياطي.');
     quotaError.allGeminiQuotasExhausted = true;
     quotaError.status = 429;
