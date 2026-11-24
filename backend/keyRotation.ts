@@ -117,7 +117,8 @@ function selectModelsForKey( models: string[], key: string, pool: 'general' | 'o
   const available = models.filter((model) =>
     (quotaOnlyMode || !isCooling(modelCooldowns, model, now)) &&
     (quotaOnlyMode
-      ? !isCooling(draftingQuotaKeyCooldownUntil, key, now)
+      ? !isCooling(draftingQuotaKeyCooldownUntil, key, now) &&
+        !isCooling(pairCooldowns, rotationPairKey(key, model), now)
       : !isCooling(pairCooldowns, rotationPairKey(key, model), now)) &&
     !avoidPairs?.has(`${key}::${model}`)
   );
