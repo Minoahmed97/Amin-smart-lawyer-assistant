@@ -387,7 +387,7 @@ function styleFingerprintSignature(models: LawModelItem[]): string {
     model.title || '',
     model.category || '',
     model.judicialWorkType || '',
-    model.updatedAt || '',
+    model.createdAt || '',
     model.content || '',
   ].join('\u001f')).join('\u001e');
 
