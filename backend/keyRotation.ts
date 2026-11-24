@@ -216,7 +216,7 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
 
   visit(error);
   const normalizedMessage = messages.join(' ')
-    .replace(/https?:\\/\\/[^\\s"'<>]+/gi, ' ')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, ' ')
     .toLowerCase()
     .replace(/\\_/g, '_');
   const status = Number(error?.status || error?.statusCode || error?.code ||
@@ -235,7 +235,7 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
     return 'invalid';
   }
   if (status === 429 || status === 408 || status === 403 || status === 503 || status === 504 ||
-      /resource[_\\s-]*exhausted|quota.{0,100}(exceed|exhaust)|exceeded.{0,100}current quota|timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|network|fetch failed|connection|socket|econn/.test(normalizedMessage)) {
+      /resource[_\s-]*exhausted|quota.{0,100}(exceed|exhaust)|exceeded.{0,100}current quota|timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|network|fetch failed|connection|socket|econn/.test(normalizedMessage)) {
     return 'temporary';
   }
   return getGeminiErrorKind({
