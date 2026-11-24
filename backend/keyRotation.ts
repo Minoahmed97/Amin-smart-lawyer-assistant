@@ -660,7 +660,6 @@ export async function executeWithKeyRotation<T>(
           return result;
         } catch (error: any) {
           lastError = error;
-          executionOptions?.attemptedPairs?.add(pair);
           const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
           const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
           console.warn('[Gemini rotation] attempt failed', {
@@ -677,6 +676,7 @@ export async function executeWithKeyRotation<T>(
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
           }
+          executionOptions?.attemptedPairs?.add(pair);
 
           markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
           if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
@@ -793,7 +793,6 @@ export async function executeWithKeyRotationStream(
           return;
         } catch (error: any) {
           lastError = error;
-          executionOptions?.attemptedPairs?.add(pair);
           const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
           const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
           console.warn('[Gemini stream rotation] attempt failed', {
@@ -817,6 +816,7 @@ export async function executeWithKeyRotationStream(
           // Once a stream has delivered text, preserve it and let the document
           // continuation layer resume from that exact partial output on another pair.
           if (emittedAnyChunk) {
+            executionOptions?.attemptedPairs?.add(pair);
             if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
             error.partialCharacters = partialCharacters;
             throw error;
@@ -825,6 +825,7 @@ export async function executeWithKeyRotationStream(
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
           }
+          executionOptions?.attemptedPairs?.add(pair);
           if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
           if ((!draftingMode && permanentlyInvalidKeys.has(currentKey)) || (draftingMode
             ? preferredModels.every((candidateModel) => isCooling(quotaPairCooldownUntil, rotationPairKey(currentKey, candidateModel)))
