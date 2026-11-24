@@ -63,6 +63,14 @@ function splitLegalSourceIntoChunks(source: string, maxCoreChars = 5600, overlap
   return chunks;
 }
 
+const DRAFTING_STAGE_YIELD_CODE = 'AMIN_DRAFTING_STAGE_YIELD';
+
+function createDraftingStageYieldError(): Error {
+  const error: any = new Error('تم حفظ خطوة التحليل الحالية. ستُستكمل الخطوة التالية تلقائياً.');
+  error.code = DRAFTING_STAGE_YIELD_CODE;
+  return error;
+}
+
 type DraftingLedgerState = {
   version: 2;
   sources: Record<string, {
@@ -84,7 +92,7 @@ function isIncompleteLegalAnalysis(response: any): boolean {
 
 async function buildDraftingEvidenceLedger(
   source: string, sourceLabel: string, deadlineAt: number,
-  state: DraftingLedgerState, persist: () => Promise<void>,
+  state: DraftingLedgerState, persist: () => Promise<void>, yieldAfterStep = false,
 ): Promise<string> {
   const trimmed = typeof source === 'string' ? source.trim() : '';
   if (!trimmed || trimmed.length <= 6000) return source;
@@ -159,6 +167,7 @@ async function buildDraftingEvidenceLedger(
     sourceState.chunks[String(index)] = entry;
     ledgerParts.push(entry);
     await persist();
+    if (yieldAfterStep) throw createDraftingStageYieldError();
   }
 
   // Merge in pairs: smaller batches reduce the chance that the merge itself is truncated.
@@ -210,6 +219,7 @@ async function buildDraftingEvidenceLedger(
       sourceState.reductions[String(round)][batchIndex] = merged;
       nextParts.push(merged);
       await persist();
+      if (yieldAfterStep) throw createDraftingStageYieldError();
     }
     reducedParts = nextParts;
   }
@@ -627,11 +637,14 @@ export default async function handler(req: any, res: any) {
       ? `نوع المستند المطلوب من المحامي: ${finalWorkType}. التزم بهذا النوع.`
       : 'نوع المستند غير محدد مسبقاً: حدّد داخلياً أنسب نوع مستند قانوني للرد على المادة المنقولة (مذكرة رد/دفاع، عريضة/صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار أو غير ذلك) بناءً على الغرض والطلبات والوقائع، ولا تفترض تلقائياً أنها مذكرة دفاع.';
 
-    const draftingAnalysisDeadline = Date.now() + 210000;
-    const draftingFactsContext = await buildDraftingEvidenceLedger(facts, 'وقائع الدعوى والمعلومات الأصلية', draftingAnalysisDeadline, draftingState, persistDraftingState);
+    const yieldBetweenDraftingStages = /^[0-9a-f-]{36}$/i.test(jobId) && Boolean(jobUserId);
+    const draftingPreparationDeadline = Date.now() + 210000;
+    const draftingFactsContext = await buildDraftingEvidenceLedger(facts, 'وقائع الدعوى والمعلومات الأصلية', draftingPreparationDeadline, draftingState, persistDraftingState, yieldBetweenDraftingStages);
     const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string'
-      ? await buildDraftingEvidenceLedger(caseAnalysisContext, 'التحليل القانوني السابق', draftingAnalysisDeadline, draftingState, persistDraftingState)
+      ? await buildDraftingEvidenceLedger(caseAnalysisContext, 'التحليل القانوني السابق', draftingPreparationDeadline, draftingState, persistDraftingState, yieldBetweenDraftingStages)
       : caseAnalysisContext;
+    // Preparation has its own durable invocations. Start a fresh full generation window only now.
+    const draftingAnalysisDeadline = Date.now() + 210000;
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
@@ -732,6 +745,16 @@ ${vaultContext}
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
+    if (err?.code === DRAFTING_STAGE_YIELD_CODE) {
+      if (body?.stream === true) {
+        if (!res.writableEnded) {
+          res.write(JSON.stringify({ type: 'yield' }) + '\n');
+          return res.end();
+        }
+        return;
+      }
+      return res.status(202).json({ deferred: true });
+    }
     console.error('Error in /api/gemini/counter-brief:', err);
     const statusCode = Number(err?.statusCode);
     const status = Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600
