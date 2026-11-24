@@ -163,7 +163,6 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           startModel: continuationGeminiStartModel || undefined,
           draftingMode: true,
           attemptedPairs: attemptedGeminiPairs,
-          attemptedPairs: attemptedGeminiPairs,
         });
       } catch (error: any) {
         segmentError = error;
