@@ -187,8 +187,6 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
   const messages: string[] = [];
   const seen = new Set<any>();
   let hasQuotaFailure = false;
-  let hasModelScopedQuota = false;
-  let hasProjectScopedQuota = false;
 
   const visit = (value: any, depth = 0): void => {
     if (value == null || depth > 7) return;
@@ -217,18 +215,9 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
 
     const type = String(value['@type'] || value.type || '');
     if (/QuotaFailure/i.test(type)) {
+      // Google explicitly identified a quota violation. For drafting, move
+      // to the next configured key instead of trying more models on this key.
       hasQuotaFailure = true;
-      const violations = Array.isArray(value.violations) ? value.violations : [];
-      for (const violation of violations) {
-        const dimensions = violation?.quotaDimensions || {};
-        const quotaId = String(violation?.quotaId || '');
-        const quotaMetric = String(violation?.quotaMetric || '');
-        if (dimensions.model || /PerModel/i.test(quotaId) || /per_model/i.test(quotaMetric)) {
-          hasModelScopedQuota = true;
-        } else if (/PerProject/i.test(quotaId) || /per_project/i.test(quotaMetric)) {
-          hasProjectScopedQuota = true;
-        }
-      }
     }
 
     for (const candidate of [value.message, value.status, value.code, value.error, value.details, value.data]) {
@@ -245,18 +234,18 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
     error?.response?.status || error?.response?.statusCode || error?.error?.code || 0);
 
   const explicitSpendCap = /spend[- ]based.{0,80}(limit|cap)|billing.{0,80}(limit|cap|exhaust)|prepaid.{0,80}(balance|credit).{0,80}(exhaust|deplet)|account.{0,80}spend.{0,40}(limit|cap)/.test(normalizedMessage);
+  const explicitQuotaExhaustion = /resource[_\\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota/.test(normalizedMessage);
 
-  if (explicitSpendCap || (hasQuotaFailure && hasProjectScopedQuota && !hasModelScopedQuota)) {
+  if (explicitSpendCap || hasQuotaFailure || explicitQuotaExhaustion) {
     return 'quota';
   }
   if (status === 401 || /api key not valid|invalid api key|api_key_invalid|key.{0,20}(invalid|revoked|deleted)|credential.{0,20}invalid/.test(normalizedMessage)) {
     return 'invalid';
   }
-  // Model-scoped quotas, generic RESOURCE_EXHAUSTED, and 429s without
-  // machine-readable scope must not blacklist the key. The rotation loop
-  // records this key/model pair and proceeds to the next Gemini model.
-  if (hasModelScopedQuota || hasQuotaFailure || status === 429 ||
-      /resource[_\s-]*exhausted|exceeded.{0,100}current quota|current quota.{0,100}(exceed|exhaust)|quota.{0,100}(exceed|exhaust)|(?:exceed|exhaust).{0,100}quota|daily quota|per day quota/.test(normalizedMessage)) {
+  // A bare 429 without an explicit quota-exhaustion signal is treated as a
+  // transient/model-scoped rate limit and advances to the next model.
+  if (status === 429 || status === 408 || status === 503 || status === 504 ||
+      /timeout|timed out|aborted|high demand|service unavailable|temporarily unavailable|network|fetch failed|connection|socket|econn/.test(normalizedMessage)) {
     return 'temporary';
   }
   return getGeminiErrorKind({
@@ -264,6 +253,13 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
     message: normalizedMessage,
     status,
   });
+}
+
+function isGeminiModelUnavailable(error: any, knownStatus = 0): boolean {
+  const status = Number(knownStatus || error?.status || error?.statusCode ||
+    error?.response?.status || error?.response?.statusCode || error?.code || error?.error?.code || 0);
+  const message = String(error?.message || error?.error?.message || '').toLowerCase();
+  return status === 503 || /high demand|model is currently experiencing|service unavailable|temporarily unavailable/.test(message);
 }
 
 function shouldRetryGeminiError(error: any): boolean {
@@ -706,7 +702,7 @@ export async function executeWithKeyRotation<T>(
             partialCharacters: Number(error?.partialCharacters || 0),
           });
 
-          if (kind === 'temporary' && attempt === 1 && deadlineAt - Date.now() > 5000) {
+          if (kind === 'temporary' && !isGeminiModelUnavailable(error, status) && attempt === 1 && deadlineAt - Date.now() > 5000) {
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
           }
@@ -853,7 +849,7 @@ export async function executeWithKeyRotationStream(
             error.partialCharacters = partialCharacters;
             throw error;
           }
-          if (kind === 'temporary' && attempt === 1 && deadlineAt - Date.now() > 5000) {
+          if (kind === 'temporary' && !isGeminiModelUnavailable(error, status) && attempt === 1 && deadlineAt - Date.now() > 5000) {
             await new Promise((resolve) => setTimeout(resolve, status === 429 ? 700 : 350));
             continue;
           }
