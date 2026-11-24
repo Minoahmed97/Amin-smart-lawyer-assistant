@@ -19,6 +19,72 @@ export function getScopedStorageKey(userId?: string): string {
   return `_egyptian_legal_models_vault_v5_${activeId}`;
 }
 
+type CachedVaultModelAnalysis = {
+  id: string;
+  searchableText: string;
+  styleProfile: string;
+};
+
+type CachedVaultAnalysis = {
+  version: 1;
+  vaultSignature: string;
+  models: CachedVaultModelAnalysis[];
+};
+
+function getVaultAnalysisStorageKey(userId?: string): string {
+  return getScopedStorageKey(userId) + '_analysis_v1';
+}
+
+function invalidateVaultAnalysis(userId?: string): void {
+  try { localStorage.removeItem(getVaultAnalysisStorageKey(userId)); } catch {}
+}
+
+function getVaultSignature(models: LawModelItem[]): string {
+  // Content itself is not re-read for analysis on each request. All supported
+  // vault mutations invalidate this cache; this lightweight signature also
+  // detects account/model additions and metadata changes.
+  return models.map((model) => [
+    model.id,
+    model.title || '',
+    model.category || '',
+    model.judicialWorkType || '',
+    model.notes || '',
+    String(model.content || '').length,
+    model.createdAt || '',
+  ].join(':')).join('|');
+}
+
+function getCachedVaultAnalysis(models: LawModelItem[], userId?: string): CachedVaultAnalysis {
+  const vaultSignature = getVaultSignature(models);
+  const cacheKey = getVaultAnalysisStorageKey(userId);
+  try {
+    const raw = localStorage.getItem(cacheKey);
+    const cached = raw ? JSON.parse(raw) as CachedVaultAnalysis : null;
+    if (cached?.version === 1 && cached.vaultSignature === vaultSignature &&
+        Array.isArray(cached.models) && cached.models.length === models.length) {
+      return cached;
+    }
+  } catch {}
+
+  // This is the one-time local extraction for the current vault version.
+  // Only compact descriptors are cached; source pleadings remain in the vault.
+  const analysis: CachedVaultAnalysis = {
+    version: 1,
+    vaultSignature,
+    models: models.map((model) => ({
+      id: model.id,
+      searchableText: [...topicTokens(
+        `${model.title || ''} ${model.category || ''} ${model.judicialWorkType || ''} ${model.notes || ''} ${String(model.content || '').slice(0, 24000)}`,
+      )].join(' '),
+      styleProfile: deriveStyleProfile(String(model.content || ''), true),
+    })),
+  };
+  try { localStorage.setItem(cacheKey, JSON.stringify(analysis)); } catch (error) {
+    console.warn('Could not persist the compact lawyer-vault profile:', error);
+  }
+  return analysis;
+}
+
 export function getAllLawModels(userId?: string): LawModelItem[] {
   const scopedKey = getScopedStorageKey(userId);
 
@@ -68,6 +134,8 @@ export function saveLawModel( model: Omit<LawModelItem, 'id' | 'createdAt'>, use
   const updated = [newModel, ...current];
   try {
     localStorage.setItem(getScopedStorageKey(userId), JSON.stringify(updated));
+    invalidateVaultAnalysis(userId);
+    invalidateVaultAnalysis(userId);
   } catch (e) {
     console.warn('LocalStorage save error:', e);
   }
@@ -83,6 +151,7 @@ export function updateLawModel( id: string, updates: Partial<LawModelItem>, user
   current[index] = updatedItem;
   try {
     localStorage.setItem(getScopedStorageKey(userId), JSON.stringify(current));
+    invalidateVaultAnalysis(userId);
   } catch (e) {
     console.warn('LocalStorage update error:', e);
   }
@@ -102,6 +171,7 @@ export function deleteLawModel(id: string, userId?: string): void {
 export function clearAllLawModels(userId?: string): void {
   try {
     localStorage.setItem(getScopedStorageKey(userId), JSON.stringify([]));
+    invalidateVaultAnalysis(userId);
   } catch (e) {
     console.warn('LocalStorage clear error:', e);
   }
@@ -380,39 +450,53 @@ export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | 
   if (typeof searchCriteria === 'string') criteria = { courtType: searchCriteria };
   else if (searchCriteria) criteria = searchCriteria;
 
-  const models = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
+  const sourceModels = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
+  if (!sourceModels.length) {
+    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]
+[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تدّعِ استخدام أسلوب مرجعي؛ اكتب وفق المعلومات الحالية فقط.]`;
+  }
+
+  // Reuse the one-time local analysis for every model, then rank all saved
+  // models against this case using compact token descriptors, not their full
+  // historical document bodies.
+  const cachedAnalysis = getCachedVaultAnalysis(sourceModels, userId);
+  const analysisById = new Map(cachedAnalysis.models.map((item) => [item.id, item]));
+  const rankingModels = sourceModels.map((model) => ({
+    ...model,
+    content: analysisById.get(model.id)?.searchableText || '',
+  }));
+  const bestRanked = rankVaultModels(rankingModels, criteria)[0];
+  const bestModel = bestRanked
+    ? sourceModels.find((model) => model.id === bestRanked.model.id)
+    : undefined;
+  if (!bestModel) {
+    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]
+[لا يوجد نموذج يحتوي على نص قابل للاستخدام في خزنة هذا الحساب. اكتب وفق المعلومات الحالية فقط.]`;
+  }
+
   const requestedType = criteria.judicialWorkType || criteria.briefType || '';
-  const requestedDocFamily = documentFamily(requestedType);
   const requestedLegalFamily = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
-  if (!models.length) {
-    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا توجد نماذج شخصية محفوظة في خزنة هذا الحساب. لا تدّعِ استخدام أسلوب مرجعي؛ اكتب وفق المعلومات الحالية فقط.]`;
-  }
-
-  // All saved models participate in the comparison. The AI receives one best
-  // reference, not an arbitrary fixed batch, to keep one coherent lawyer style.
-  const best = rankVaultModels(models, criteria)[0];
-  if (!best) {
-    return `[بصمة أسلوب المحامي — سياق للمهمة الحالية]\n[لا يوجد نموذج يحتوي على نص قابل للاستخدام في خزنة هذا الحساب. اكتب وفق المعلومات الحالية فقط.]`;
-  }
-
-  const content = String(best.model.content || '').trim();
-  // Keep a representative sample from the opening, body, and ending rather
-  // than sending an oversized first 18k characters of the stored document.
-  const excerpt = content.length <= 5200
-    ? content
-    : [
-        content.slice(0, 2400),
-        '[مقتطف من متن النموذج المرجعي]',
-        content.slice(Math.max(2400, Math.floor(content.length / 2) - 500), Math.max(2400, Math.floor(content.length / 2) - 500) + 1000),
-        '[الخاتمة والتوقيع من النموذج المرجعي]',
-        content.slice(-1200),
-      ].join('\n\n');
-  const styleProfile = deriveStyleProfile(content, true);
-  const metadata = [best.model.title, best.model.judicialWorkType, best.model.category].filter(Boolean).join(' — ');
+  const metadata = [bestModel.title, bestModel.judicialWorkType, bestModel.category].filter(Boolean).join(' — ');
+  const styleProfile = analysisById.get(bestModel.id)?.styleProfile || 'استخدم صياغة قانونية عربية مصرية متماسكة، مع الحفاظ على تسلسل منطقي واضح.';
   const typeLine = requestedType ? `نوع المستند المطلوب: ${requestedType}.` : 'يُحدد نوع المستند من طلب المستخدم ووقائعه.';
   const familyLine = requestedLegalFamily ? `الفرع القانوني الأقرب: ${requestedLegalFamily}.` : 'يراعى الفرع القانوني الثابت من وقائع المهمة.';
   const courtLine = criteria.courtType ? `المحكمة أو الجهة: ${criteria.courtType}.` : 'تراعى جهة القضاء المحددة في المهمة.';
-  const referenceBlock = `[النموذج المرجعي المختار${metadata ? `: ${metadata}` : ''}]\n${excerpt}${content.length > excerpt.length ? '\n[عينة منتقاة من بداية النموذج ووسطه وخاتمته.]' : ''}`;
 
-  return `[بصمة أسلوب المحامي — مرجع فعلي من خزنة هذا الحساب]\n${typeLine}\n${familyLine}\n${courtLine}\nتمت مقارنة جميع نماذج الحساب واختيار الأقرب للمهمة. النموذج التالي مرجع للأسلوب والبناء فقط، وليس مصدراً لوقائع القضية الحالية.\n\n[ملامح الأسلوب المستخلصة]\n${styleProfile}\n\n${referenceBlock}\n\n[قواعد تطبيق المرجع]\n- حافظ على الديباجة والترويسة وبصمة المحامي وتسلسل الأقسام والعبارات وطريقة عرض الحجج والطلبات والخاتمة بقدر ملاءمتها لنوع العمل الحالي.\n- استفد من بنية النموذج، ولا تنقل منه تحليلاً أو دفعاً أو طلباً إلا إذا سنده ملف القضية الحالية.\n- لا تنقل أسماء أو وقائع أو تواريخ أو أرقاماً أو مستندات أو طلبات تخص القضية المرجعية.\n- استخدم بيانات المكتب والتوقيع الثابتة إذا كانت واضحة، ولا تخترع بيانات.\n- صحة القضية الحالية وطلبات المحامي تتقدم على التشابه الأسلوبي؛ لا تختلق واقعة أو سنداً قانونياً.\n- إذا اختلف نوع المستند الحالي عن النموذج، فاحتفظ بالبصمة وعدّل الهيكل بالقدر اللازم دون تحويله إلى نوع آخر.`;
+  // Do not transmit the source template or its case-specific text to Gemini.
+  // The selected model contributes only its cached, compact style fingerprint.
+  return `[بصمة أسلوب المحامي — ملف محلي مستخلص مسبقاً من خزنة هذا الحساب]
+${typeLine}
+${familyLine}
+${courtLine}
+النموذج الأقرب المختار من جميع نماذج الخزانة: ${metadata || 'نموذج شخصي محفوظ'}.
+تم اختيار النموذج وفق نوع العمل والفرع القضائي والمحكمة وموضوع القضية، مع اعتبار الوزن المحفوظ عامل ترجيح ثانوياً فقط.
+
+[ملامح الأسلوب المستخلصة والمحفوظة محلياً]
+- ${styleProfile}
+
+[قواعد تطبيق البصمة]
+- طبّق طريقة المحامي في الترويسة وتسلسل الأقسام وطول الفقرات والجمل والروابط التعبيرية والخاتمة بقدر ملاءمتها لنوع المستند الحالي.
+- النموذج المختار مرجع أسلوبي فقط؛ لا تنقل منه أي وقائع أو أسماء أو تواريخ أو أرقام أو مستندات أو دفوع أو طلبات تخص قضية أخرى.
+- لا تجعل النموذج المرجعي يغيّر نوع المستند الذي طلبه المحامي أو يضيف طلبات لم يحددها.
+- صحة القضية الحالية وطلبات المحامي تتقدم على التشابه الأسلوبي؛ لا تختلق واقعة أو سنداً قانونياً.`;
 }
