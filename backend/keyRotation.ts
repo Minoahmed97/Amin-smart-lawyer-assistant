@@ -191,7 +191,7 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
     if (value == null || depth > 5 || seen.has(value)) return;
     if (typeof value === 'string') {
       const normalized = value
-        .replace(/\\\\_/g, '_')
+        .replace(/\\_/g, '_')
         .replace(/&#91;|&#x5b;/gi, '[')
         .replace(/&#93;|&#x5d;/gi, ']')
         .replace(/&quot;/gi, '"')
