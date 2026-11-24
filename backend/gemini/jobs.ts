@@ -672,8 +672,8 @@ async function retryDeadlineDraftingJob(
   jobId: string, userId: string, payload: Record<string, string>, partialText: string, error: unknown,
 ): Promise<boolean> {
   const message = String((error as any)?.message || error || '');
-  const status = Number((error as any)?.statusCode || (error as any)?.status || (message.match(/(?:HTTP|statusCode|code)[^0-9]{0,8}(504)/i) || [])[1] || 0);
-  const deadlineFailure = status === 504 || /deadline.?exceeded|deadline expired|انتهى الوقت المتاح|timed?\s*out/i.test(message);
+  const status = Number((error as any)?.statusCode || (error as any)?.status || (message.match(/(?:HTTP|statusCode|code)[^0-9]{0,8}(503|504)/i) || [])[1] || 0);
+  const deadlineFailure = status === 503 || status === 504 || /deadline.?exceeded|deadline expired|انتهى الوقت المتاح|timed?\s*out|high demand|service unavailable|temporarily unavailable/i.test(message);
   if (!deadlineFailure) return false;
 
   // The drafting handler checkpoints its chunk/reduction ledger directly in
