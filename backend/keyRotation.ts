@@ -223,7 +223,7 @@ function getDraftingGeminiErrorKind(error: any): 'quota' | 'invalid' | 'temporar
     error?.response?.status || error?.response?.statusCode || error?.error?.code || 0);
 
   const explicitSpendCap = /spend[- ]based.{0,80}(limit|cap)|billing.{0,80}(limit|cap|exhaust)|prepaid.{0,80}(balance|credit).{0,80}(exhaust|deplet)|account.{0,80}spend.{0,40}(limit|cap)/.test(normalizedMessage);
-  const explicitProjectQuota = /\\b(?:project[- ]wide|whole project|entire project)\\b.{0,100}\\b(?:quota|limit)\\b.{0,100}\\b(?:exceed|exhaust|reach|cap)\\b|\\b(?:quota|limit)\\b.{0,100}\\b(?:for|of)\\s+(?:the\\s+)?(?:whole|entire)\\s+project\\b.{0,100}\\b(?:exceed|exhaust|reach)\\b/.test(normalizedMessage);
+  const explicitProjectQuota = /\b(?:project[- ]wide|whole project|entire project)\b.{0,100}\b(?:quota|limit)\b.{0,100}\b(?:exceed|exhaust|reach|cap)\b|\b(?:quota|limit)\b.{0,100}\b(?:for|of)\s+(?:the\s+)?(?:whole|entire)\s+project\b.{0,100}\b(?:exceed|exhaust|reach)\b/.test(normalizedMessage);
 
   // Google may return 429 / RESOURCE_EXHAUSTED / QuotaFailure for a
   // model-specific or rate-specific limit. Try the other models and keys.
