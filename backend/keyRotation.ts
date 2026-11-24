@@ -847,11 +847,15 @@ export async function executeWithKeyRotationStream(
           markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
           if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
 
-          // Once a stream has delivered text, preserve it and let the document
-          // continuation layer resume from that exact partial output on another pair.
+          // A transient interruption after text was emitted does not invalidate
+          // the provider pair. Preserve the partial output and let drafting resume
+          // with this same key/model before considering another pair.
           if (emittedAnyChunk) {
-            executionOptions?.attemptedPairs?.add(pair);
-            if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
+            if (kind !== 'temporary') {
+              executionOptions?.attemptedPairs?.add(pair);
+              markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
+              if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
+            }
             error.partialCharacters = partialCharacters;
             throw error;
           }
