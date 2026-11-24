@@ -524,13 +524,13 @@ export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | 
         content.slice(Math.max(2400, Math.floor(content.length / 2) - 500), Math.max(2400, Math.floor(content.length / 2) - 500) + 1000),
         '[الخاتمة والتوقيع من النموذج المرجعي]',
         content.slice(-1200),
-      ].join('\\n\\n');
+      ].join('\n\n');
   const styleProfile = deriveStyleProfile(content, true);
   const metadata = [best.model.title, best.model.judicialWorkType, best.model.category].filter(Boolean).join(' — ');
   const typeLine = requestedType ? `نوع المستند المطلوب: ${requestedType}.` : 'يُحدد نوع المستند من طلب المستخدم ووقائعه.';
   const familyLine = requestedLegalFamily ? `الفرع القانوني الأقرب: ${requestedLegalFamily}.` : 'يراعى الفرع القانوني الثابت من وقائع المهمة.';
   const courtLine = criteria.courtType ? `المحكمة أو الجهة: ${criteria.courtType}.` : 'تراعى جهة القضاء المحددة في المهمة.';
-  const referenceBlock = `[النموذج المرجعي المختار${metadata ? `: ${metadata}` : ''}]\\n${excerpt}${content.length > excerpt.length ? '\\n[عينة منتقاة من بداية النموذج ووسطه وخاتمته.]' : ''}`;
+  const referenceBlock = `[النموذج المرجعي المختار${metadata ? `: ${metadata}` : ''}]\n${excerpt}${content.length > excerpt.length ? '\n[عينة منتقاة من بداية النموذج ووسطه وخاتمته.]' : ''}`;
 
   return `[بصمة أسلوب المحامي — مرجع فعلي من خزنة هذا الحساب]
 ${typeLine}
