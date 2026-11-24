@@ -1,4 +1,5 @@
 import { executeWithKeyRotation, executeWithKeyRotationStream } from '../keyRotation.ts';
+import { createHash } from 'node:crypto';
 
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
@@ -20,27 +21,66 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
 
-function splitLegalSourceIntoChunks(source: string, maxChars = 6000): Array<{ text: string; start: number; end: number }> {
-  const chunks: Array<{ text: string; start: number; end: number }> = [];
-  let start = 0;
-  while (start < source.length) {
-    let end = Math.min(source.length, start + maxChars);
-    if (end < source.length) {
-      const floor = start + Math.floor(maxChars * 0.55);
-      const positions = ['\n\n', '\n', '۔', '.', '؛'].map((separator) => source.lastIndexOf(separator, end)).filter((position) => position >= floor);
-      if (positions.length) end = Math.max(...positions) + 1;
+type LegalSourceChunk = {
+  text: string;
+  // Context range includes the overlap used to understand boundaries.
+  start: number;
+  end: number;
+  // Core ranges are contiguous, non-overlapping, and cover the source exactly.
+  coreStart: number;
+  coreEnd: number;
+};
+
+function splitLegalSourceIntoChunks(source: string, maxCoreChars = 5600, overlapChars = 350): LegalSourceChunk[] {
+  const chunks: LegalSourceChunk[] = [];
+  let coreStart = 0;
+  while (coreStart < source.length) {
+    let coreEnd = Math.min(source.length, coreStart + maxCoreChars);
+    if (coreEnd < source.length) {
+      const floor = coreStart + Math.floor(maxCoreChars * 0.55);
+      const separators = ['\\n\\n', '\\n', '۔', '.', '؛', '؟'];
+      const candidates = separators
+        .map((separator) => {
+          const position = source.lastIndexOf(separator, coreEnd);
+          return position >= floor ? position + separator.length : -1;
+        })
+        .filter((position) => position > coreStart);
+      if (candidates.length) coreEnd = Math.max(...candidates);
     }
-    if (end <= start) end = Math.min(source.length, start + maxChars);
-    chunks.push({ text: source.slice(start, end), start, end });
-    start = end;
+    if (coreEnd <= coreStart) coreEnd = Math.min(source.length, coreStart + maxCoreChars);
+
+    const contextStart = Math.max(0, coreStart - overlapChars);
+    const contextEnd = Math.min(source.length, coreEnd + overlapChars);
+    chunks.push({
+      text: source.slice(contextStart, contextEnd),
+      start: contextStart,
+      end: contextEnd,
+      coreStart,
+      coreEnd,
+    });
+    coreStart = coreEnd;
   }
   return chunks;
 }
 
 type DraftingLedgerState = {
-  version: 1;
-  sources: Record<string, { sourceLength: number; chunks: Record<string, string>; reductions: Record<string, string[]> }>;
+  version: 2;
+  sources: Record<string, {
+    sourceLength: number;
+    sourceFingerprint: string;
+    chunks: Record<string, string>;
+    reductions: Record<string, string[]>;
+  }>;
 };
+
+function getLegalSourceFingerprint(source: string): string {
+  return createHash('sha256').update(source, 'utf8').digest('hex');
+}
+
+function isIncompleteLegalAnalysis(response: any): boolean {
+  const finishReason = String(response?.candidates?.[0]?.finishReason || '').trim().toUpperCase();
+  return ['MAX_TOKENS', 'MALFORMED_FUNCTION_CALL'].includes(finishReason);
+}
 
 async function buildDraftingEvidenceLedger(
   source: string, sourceLabel: string, deadlineAt: number,
@@ -48,71 +88,100 @@ async function buildDraftingEvidenceLedger(
 ): Promise<string> {
   const trimmed = typeof source === 'string' ? source.trim() : '';
   if (!trimmed || trimmed.length <= 6000) return source;
+
+  const sourceFingerprint = getLegalSourceFingerprint(source);
   const chunks = splitLegalSourceIntoChunks(source);
   let sourceState = state.sources[sourceLabel];
-  if (!sourceState || sourceState.sourceLength !== source.length) {
-    sourceState = { sourceLength: source.length, chunks: {}, reductions: {} };
+  // Length alone is not a safe cache key: different documents can have equal lengths.
+  if (!sourceState || sourceState.sourceLength !== source.length || sourceState.sourceFingerprint !== sourceFingerprint) {
+    sourceState = { sourceLength: source.length, sourceFingerprint, chunks: {}, reductions: {} };
     state.sources[sourceLabel] = sourceState;
     await persist();
   }
+
   const ledgerParts: string[] = [];
   console.info('[counter-brief] staged source analysis started', {
     source: sourceLabel, sourceCharacters: source.length, chunkCount: chunks.length,
     completedChunks: Object.keys(sourceState.chunks).length,
-    chunkCharacters: chunks.map((chunk) => chunk.text.length),
+    coreChunkCharacters: chunks.map((chunk) => chunk.coreEnd - chunk.coreStart),
+    contextChunkCharacters: chunks.map((chunk) => chunk.text.length),
+    overlapCharacters: 350,
+    sourceFingerprint: sourceFingerprint.slice(0, 12),
   });
+
   for (let index = 0; index < chunks.length; index += 1) {
     const saved = sourceState.chunks[String(index)];
     if (typeof saved === 'string' && saved.trim()) { ledgerParts.push(saved); continue; }
     if (Date.now() >= deadlineAt) {
-      const timeoutError: any = new Error('انتهى الوقت المتاح لتحليل أجزاء النص الطويل. ستُستكمل المهمة من آخر جزء محفوظ.');
+      const timeoutError: any = new Error('انتهى الوقت المتاح لتحليل أجزاء النص الطويل. ستُستكمل المهمة من آخر جزء مكتمل ومحفوظ.');
       timeoutError.statusCode = 504; throw timeoutError;
     }
+
     const chunk = chunks[index];
     const chunkPrompt =
-      '[تحليل مرحلي لمصدر قانوني طويل — الجزء ' + (index + 1) + ' من ' + chunks.length + ']\n' +
-      'المصدر: ' + sourceLabel + '\n' +
-      'موضع الجزء في النص الأصلي: من الحرف ' + (chunk.start + 1) + ' إلى الحرف ' + chunk.end + '.\n' +
-      'حلّل هذا الجزء وحده تحليلاً استخلاصياً شاملاً، ولا تصغ مذكرة ولا تختصر الوقائع الجوهرية. استخرج كل واقعة وادعاء وإقرار، وكل اسم وصفة ورقم ومبلغ وتاريخ ومدة ومكان وتسلسل زمني، وكل مستند أو دليل ومضمونه وما يثبته وما لا يثبته، وكل طلب أو دفع أو دفاع أو حجة أو رد أو تناقض أو فجوة أو معلومة ناقصة. اربط كل نقطة بموضعها في الجزء، وحافظ على الأرقام والتواريخ والعبارات الحاسمة. ميّز بين الثابت والادعاء والاستنتاج والاحتمال والنقص. لا تضف قاعدة قانونية أو واقعة غير موجودة ولا تسقط معلومة قد يكون لها أثر قانوني أو إثباتي.\n' +
-      '[النص الأصلي لهذا الجزء — يُحلل كاملاً دون إعادة صياغة مخلّة]\n' + chunk.text + '\n[نهاية الجزء]';
+      '[تحليل مرحلي لمصدر قانوني طويل — الجزء ' + (index + 1) + ' من ' + chunks.length + ']\\n' +
+      'المصدر: ' + sourceLabel + '\\n' +
+      'النطاق الأساسي الذي يجب استخلاص جميع معلوماته: من الحرف ' + (chunk.coreStart + 1) + ' إلى الحرف ' + chunk.coreEnd + '.\\n' +
+      'نطاق السياق الإضافي المتداخل للفهم والربط فقط: من الحرف ' + (chunk.start + 1) + ' إلى الحرف ' + chunk.end + '.\\n' +
+      'النص يتضمن تداخلاً مع الجزء السابق واللاحق. استخرج كل معلومة من النطاق الأساسي لهذا الجزء، واستخدم التداخل لفهم الجمل والوقائع والمستندات التي تعبر حدود الأجزاء. لا تسقط معلومة من النطاق الأساسي، ولا تكرر معلومات التداخل باعتبارها وقائع مستقلة؛ احتفظ بإحالة موضعها الأصلي.\\n' +
+      'حلّل النص تحليلاً استخلاصياً شاملاً، ولا تصغ مذكرة ولا تلخص الوقائع. استخرج كل واقعة وادعاء وإقرار، وكل اسم وصفة ورقم ومبلغ وتاريخ ومدة ومكان وتسلسل زمني، وكل مستند أو دليل ومضمونه وما يثبته وما لا يثبته، وكل طلب أو دفع أو دفاع أو حجة أو رد أو تناقض أو فجوة أو معلومة ناقصة. اربط كل نقطة بموضعها في النص الأصلي، وحافظ على الأرقام والتواريخ والعبارات الحاسمة. ميّز بين الثابت والادعاء والاستنتاج والاحتمال والنقص. لا تضف قاعدة قانونية أو واقعة غير موجودة ولا تسقط معلومة قد يكون لها أثر قانوني أو إثباتي.\\n' +
+      '[النص الأصلي لهذا الجزء — كاملًا كما ورد دون تعديل]\\n' + chunk.text + '\\n[نهاية الجزء]';
+
     const extracted = await executeWithKeyRotation(async (ai, _key, model) => {
       console.info('[counter-brief] staged chunk size estimate', {
         source: sourceLabel, chunk: index + 1, totalChunks: chunks.length,
+        coreStart: chunk.coreStart + 1, coreEnd: chunk.coreEnd,
+        contextStart: chunk.start + 1, contextEnd: chunk.end,
         promptCharacters: chunkPrompt.length, estimatedInputTokens: Math.ceil(chunkPrompt.length / 3),
         tokenCountIsEstimate: true, model,
       });
       const response = await ai.models.generateContent({
         model, contents: chunkPrompt,
-        config: { systemInstruction: 'أنت محلل قانوني مصري دقيق. استخرج البيانات من النص دون اختلاق، وحافظ على الإحالات والأرقام والتواريخ.', temperature: 0.1, maxOutputTokens: 8192 },
+        config: { systemInstruction: 'أنت محلل قانوني مصري دقيق. استخرج البيانات من النص دون اختلاق أو اختصار، وحافظ على الإحالات والأرقام والتواريخ. لا تعتبر التداخل بين الأجزاء وقائع جديدة.', temperature: 0.1, maxOutputTokens: 8192 },
       });
       const text = typeof response.text === 'string' ? response.text.trim() : '';
+      const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
       if (!text) { const error: any = new Error('تعذر استخراج سجل الجزء ' + (index + 1) + ' من النص الطويل.'); error.statusCode = 503; throw error; }
+      if (isIncompleteLegalAnalysis(response)) {
+        const error: any = new Error('خرج تحليل الجزء ' + (index + 1) + ' غير مكتمل بسبب بلوغ حد الإخراج (MAX_TOKENS). لم تُحفظ النتيجة الجزئية.');
+        error.statusCode = 502; throw error;
+      }
+      if (['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
+        const error: any = new Error('تعذر اعتماد تحليل الجزء ' + (index + 1) + ' بسبب قيد من مزود الذكاء الاصطناعي.');
+        error.statusCode = 502; throw error;
+      }
       return text;
     }, undefined, undefined, false, { deadlineAt, draftingMode: true });
-    const entry = '[سجل المصدر: ' + sourceLabel + ' — الجزء ' + (index + 1) + '/' + chunks.length + ' — الحروف ' + (chunk.start + 1) + '-' + chunk.end + ']\n' + extracted;
+
+    const entry = '[سجل المصدر: ' + sourceLabel + ' — الجزء ' + (index + 1) + '/' + chunks.length +
+      ' — النطاق الأساسي للحروف ' + (chunk.coreStart + 1) + '-' + chunk.coreEnd +
+      ' — نطاق السياق المتداخل ' + (chunk.start + 1) + '-' + chunk.end + ']\\n' + extracted;
     sourceState.chunks[String(index)] = entry;
     ledgerParts.push(entry);
     await persist();
   }
+
+  // Merge in pairs: smaller batches reduce the chance that the merge itself is truncated.
   let reducedParts = ledgerParts;
   let round = 0;
   while (reducedParts.length > 1) {
     round += 1;
     const savedRound = sourceState.reductions[String(round)] || [];
     const nextParts: string[] = [];
-    for (let offset = 0; offset < reducedParts.length; offset += 4) {
-      const batchIndex = Math.floor(offset / 4);
+    for (let offset = 0; offset < reducedParts.length; offset += 2) {
+      const batchIndex = Math.floor(offset / 2);
       const saved = savedRound[batchIndex];
       if (typeof saved === 'string' && saved.trim()) { nextParts.push(saved); continue; }
       if (Date.now() >= deadlineAt) {
-        const error: any = new Error('انتهى الوقت المتاح لربط نتائج تحليل النص الطويل. ستُستكمل المهمة من آخر نتيجة دمج محفوظة.');
+        const error: any = new Error('انتهى الوقت المتاح لربط نتائج تحليل النص الطويل. ستُستكمل المهمة من آخر نتيجة دمج مكتملة ومحفوظة.');
         error.statusCode = 504; throw error;
       }
-      const batch = reducedParts.slice(offset, offset + 4);
+      const batch = reducedParts.slice(offset, offset + 2);
       const prompt =
-        '[دمج وربط سجلات تحليل مصدر قانوني طويل — الجولة ' + round + ']\n' +
-        'ادمج السجلات التالية في ملف وقائع وأدلة موحد ومركز، مع الحفاظ على جميع الوقائع الجوهرية والأسماء والصفات والأرقام والمبالغ والتواريخ والطلبات والدفوع والمستندات والتناقضات ومواطن النقص. احتفظ بإحالات كل معلومة إلى الجزء وموضع الحروف الأصلي. اربط ما بين الأجزاء، واكشف التعارضات العابرة لها، ولا تكرر المعلومة إلا إذا كان التكرار نفسه ذا دلالة. لا تسقط معلومة مؤثرة ولا تختلق واقعة أو سنداً قانونياً. ميّز بين الثابت والادعاء والاستنتاج والاحتمال وما يحتاج تحققاً. هذا سجل تحليلي لا مسودة مستند قضائي.\n\n' +
-        batch.join('\n\n[فاصل سجل]\n\n');
+        '[دمج وربط سجلات تحليل مصدر قانوني طويل — الجولة ' + round + ']\\n' +
+        'اربط السجلات التالية دون تحويلها إلى ملخص مختزل. احتفظ بكل واقعة وادعاء وإقرار واسم وصفة ورقم ومبلغ وتاريخ ومدة ومكان وطلب ودفع ومستند وتناقض ومعلومة ناقصة. لا تحذف تفصيلاً لمجرد أنه يبدو ثانوياً؛ قد تكون له قيمة إثباتية أو زمنية.\\n' +
+        'عالج التداخل بين نطاقات الأجزاء باعتباره سياقاً مساعداً، ووحّد الإشارة إلى المعلومة ذاتها دون إسقاط أي تفصيل. احتفظ بإحالة كل معلومة إلى موضع الحروف الأصلي. اربط ما بين الأجزاء، واكشف التعارضات العابرة لها، ولا تكرر المعلومة إلا إذا كان التكرار نفسه ذا دلالة. لا تختلق واقعة أو سنداً قانونياً. ميّز بين الثابت والادعاء والاستنتاج والاحتمال وما يحتاج تحققاً. هذا سجل تحليلي لا مسودة مستند قضائي.\\n\\n' +
+        batch.join('\\n\\n[فاصل سجل]\\n\\n');
       const merged = await executeWithKeyRotation(async (ai, _key, model) => {
         console.info('[counter-brief] staged ledger reduction size estimate', {
           source: sourceLabel, round, batch: batchIndex + 1,
@@ -121,12 +190,22 @@ async function buildDraftingEvidenceLedger(
         });
         const response = await ai.models.generateContent({
           model, contents: prompt,
-          config: { systemInstruction: 'أنت محلل قانوني مصري يربط الأدلة والوقائع بدقة دون اختلاق أو إسقاط.', temperature: 0.1, maxOutputTokens: 4096 },
+          config: { systemInstruction: 'أنت محلل قانوني مصري يربط الأدلة والوقائع بدقة دون اختلاق أو إسقاط أو اختزال.', temperature: 0.1, maxOutputTokens: 8192 },
         });
         const text = typeof response.text === 'string' ? response.text.trim() : '';
+        const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
         if (!text) { const error: any = new Error('تعذر ربط سجلات تحليل النص الطويل.'); error.statusCode = 503; throw error; }
+        if (isIncompleteLegalAnalysis(response)) {
+          const error: any = new Error('خرج دمج سجلات النص الطويل غير مكتمل بسبب بلوغ حد الإخراج. لم تُحفظ نتيجة الدمج الجزئية.');
+          error.statusCode = 502; throw error;
+        }
+        if (['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
+          const error: any = new Error('تعذر اعتماد دمج سجلات النص الطويل بسبب قيد من مزود الذكاء الاصطناعي.');
+          error.statusCode = 502; throw error;
+        }
         return text;
       }, undefined, undefined, false, { deadlineAt, draftingMode: true });
+
       sourceState.reductions[String(round)] ||= [];
       sourceState.reductions[String(round)][batchIndex] = merged;
       nextParts.push(merged);
@@ -134,11 +213,13 @@ async function buildDraftingEvidenceLedger(
     }
     reducedParts = nextParts;
   }
+
   console.info('[counter-brief] staged source analysis completed', {
     source: sourceLabel, sourceCharacters: source.length, chunkCount: chunks.length,
     ledgerCharacters: reducedParts.reduce((total, part) => total + part.length, 0), reductionRounds: round,
+    sourceFingerprint: sourceFingerprint.slice(0, 12),
   });
-  return '[سجل استخلاص مرحلي كامل من النص الأصلي غير المقتطع. عولجت جميع الأجزاء بالترتيب، والإحالات أدناه تشير إلى مواضعها في النص الأصلي. أعد الربط بين الأجزاء واختبر التناقضات العابرة لها.]\n' + reducedParts.join('\n\n');
+  return '[سجل استخلاص مرحلي من النص الأصلي كاملًا. غطت النطاقات الأساسية النص الأصلي من أوله إلى آخره دون فجوات، واستخدم تداخل سياقي عند الحدود. الإحالات تشير إلى مواضع الحروف الأصلية. أعد الربط بين الأجزاء واختبر التناقضات العابرة لها، ولا تعتبر هذا السجل بديلاً عن الوقائع الأصلية عند التعارض.]\\n' + reducedParts.join('\\n\\n');
 }
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
@@ -512,9 +593,9 @@ export default async function handler(req: any, res: any) {
     const draftingState: DraftingLedgerState = (() => {
       try {
         const parsed = typeof body?._draftingState === 'string' ? JSON.parse(body._draftingState) : null;
-        if (parsed && parsed.version === 1 && parsed.sources && typeof parsed.sources === 'object') return parsed;
+        if (parsed && parsed.version === 2 && parsed.sources && typeof parsed.sources === 'object') return parsed;
       } catch {}
-      return { version: 1, sources: {} };
+      return { version: 2, sources: {} };
     })();
     const jobId = String(body?._jobId || '').trim();
     const jobUserId = String(body?._jobUserId || '').trim();
