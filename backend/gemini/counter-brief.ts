@@ -39,6 +39,8 @@ type DraftingCheckpoint = {
   entries: Record<string, DraftingCompressionEntry>;
 };
 
+const DRAFTING_STEP_YIELDED = '__AMIN_DRAFTING_STEP_YIELDED__';
+
 /** Split long legal input at paragraph/sentence boundaries without silently dropping text. */
 function splitDraftingInput(source: string, maxChars = DRAFTING_COMPRESSION_CHUNK): string[] {
   const text = String(source || '').replace(/\r\n?/g, '\n').trim();
@@ -122,7 +124,7 @@ async function compressDraftingInput(
   targetChars: number,
   deadlineAt: number,
   styleOnly = false,
-  checkpointContext?: { jobId: string; userId: string; checkpoint: DraftingCheckpoint },
+  checkpointContext?: { jobId: string; userId: string; checkpoint: DraftingCheckpoint; yieldEachChunk?: boolean },
 ): Promise<string> {
   const original = String(source || '').replace(/\r\n?/g, '\n').trim();
   if (!original) return '';
@@ -172,6 +174,7 @@ async function compressDraftingInput(
       if (checkpoint) {
         checkpoint.entries[label] = updatedEntry;
         if (checkpointContext) await persistDraftingCheckpoint(checkpointContext.jobId, checkpointContext.userId, checkpoint);
+        if (checkpointContext?.yieldEachChunk) return DRAFTING_STEP_YIELDED;
       }
     }
     current = summaries.join('\n\n');
@@ -610,16 +613,37 @@ export default async function handler(req: any, res: any) {
       : '';
     const draftingAnalysisDeadline = Date.now() + 210000;
     const draftingCheckpoint = getDraftingCheckpoint(_draftingState);
-    const draftingCheckpointContext = { jobId: String(_jobId || ''), userId: String(_jobUserId || ''), checkpoint: draftingCheckpoint };
+    const draftingCheckpointContext = { jobId: String(_jobId || ''), userId: String(_jobUserId || ''), checkpoint: draftingCheckpoint, yieldEachChunk: Boolean(body?.stream === true && _jobId && _jobUserId) };
 
     // Compress only the legal-drafting payload. Source text remains in the
     // persisted job; model calls receive bounded, labeled context instead.
-    draftingFactsContext = await compressDraftingInput(draftingFactsContext, 'وقائع القضية', 5200, draftingAnalysisDeadline, false, draftingCheckpointContext);
-    draftingPriorAnalysisContext = await compressDraftingInput(draftingPriorAnalysisContext, 'التحليل السابق', 1200, draftingAnalysisDeadline, false, draftingCheckpointContext);
-    const draftingVaultContext = await compressDraftingInput(String(vaultContext || ''), 'خزانة أسلوب المحامي', 1200, draftingAnalysisDeadline, true, draftingCheckpointContext);
-    const draftingDefensesContext = await compressDraftingInput(String(defenses || ''), 'دفوع المحامي', 1200, draftingAnalysisDeadline, false, draftingCheckpointContext);
-    const draftingRequestsContext = await compressDraftingInput(String(requests || ''), 'طلبات المحامي', 1400, draftingAnalysisDeadline, false, draftingCheckpointContext);
-    const draftingCustomInstructionsContext = await compressDraftingInput(String(customInstructions || ''), 'تعليمات المحامي', 1200, draftingAnalysisDeadline, false, draftingCheckpointContext);
+    const compressStep = async (source: string, label: string, target: number, styleOnly = false): Promise<string | null> => {
+      const result = await compressDraftingInput(source, label, target, draftingAnalysisDeadline, styleOnly, draftingCheckpointContext);
+      if (result === DRAFTING_STEP_YIELDED) {
+        res.write(JSON.stringify({ type: 'yield' }) + '\n');
+        res.end();
+        return null;
+      }
+      return result;
+    };
+    const compressedFacts = await compressStep(draftingFactsContext, 'وقائع القضية', 5200);
+    if (compressedFacts === null) return;
+    draftingFactsContext = compressedFacts;
+    const compressedAnalysis = await compressStep(draftingPriorAnalysisContext, 'التحليل السابق', 1200);
+    if (compressedAnalysis === null) return;
+    draftingPriorAnalysisContext = compressedAnalysis;
+    const compressedVault = await compressStep(String(vaultContext || ''), 'خزانة أسلوب المحامي', 1200, true);
+    if (compressedVault === null) return;
+    const draftingVaultContext = compressedVault;
+    const compressedDefenses = await compressStep(String(defenses || ''), 'دفوع المحامي', 1200);
+    if (compressedDefenses === null) return;
+    const draftingDefensesContext = compressedDefenses;
+    const compressedRequests = await compressStep(String(requests || ''), 'طلبات المحامي', 1400);
+    if (compressedRequests === null) return;
+    const draftingRequestsContext = compressedRequests;
+    const compressedInstructions = await compressStep(String(customInstructions || ''), 'تعليمات المحامي', 1200);
+    if (compressedInstructions === null) return;
+    const draftingCustomInstructionsContext = compressedInstructions;
 
     const draftingStrategy = prepareLegalStrategy({
       task: 'drafting', courtType, circuit, opponentName,
