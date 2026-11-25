@@ -165,7 +165,7 @@ async function compressDraftingInput(
         const output = typeof response.text === 'string' ? response.text.trim() : '';
         if (!output) throw new Error('لم ينتج ملخص صالح لتجهيز سياق الصياغة.');
         return output;
-      }, undefined, undefined, false, { deadlineAt, draftingMode: true, minimumAttemptMs: 10000 });
+      }, undefined, undefined, false, { deadlineAt, draftingMode: true, minimumAttemptMs: 10000, maxModelAttempts: 3 });
 
       summaries[i] = summary;
       console.info('[counter-brief] drafting compression chunk saved', {
