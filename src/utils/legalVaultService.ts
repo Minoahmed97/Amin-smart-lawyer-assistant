@@ -405,3 +405,108 @@ export function getLawyerStyleContext(searchCriteria?: LawVaultSearchCriteria | 
 
   return `[بصمة أسلوب المحامي — مرجع فعلي من خزنة هذا الحساب]\n${typeLine}\n${familyLine}\n${courtLine}\nتمت مقارنة جميع النماذج المحفوظة في الحساب واختيار المرجع الأقرب لموضوع المهمة، ثم جهة القضاء ونوع العمل القضائي. النموذج التالي هو المرجع الأساسي لهذه المهمة؛ لا تستخدم نماذج أخرى لمجرد أنها محفوظة. النص مرجع أسلوب وبناء وليس مصدراً لوقائع القضية الحالية.\n\n${referenceBlock}\n\n[تعليمات استخدام المرجع]\n1) اقتدِ بالنموذج المرجعي في بصمة المحامي الفعلية: الديباجة، والترويسة، وترتيب الأقسام، وتسلسل عرض الوقائع والحجج، والعبارات الانتقالية، وطول الفقرات، وصياغة الطلبات والخاتمة، بقدر ما يناسب نوع العمل الحالي.\n2) إذا كان المرجع من الموضوع نفسه أو من موضوع قريب، استفد من بنيته وطريقة معالجة هذا النوع من النزاع، لكن لا تنقل أي تحليل أو دفع أو طلب باعتباره صالحاً للقضية الحالية دون أن تسنده وقائعها ومستنداتها.\n3) استخلص نوع المستند المطلوب من اختيار المحامي أو من وقائع المهمة وتعليماته. لا تفترض أن المطلوب مذكرة دفاع لمجرد أن بعض النماذج المحفوظة مذكرات.\n4) لا تنقل أسماء أطراف القضية المرجعية أو وقائعها أو تواريخها أو أرقامها أو مستنداتها أو طلباتها أو دفوعها الخاصة.\n5) انقل عناصر هوية المكتب الثابتة والترويسة والتوقيع من المرجع فقط إذا كانت واضحة وثابتة، ولا تخترع أي بيانات.\n6) صحة التحليل القانوني للقضية الحالية وطلبات المحامي تتقدم دائماً على التشابه الأسلوبي؛ لا تختلق واقعة أو مادة أو حكماً أو رقم طعن.\n7) إذا كان نوع المستند الحالي مختلفاً عن المرجع، فاحتفظ ببصمة المحامي العامة وعدّل هيكل المستند بالقدر اللازم لطبيعة العمل المطلوب، ولا تحوّله إلى نوع المرجع.`;
 }
+
+type DraftingVaultFingerprintCache = {
+  version: 1;
+  generatedAt: string;
+  profile: string;
+};
+
+function draftingFingerprintKey(userId?: string): string {
+  const scope = String(userId || getActiveLawyerUserId()).replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `_amin_drafting_style_fingerprint_v1_${scope}`;
+}
+
+function readDraftingFingerprint(userId?: string): DraftingVaultFingerprintCache | null {
+  try {
+    const raw = localStorage.getItem(draftingFingerprintKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.version === 1 && typeof parsed.profile === 'string'
+      ? parsed as DraftingVaultFingerprintCache
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildGlobalDraftingFingerprint(models: LawModelItem[]): string {
+  const samples = models
+    .filter((model) => String(model.content || '').trim())
+    .map((model) => String(model.content || '').trim().slice(0, 3500))
+    .join('\n\n[نموذج آخر من أعمال المحامي]\n\n')
+    .slice(0, 24000);
+  return deriveStyleProfile(samples, false);
+}
+
+/**
+ * Drafting-only vault context. The general lawyer fingerprint is cached per
+ * account and refreshed only when a newer, sufficiently relevant exemplar is
+ * found for the current drafting task. Several close exemplars are supplied
+ * together; the strategic-analysis path continues using its existing service.
+ */
+export function getDraftingVaultContext(criteria: LawVaultSearchCriteria, userId?: string): string {
+  const models = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
+  if (!models.length) {
+    return '[بصمة أسلوب المحامي]\nلا توجد نماذج شخصية محفوظة؛ لا تدّعِ وجود بصمة أو نموذج مرجعي.';
+  }
+
+  const ranked = rankVaultModels(models, criteria);
+  const selected = ranked.slice(0, 4).filter((item) => item.score >= 12);
+  const references = selected.length ? selected : ranked.slice(0, Math.min(2, ranked.length));
+  const cache = readDraftingFingerprint(userId);
+  const newestRelevantTimestamp = references.reduce((latest, item) => {
+    const timestamp = Date.parse(String(item.model.createdAt || ''));
+    return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
+  }, 0);
+  const cacheTimestamp = Date.parse(String(cache?.generatedAt || ''));
+  const shouldRefresh = !cache
+    || (newestRelevantTimestamp > 0 && newestRelevantTimestamp > (Number.isFinite(cacheTimestamp) ? cacheTimestamp : 0));
+
+  let fingerprint = cache?.profile || '';
+  if (shouldRefresh) {
+    fingerprint = buildGlobalDraftingFingerprint(models);
+    const nextCache: DraftingVaultFingerprintCache = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      profile: fingerprint,
+    };
+    try {
+      localStorage.setItem(draftingFingerprintKey(userId), JSON.stringify(nextCache));
+    } catch (error) {
+      console.warn('Could not cache the lawyer drafting fingerprint:', error);
+    }
+  }
+
+  const requestedType = criteria.judicialWorkType || criteria.briefType || '';
+  const requestedLegalFamily = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
+  const requestedDocFamily = documentFamily(requestedType);
+  const header = [
+    '[بصمة أسلوب المحامي العامة — مستخلصة من مجموع نماذج الخزنة]',
+    fingerprint || 'خصائص البصمة العامة غير كافية؛ اقتدِ بالنماذج المرجعية دون اختلاق سمات.',
+    `نوع العمل الحالي: ${requestedType || 'يُستنتج من الطلب'}`,
+    `عائلة المستند: ${requestedDocFamily || 'تُحدد من نوع العمل'}`,
+    `الفرع القانوني: ${requestedLegalFamily || 'يُحدد من بيانات القضية'}`,
+    '[نماذج مرجعية متعددة مرتبة بحسب الصلة — الأسلوب والبناء فقط]'
+  ].join('\n');
+
+  const exemplarBlocks = references.map(({ model, score }, index) => {
+    const metadata = [model.title, model.judicialWorkType, model.category].filter(Boolean).join(' — ');
+    const excerpt = String(model.content || '').trim().slice(0, 4500);
+    const profile = deriveStyleProfile(String(model.content || ''), true);
+    return [
+      `[مرجع ${index + 1} | درجة الصلة ${score}${metadata ? ` | ${metadata}` : ''}]`,
+      `تاريخ النموذج: ${model.createdAt || 'غير معلوم'}`,
+      `سمات هذا النموذج: ${profile}`,
+      excerpt
+    ].join('\n');
+  });
+
+  return [
+    header,
+    ...exemplarBlocks,
+    '[ضوابط استخدام الخزنة]',
+    'البصمة العامة ثابتة وتُستخلص من مجموع أعمال المحامي. يجوز تحديث سياقها عند العثور على نموذج أحدث ذي صلة قوية بالمهمة، دون أن يطغى نموذج منفرد على الأسلوب العام. استخدم النماذج المتعددة للمقارنة واستخلاص السمات المشتركة، وامنح النموذج الأقرب لنوع المستند وزناً أكبر في بنائه. لا تنقل وقائع أو أسماء أو تواريخ أو أرقام قضايا أو طلبات أو دفوعاً خاصة بأي نموذج. لا تستخدم أي مرجع مصدراً للحقيقة القانونية.'
+  ].join('\n\n');
+}
+
