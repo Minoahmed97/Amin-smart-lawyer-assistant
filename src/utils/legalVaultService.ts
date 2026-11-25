@@ -450,13 +450,13 @@ function draftingDocumentClass(value: string): string {
   if (!text) return '';
   if (text.includes('اسباب استئناف')) return 'أسباب استئناف';
   if (text.includes('صحيفه استئناف') || text.includes('صحيفة استئناف')) return 'صحيفة استئناف';
-  if (text.includes('استئناف') && text.includes('مذكره')) return 'مذكرة استئناف';
+  if (text.includes('استئناف') && (text.includes('مذكرة') || text.includes('مذكره'))) return 'مذكرة استئناف';
   if (text.includes('نقض')) return text.includes('اسباب') ? 'أسباب طعن بالنقض' : 'طعن بالنقض';
-  if (text.includes('مفوضي الدوله') || text.includes('هيئه مفوضي')) return 'مذكرة أمام مفوضي الدولة';
+  if (text.includes('مفوضي الدوله') || text.includes('هيئة مفوضي') || text.includes('هيئه مفوضي')) return 'مذكرة أمام مفوضي الدولة';
   if (text.includes('اعلان')) return 'إعلان';
   if (text.includes('انذار')) return 'إنذار';
-  if (text.includes('صحيفه دعوي') || text.includes('عريضه') || text.includes('صحيفة دعوى')) return 'صحيفة أو عريضة دعوى';
-  if (text.includes('مذكره')) return 'مذكرة';
+  if (text.includes('صحيفه دعوي') || text.includes('صحيفة دعوى') || text.includes('عريضة') || text.includes('عريضه')) return 'صحيفة أو عريضة دعوى';
+  if (text.includes('مذكرة') || text.includes('مذكره')) return 'مذكرة';
   if (text.includes('عقد')) return 'عقد';
   if (text.includes('طلب')) return 'طلب قضائي';
   return '';
