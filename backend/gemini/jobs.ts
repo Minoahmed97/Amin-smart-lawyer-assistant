@@ -990,7 +990,7 @@ export default async function handler(req: any, res: any) {
       let job = Array.isArray(rows) ? rows[0] : null;
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
 
-      // PDF OCR keeps the original Mino-ocr dispatcher; image OCR uses Vercel Queues.
+      // All AI task types use the durable Vercel queue for background execution.
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
         // Do not convert an interrupted background task into a terminal failure.
