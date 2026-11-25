@@ -71,6 +71,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
+            let usageMetadata: any = null;
+            let modelVersion = '';
+            let responseId = '';
             const stream = await ai.models.generateContentStream({
               model,
               contents: segmentPrompt,
@@ -85,6 +88,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
             try {
               for await (const chunk of stream) {
+                if (chunk?.usageMetadata) usageMetadata = chunk.usageMetadata;
+                if (chunk?.modelVersion) modelVersion = String(chunk.modelVersion);
+                if (chunk?.responseId) responseId = String(chunk.responseId);
                 const candidateReason = chunk?.candidates?.[0]?.finishReason;
                 if (candidateReason) finishReason = String(candidateReason).toUpperCase();
                 const chunkText = typeof chunk?.text === 'string' ? chunk.text : '';
@@ -105,12 +111,29 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
                 pendingMarkerTail = candidateText.slice(splitAt);
                 if (visibleText) yield { text: visibleText };
               }
-            } catch (error) {
+            } catch (error: any) {
+              console.warn('[counter-brief] Gemini stream interrupted', {
+                model,
+                modelVersion: modelVersion || null,
+                responseId: responseId || null,
+                finishReason: finishReason || 'UNKNOWN',
+                usageMetadata,
+                errorName: error?.name || 'Error',
+                status: Number(error?.status || error?.statusCode || error?.response?.status) || null,
+                errorMessage: String(error?.message || 'Unknown Gemini error').slice(0, 400),
+              });
               if (pendingMarkerTail) yield { text: pendingMarkerTail };
               pendingMarkerTail = '';
               throw error;
             }
 
+            console.info('[counter-brief] Gemini stream segment completed', {
+              model,
+              modelVersion: modelVersion || null,
+              responseId: responseId || null,
+              finishReason: finishReason || 'UNKNOWN',
+              usageMetadata,
+            });
             if (!segmentCompleted && pendingMarkerTail) yield { text: pendingMarkerTail };
             if (!receivedText) {
               const emptyError: any = new Error(`لم يصل نص من النموذج (finishReason: ${finishReason || 'UNKNOWN'}).`);
