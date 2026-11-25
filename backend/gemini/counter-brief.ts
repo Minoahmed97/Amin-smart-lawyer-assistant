@@ -464,7 +464,7 @@ export default async function handler(req: any, res: any) {
     // Send both unchanged to Gemini; do not spend extra requests re-analyzing them.
     const draftingAnalysisDeadline = Date.now() + 270000;
     const draftingFactsContext = await prepareDraftingFactsLedger(String(facts), draftingAnalysisDeadline);
-    const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';
+    const rawDraftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';\n    const draftingPriorAnalysisContext = rawDraftingPriorAnalysisContext.length > 48000\n      ? await prepareDraftingFactsLedger(rawDraftingPriorAnalysisContext, draftingAnalysisDeadline)\n      : rawDraftingPriorAnalysisContext;
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
