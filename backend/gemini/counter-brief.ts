@@ -388,7 +388,8 @@ async function prepareDraftingFactsLedger(facts: string, deadlineAt: number): Pr
 ${source}`;
       summaries[index] = await generateDeepLegalResponse(extractionPrompt, undefined, {
         deadlineAt,
-        continuationContext: extractionPrompt,\n        maxOutputTokens: 4096,
+        continuationContext: extractionPrompt,
+        maxOutputTokens: 4096,
       });
     }
   };
