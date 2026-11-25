@@ -86,6 +86,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
       const segmentPrompt = makeContinuationPrompt();
+    assertDraftingInputBudget(segmentPrompt);
       const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
       let segmentPrefixResolved = !segmentBaseText.length;
@@ -111,7 +112,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               config: {
                 systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
                 temperature: 0.15,
-                maxOutputTokens: 32768,
+                maxOutputTokens: DRAFTING_MAX_OUTPUT_TOKENS,
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: 'low' },
               },
@@ -254,6 +255,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
   while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
     const segmentPrompt = makeContinuationPrompt();
+    assertDraftingInputBudget(segmentPrompt);
     let activePair = '';
     let activePairLabel = '';
     let segmentResult: any;
@@ -269,7 +271,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           config: {
             systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
             temperature: 0.15,
-            maxOutputTokens: 32768,
+            maxOutputTokens: DRAFTING_MAX_OUTPUT_TOKENS,
             ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
           },
         });
@@ -337,6 +339,121 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   throw incompleteError;
 }
 
+const DRAFTING_INPUT_CHUNK_CHARS = 8000;
+const DRAFTING_MAX_INPUT_CHUNKS = 12;
+const DRAFTING_MAX_SOURCE_CHARS = DRAFTING_INPUT_CHUNK_CHARS * DRAFTING_MAX_INPUT_CHUNKS;
+const DRAFTING_MAX_INPUT_TOKENS = 6000;
+const DRAFTING_MAX_OUTPUT_TOKENS = 4096;
+
+function splitDraftingSource(text: string, maxChars = DRAFTING_INPUT_CHUNK_CHARS): string[] {
+  const chunks: string[] = [];
+  let current = '';
+  for (const paragraph of String(text || '').split(/\n{2,}/)) {
+    let remaining = paragraph;
+    while (remaining.length > maxChars) {
+      const boundary = Math.max(
+        remaining.lastIndexOf('\n', maxChars),
+        remaining.lastIndexOf('。', maxChars),
+        remaining.lastIndexOf('.', maxChars),
+        remaining.lastIndexOf('؛', maxChars),
+        remaining.lastIndexOf(' ', maxChars),
+      );
+      const cut = boundary > Math.floor(maxChars * 0.6) ? boundary + 1 : maxChars;
+      const piece = remaining.slice(0, cut).trim();
+      if (piece) chunks.push(piece);
+      remaining = remaining.slice(cut).trim();
+    }
+    if (!remaining) continue;
+    const candidate = current ? current + '\n\n' + remaining : remaining;
+    if (candidate.length > maxChars) {
+      if (current.trim()) chunks.push(current.trim());
+      current = remaining;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
+async function compactDraftingSource(source: string, label: string, deadlineAt: number): Promise<string> {
+  const original = String(source || '');
+  if (original.length <= DRAFTING_INPUT_CHUNK_CHARS) return original;
+  const chunks = splitDraftingSource(original);
+  const summaries: string[] = [];
+  for (let index = 0; index < chunks.length; index++) {
+    if (Date.now() >= deadlineAt - 5000) {
+      const error: any = new Error('انتهت مهلة تجهيز أجزاء المستند قبل بدء الصياغة.');
+      error.status = 504;
+      error.statusCode = 504;
+      throw error;
+    }
+    const sourceChunk = chunks[index];
+    const summary = await executeWithKeyRotation(async (ai, _key, model) => {
+      const response = await ai.models.generateContent({
+        model,
+        contents: '[مهمة تجهيز مدخلات الصياغة القانونية]\nاستخرج سجلاً مركزاً ودقيقاً من هذا الجزء فقط، في حدود 200 token تقريباً. احتفظ بكل اسم وصفة وتاريخ ورقم ومبلغ وطلب ومستند ودليل وادعاء ونفي وتناقض وتسلسل زمني. ميّز الادعاء عن الثابت، ولا تستنتج ولا تضف قانوناً أو واقعة. لا تسقط معلومة قد تؤثر في النزاع. اكتب بالعربية وبنقاط موجزة. الجزء ' + (index + 1) + ' من ' + chunks.length + ':\n\n' + sourceChunk,
+        config: {
+          systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+          temperature: 0.1,
+          maxOutputTokens: 384,
+          thinkingConfig: { thinkingLevel: 'low' },
+        },
+      });
+      const text = typeof response.text === 'string' ? response.text.trim() : '';
+      const finishReason = String(response?.candidates?.[0]?.finishReason || '').toUpperCase();
+      if (!text || isBlockedFinishReason(finishReason) || finishReason === 'MAX_TOKENS') {
+        const error: any = new Error('تعذر استخراج سجل كامل من الجزء ' + (index + 1) + ' من ' + label + '.');
+        error.status = 502;
+        error.statusCode = 502;
+        throw error;
+      }
+      return text;
+    }, undefined, undefined, false, { deadlineAt, draftingMode: true });
+    summaries.push('[' + label + ' — الجزء ' + (index + 1) + ']\n' + summary);
+    console.info('[counter-brief] source chunk compacted', {
+      label,
+      chunk: index + 1,
+      totalChunks: chunks.length,
+      sourceCharacters: sourceChunk.length,
+      summaryCharacters: summary.length,
+    });
+  }
+  return summaries.join('\n\n');
+}
+
+async function compactDraftingInputs(facts: string, priorAnalysis: string, deadlineAt: number): Promise<{ facts: string; priorAnalysis: string }> {
+  const combinedLength = String(facts || '').length + String(priorAnalysis || '').length;
+  if (combinedLength > DRAFTING_MAX_SOURCE_CHARS) {
+    const error: any = new Error('إجمالي الوقائع والتحليل السابق أكبر من 96,000 حرف. قلّل النص المرسل أو أرفق المستند على أجزاء أصغر حتى لا تُسقط أي واقعة من القضية.');
+    error.status = 413;
+    error.statusCode = 413;
+    throw error;
+  }
+  const chunksNeeded = Math.ceil(String(facts || '').length / DRAFTING_INPUT_CHUNK_CHARS) +
+    Math.ceil(String(priorAnalysis || '').length / DRAFTING_INPUT_CHUNK_CHARS);
+  if (chunksNeeded > DRAFTING_MAX_INPUT_CHUNKS) {
+    const error: any = new Error('الوقائع والتحليل السابق يحتاجان إلى أكثر من 12 جزءاً (8,000 حرف لكل جزء). لم يبدأ التوليد حتى لا تُحذف معلومات من الملف.');
+    error.status = 413;
+    error.statusCode = 413;
+    throw error;
+  }
+  return {
+    facts: await compactDraftingSource(facts, 'الوقائع', deadlineAt),
+    priorAnalysis: await compactDraftingSource(priorAnalysis, 'التحليل السابق', deadlineAt),
+  };
+}
+
+function assertDraftingInputBudget(prompt: string): void {
+  const estimatedTokens = Math.ceil((String(prompt || '').length + EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length) / 3);
+  if (estimatedTokens > DRAFTING_MAX_INPUT_TOKENS) {
+    const error: any = new Error('سياق الطلب النهائي أكبر من حد المدخلات الآمن (6,000 token تقريباً). قلّل التعليمات أو سياق الخزانة/التحليل السابق ثم أعد المحاولة؛ لم يُخصم رصيد');
+    error.status = 413;
+    error.statusCode = 413;
+    throw error;
+  }
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -399,11 +516,20 @@ export default async function handler(req: any, res: any) {
 
     // The caller already supplies the case facts and any prior legal analysis.
     // Send both unchanged to Gemini; do not spend extra requests re-analyzing them.
-    const draftingFactsContext = facts;
-    const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';
     const draftingAnalysisDeadline = Date.now() + 210000;
+    const compactedDraftingInputs = await compactDraftingInputs(
+      String(facts || ''),
+      typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '',
+      draftingAnalysisDeadline,
+    );
+    const draftingFactsContext = compactedDraftingInputs.facts;
+    const draftingPriorAnalysisContext = compactedDraftingInputs.priorAnalysis;
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
+
+    const draftingVaultContext = String(vaultContext || '').length > 3500
+      ? String(vaultContext).slice(0, 2500) + '\n[اختصار سياق الخزانة للحفاظ على حد المدخلات؛ الأسلوب والبنية فقط]\n' + String(vaultContext).slice(-1000)
+      : String(vaultContext || '');
 
     const prompt = `[مهمة الصياغة القانونية]
 اكتب بالعربية القانونية المصرية فقط، ولا تضع كلمات إنجليزية لوصف التنسيق. التزم بنوع المستند الذي حدده المحامي؛ لا تفترض تلقائياً أنه مذكرة دفاع. إذا لم يحدد النوع، استنتج الأنسب من الغرض والمرحلة والوقائع، ونبّه إذا تعذر الحسم.
@@ -441,7 +567,7 @@ ${vaultContext}
 أخرج أولاً توصية مهنية موجزة بين [[AMIN_STRATEGY]] و[[/AMIN_STRATEGY]] تتضمن الإجراء الأنسب وسببه والنقطة الحاسمة والمخاطر والخطوة التالية، دون كشف التفكير الداخلي.
 ثم أخرج المستند وحده بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، وابدأ مباشرة بديباجته المناسبة. لا تخلط التوصية بمتن المستند. أكمل جميع أقسام نوع المستند والطلبات والخاتمة اللازمة، ولا تتوقف عند منتصفه.`;
 
-    const continuationContext = [
+    assertDraftingInputBudget(prompt);\n\n    const continuationContext = [
       '[سياق استكمال مختصر — مرجع القضية الحالي]',
       workTypeInstruction,
       `المحكمة: ${courtType || ''}؛ الدائرة: ${circuit || ''}؛ الموكل: ${clientName || ''}؛ الصفة: ${clientRole || ''}؛ الخصم: ${opponentName || ''}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}`,
@@ -450,9 +576,10 @@ ${vaultContext}
       `طلبات المحامي كاملة: ${String(requests || '')}`,
       `تعليمات المحامي كاملة: ${String(customInstructions || '')}`,
       `التحليل السابق كاملًا: ${String(draftingPriorAnalysisContext || '')}`,
-      `بصمة الخزانة: ${String(vaultContext || '')}`,
+      `بصمة الخزانة: ${draftingVaultContext}`,
       'التزم بالنوع والطلبات المحددة، ولا تختلق وقائع أو أسانيد. أكمل المستند من حيث انتهى النص السابق وبنفس بصمة المحامي.'
     ].join('\n\n');
+    assertDraftingInputBudget(continuationContext);
 
     if (body?.stream === true) {
       res.statusCode = 200;
