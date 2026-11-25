@@ -1,4 +1,5 @@
 import { executeWithKeyRotation, executeWithKeyRotationStream } from '../keyRotation.ts';
+import { createHash } from 'node:crypto';
 
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
@@ -23,6 +24,20 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
 
 
 const DRAFTING_COMPRESSION_CHUNK = 5800;
+const DRAFTING_CHECKPOINT_VERSION = 1;
+
+type DraftingCompressionEntry = {
+  sourceHash: string;
+  sourceLength: number;
+  pass: number;
+  workingText: string;
+  chunks: string[];
+};
+
+type DraftingCheckpoint = {
+  version: number;
+  entries: Record<string, DraftingCompressionEntry>;
+};
 
 /** Split long legal input at paragraph/sentence boundaries without silently dropping text. */
 function splitDraftingInput(source: string, maxChars = DRAFTING_COMPRESSION_CHUNK): string[] {
@@ -50,41 +65,125 @@ function splitDraftingInput(source: string, maxChars = DRAFTING_COMPRESSION_CHUN
   return chunks;
 }
 
-/** Compress only oversized legal drafting context; process every chunk and consolidate summaries. */
-async function compressDraftingInput(source: string, label: string, targetChars: number, deadlineAt: number, styleOnly = false): Promise<string> {
+function getDraftingCheckpoint(raw: unknown): DraftingCheckpoint {
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { raw = null; }
+  }
+  const value = raw && typeof raw === 'object' ? raw as any : {};
+  return {
+    version: DRAFTING_CHECKPOINT_VERSION,
+    entries: value.version === DRAFTING_CHECKPOINT_VERSION && value.entries && typeof value.entries === 'object'
+      ? value.entries
+      : {},
+  };
+}
+
+/** Save only the drafting compression ledger into the currently running durable job. */
+async function persistDraftingCheckpoint(jobId: string, userId: string, checkpoint: DraftingCheckpoint): Promise<void> {
+  if (!/^[0-9a-f-]{36}$/i.test(jobId) || !userId) return;
+  const baseUrl = (process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
+  const key = (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || '').trim();
+  if (!baseUrl || !key) {
+    const error: any = new Error('تعذر حفظ نقطة استكمال ضغط النص؛ إعدادات تخزين المهام غير مكتملة.');
+    error.status = 503; error.statusCode = 503; throw error;
+  }
+  const headers: Record<string, string> = { apikey: key, 'Content-Type': 'application/json' };
+  if (!key.startsWith('sb_')) headers.Authorization = 'Bearer ' + key;
+  const query = 'id=eq.' + encodeURIComponent(jobId) + '&user_id=eq.' + encodeURIComponent(userId) + '&task_type=eq.counter-brief&status=eq.running&limit=1';
+  const read = await fetch(baseUrl + '/rest/v1/app_ai_generation_jobs?select=payload&' + query, {
+    headers, signal: AbortSignal.timeout(10000),
+  });
+  if (!read.ok) {
+    const error: any = new Error('تعذر قراءة بيانات مهمة الصياغة لحفظ نقطة الاستكمال (' + read.status + ').');
+    error.status = read.status >= 500 ? read.status : 503; error.statusCode = error.status; throw error;
+  }
+  const rows = await read.json().catch(() => []);
+  if (!Array.isArray(rows) || !rows.length) {
+    const error: any = new Error('لم تعد مهمة الصياغة في حالة التشغيل لحفظ نقطة الاستكمال.');
+    error.status = 503; error.statusCode = 503; throw error;
+  }
+  const payload = rows[0]?.payload && typeof rows[0].payload === 'object' ? rows[0].payload : {};
+  const write = await fetch(baseUrl + '/rest/v1/app_ai_generation_jobs?' + query, {
+    method: 'PATCH',
+    headers: { ...headers, Prefer: 'return=minimal' },
+    body: JSON.stringify({ payload: { ...payload, _draftingState: JSON.stringify(checkpoint) }, updated_at: new Date().toISOString() }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!write.ok) {
+    const error: any = new Error('تعذر حفظ تقدم ضغط النص القانوني (' + write.status + ').');
+    error.status = write.status >= 500 ? write.status : 503; error.statusCode = error.status; throw error;
+  }
+}
+
+/** Compress oversized drafting context, checkpointing every completed chunk for automatic retry. */
+async function compressDraftingInput(
+  source: string,
+  label: string,
+  targetChars: number,
+  deadlineAt: number,
+  styleOnly = false,
+  checkpointContext?: { jobId: string; userId: string; checkpoint: DraftingCheckpoint },
+): Promise<string> {
   const original = String(source || '').replace(/\r\n?/g, '\n').trim();
-  if (!original || original.length <= targetChars) return original;
-  let current = original;
-  for (let pass = 0; pass < 4 && current.length > targetChars; pass++) {
+  if (!original) return '';
+  const sourceHash = createHash('sha256').update(original).digest('hex');
+  const checkpoint = checkpointContext?.checkpoint;
+  const saved = checkpoint?.entries?.[label];
+  const entryMatches = Boolean(saved && saved.sourceHash === sourceHash && saved.sourceLength === original.length);
+  if (original.length <= targetChars) return original;
+  if (entryMatches && saved!.workingText && saved!.workingText.length <= targetChars) return saved!.workingText;
+
+  let current = entryMatches && saved!.workingText ? saved!.workingText : original;
+  let pass = entryMatches ? Math.max(0, Number(saved!.pass || 0)) : 0;
+  let savedChunks = entryMatches && Array.isArray(saved!.chunks) ? saved!.chunks : [];
+
+  for (; pass < 4 && current.length > targetChars; pass++) {
     const chunks = splitDraftingInput(current);
-    const summaries: string[] = [];
+    const summaries: string[] = Array.from({ length: chunks.length }, (_, index) =>
+      typeof savedChunks[index] === 'string' ? savedChunks[index] : '');
     for (let i = 0; i < chunks.length; i++) {
+      if (summaries[i]) continue;
       if (Date.now() > deadlineAt - 8000) {
-        const timeout: any = new Error('انتهى الوقت أثناء تجهيز النص القانوني الطويل؛ لم يُخصم رصيد. أعد المحاولة.');
+        const timeout: any = new Error('انتهى الوقت أثناء تجهيز النص القانوني الطويل؛ حُفظت الأجزاء المكتملة وستُستأنف تلقائياً.');
         timeout.status = 504; timeout.statusCode = 504; throw timeout;
       }
       const task = styleOnly
         ? 'استخرج من هذا الجزء أسلوب المحامي والترويسة العامة وترتيب الأقسام وطريقة عرض الدفوع والطلبات والخاتمة فقط. لا تنقل أي وقائع أو أسماء أو تواريخ أو أرقام أو دفوع أو طلبات تخص قضية النموذج.'
-        : 'لخص هذا الجزء من ملف القضية بدقة محافظة. احتفظ بكل واقعة مؤثرة، والأسماء والصفات والتواريخ والمبالغ والعملات وأرقام القضايا والمستندات والمواد والأحكام والطلبات والدفوع والأدلة والتناقضات والنواقص. انقل الأرقام والمراجع الحساسة حرفياً، وميز ادعاء الخصم عن الثابت. لا تختلق ولا تدمج المتعارض ولا تحذف تفصيلاً قد يؤثر قانوناً؛ قلل التكرار فقط.';
+        : 'لخص هذا الجزء من ملف القضية بدقة محافظة. احتفظ بالوقائع المؤثرة والأسماء والصفات والتواريخ والمبالغ والعملات وأرقام القضايا والمستندات والمواد والأحكام والطلبات والدفوع والأدلة والتناقضات والنواقص. انقل الأرقام والمراجع الحساسة حرفياً، وميز ادعاء الخصم عن الثابت. لا تختلق ولا تدمج المتعارض ولا تحذف تفصيلاً قد يؤثر قانوناً؛ قلل التكرار فقط.';
       const chunkPrompt = task + '\nالجزء ' + (i + 1) + '/' + chunks.length + ':\n' + chunks[i];
       const summary = await executeWithKeyRotation(async (ai, _key, model) => {
         const response = await ai.models.generateContent({
           model, contents: chunkPrompt,
           config: {
             systemInstruction: styleOnly ? 'محرر أسلوب قانوني مصري؛ استخرج الأسلوب والبنية فقط.' : 'مساعد قانوني مصري؛ حافظ على الوقائع والمراجع دون اختلاق.',
-            temperature: 0.1, maxOutputTokens: styleOnly ? 1000 : 1500,
+            temperature: 0.1, maxOutputTokens: styleOnly ? 700 : 900,
           },
         });
         const output = typeof response.text === 'string' ? response.text.trim() : '';
         if (!output) throw new Error('لم ينتج ملخص صالح لتجهيز سياق الصياغة.');
         return output;
       }, undefined, undefined, false, { deadlineAt, draftingMode: true });
-      summaries.push('[ملخص الجزء ' + (i + 1) + ']\n' + summary);
+
+      summaries[i] = summary;
+      const updatedEntry: DraftingCompressionEntry = {
+        sourceHash, sourceLength: original.length, pass,
+        workingText: current, chunks: summaries,
+      };
+      if (checkpoint) {
+        checkpoint.entries[label] = updatedEntry;
+        if (checkpointContext) await persistDraftingCheckpoint(checkpointContext.jobId, checkpointContext.userId, checkpoint);
+      }
     }
     current = summaries.join('\n\n');
+    pass += 1;
+    savedChunks = [];
+    if (checkpoint) {
+      checkpoint.entries[label] = { sourceHash, sourceLength: original.length, pass, workingText: current, chunks: [] };
+      if (checkpointContext) await persistDraftingCheckpoint(checkpointContext.jobId, checkpointContext.userId, checkpoint);
+    }
   }
   if (current.length > targetChars) {
-    const error: any = new Error('تعذر ضغط ' + label + ' إلى الحد الآمن دون احتمال فقد تفاصيل؛ لم يبدأ التوليد ولم يُخصم رصيد. قلّل النص ثم أعد المحاولة.');
+    const error: any = new Error('تعذر ضغط ' + label + ' إلى الحد الآمن دون احتمال فقد تفاصيل؛ حُفظ التقدم ولم يُخصم رصيد. أعد المحاولة أو قلّل النص.');
     error.status = 413; error.statusCode = 413; throw error;
   }
   return current;
@@ -448,6 +547,9 @@ export default async function handler(req: any, res: any) {
       caseContext,
       vaultContext,
       _resumePartialText,
+      _jobId,
+      _jobUserId,
+      _draftingState,
     } = body || {};
 
     if (!facts || !facts.trim()) {
@@ -507,15 +609,17 @@ export default async function handler(req: any, res: any) {
           .join('\n\n')
       : '';
     const draftingAnalysisDeadline = Date.now() + 210000;
+    const draftingCheckpoint = getDraftingCheckpoint(_draftingState);
+    const draftingCheckpointContext = { jobId: String(_jobId || ''), userId: String(_jobUserId || ''), checkpoint: draftingCheckpoint };
 
     // Compress only the legal-drafting payload. Source text remains in the
     // persisted job; model calls receive bounded, labeled context instead.
-    draftingFactsContext = await compressDraftingInput(draftingFactsContext, 'وقائع القضية', 5200, draftingAnalysisDeadline);
-    draftingPriorAnalysisContext = await compressDraftingInput(draftingPriorAnalysisContext, 'التحليل السابق', 1200, draftingAnalysisDeadline);
-    const draftingVaultContext = await compressDraftingInput(String(vaultContext || ''), 'خزانة أسلوب المحامي', 1200, draftingAnalysisDeadline, true);
-    const draftingDefensesContext = await compressDraftingInput(String(defenses || ''), 'دفوع المحامي', 1200, draftingAnalysisDeadline);
-    const draftingRequestsContext = await compressDraftingInput(String(requests || ''), 'طلبات المحامي', 1400, draftingAnalysisDeadline);
-    const draftingCustomInstructionsContext = await compressDraftingInput(String(customInstructions || ''), 'تعليمات المحامي', 1200, draftingAnalysisDeadline);
+    draftingFactsContext = await compressDraftingInput(draftingFactsContext, 'وقائع القضية', 5200, draftingAnalysisDeadline, false, draftingCheckpointContext);
+    draftingPriorAnalysisContext = await compressDraftingInput(draftingPriorAnalysisContext, 'التحليل السابق', 1200, draftingAnalysisDeadline, false, draftingCheckpointContext);
+    const draftingVaultContext = await compressDraftingInput(String(vaultContext || ''), 'خزانة أسلوب المحامي', 1200, draftingAnalysisDeadline, true, draftingCheckpointContext);
+    const draftingDefensesContext = await compressDraftingInput(String(defenses || ''), 'دفوع المحامي', 1200, draftingAnalysisDeadline, false, draftingCheckpointContext);
+    const draftingRequestsContext = await compressDraftingInput(String(requests || ''), 'طلبات المحامي', 1400, draftingAnalysisDeadline, false, draftingCheckpointContext);
+    const draftingCustomInstructionsContext = await compressDraftingInput(String(customInstructions || ''), 'تعليمات المحامي', 1200, draftingAnalysisDeadline, false, draftingCheckpointContext);
 
     const draftingStrategy = prepareLegalStrategy({
       task: 'drafting', courtType, circuit, opponentName,
