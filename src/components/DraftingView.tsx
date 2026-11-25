@@ -478,7 +478,14 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
         clientGoals: formData.caseContext.clientGoals,
         verificationNotes: formData.caseContext.verificationNotes,
         materials: (Array.isArray(formData.caseContext.materials) ? formData.caseContext.materials : [])
-          .filter((item) => item.content.trim() && item.content.trim() !== String(formData.facts || '').trim())
+          // OCR/file text is already included in facts. Exclude any material whose
+          // exact source text is embedded there, not only a material equal to the
+          // entire facts field; this prevents sending the same long document twice.
+          .filter((item) => {
+            const materialText = String(item.content || '').trim();
+            const currentFacts = String(formData.facts || '');
+            return materialText && !currentFacts.includes(materialText);
+          })
           .map((item) => ({
             kind: item.kind,
             title: item.title,
