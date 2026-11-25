@@ -428,8 +428,8 @@ async function compactDraftingSource(source: string, label: string, deadlineAt: 
   return summaries.join('\n\n');
 }
 
-async function compactDraftingInputs(facts: string, priorAnalysis: string, deadlineAt: number): Promise<{ facts: string; priorAnalysis: string }> {
-  const combinedLength = String(facts || '').length + String(priorAnalysis || '').length;
+async function compactDraftingInputs(facts: string, priorAnalysis: string, vault: string, deadlineAt: number): Promise<{ facts: string; priorAnalysis: string; vault: string }> {
+  const combinedLength = String(facts || '').length + String(priorAnalysis || '').length + String(vault || '').length;
   if (combinedLength > DRAFTING_MAX_SOURCE_CHARS) {
     const error: any = new Error('إجمالي الوقائع والتحليل السابق أكبر من 96,000 حرف. قلّل النص المرسل أو أرفق المستند على أجزاء أصغر حتى لا تُسقط أي واقعة من القضية.');
     error.status = 413;
@@ -437,7 +437,8 @@ async function compactDraftingInputs(facts: string, priorAnalysis: string, deadl
     throw error;
   }
   const chunksNeeded = Math.ceil(String(facts || '').length / DRAFTING_INPUT_CHUNK_CHARS) +
-    Math.ceil(String(priorAnalysis || '').length / DRAFTING_INPUT_CHUNK_CHARS);
+    Math.ceil(String(priorAnalysis || '').length / DRAFTING_INPUT_CHUNK_CHARS) +
+    Math.ceil(String(vault || '').length / DRAFTING_INPUT_CHUNK_CHARS);
   if (chunksNeeded > DRAFTING_MAX_INPUT_CHUNKS) {
     const error: any = new Error('الوقائع والتحليل السابق يحتاجان إلى أكثر من 12 جزءاً (8,000 حرف لكل جزء). لم يبدأ التوليد حتى لا تُحذف معلومات من الملف.');
     error.status = 413;
@@ -447,6 +448,7 @@ async function compactDraftingInputs(facts: string, priorAnalysis: string, deadl
   return {
     facts: await compactDraftingSource(facts, 'الوقائع', deadlineAt),
     priorAnalysis: await compactDraftingSource(priorAnalysis, 'التحليل السابق', deadlineAt),
+    vault: await compactDraftingSource(vault, 'خزانة المحامي', deadlineAt),
   };
 }
 
@@ -526,16 +528,14 @@ export default async function handler(req: any, res: any) {
     const compactedDraftingInputs = await compactDraftingInputs(
       String(facts || ''),
       typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '',
+      String(vaultContext || ''),
       draftingAnalysisDeadline,
     );
     const draftingFactsContext = compactedDraftingInputs.facts;
     const draftingPriorAnalysisContext = compactedDraftingInputs.priorAnalysis;
+    const draftingVaultContext = compactedDraftingInputs.vault;
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
-
-    const draftingVaultContext = String(vaultContext || '').length > 3500
-      ? String(vaultContext).slice(0, 2500) + '\n[اختصار سياق الخزانة للحفاظ على حد المدخلات؛ الأسلوب والبنية فقط]\n' + String(vaultContext).slice(-1000)
-      : String(vaultContext || '');
 
     const prompt = `[مهمة الصياغة القانونية]
 اكتب بالعربية القانونية المصرية فقط، ولا تضع كلمات إنجليزية لوصف التنسيق. التزم بنوع المستند الذي حدده المحامي؛ لا تفترض تلقائياً أنه مذكرة دفاع. إذا لم يحدد النوع، استنتج الأنسب من الغرض والمرحلة والوقائع، ونبّه إذا تعذر الحسم.
