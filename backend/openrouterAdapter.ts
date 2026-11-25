@@ -283,22 +283,21 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
 
 export function getOpenRouterModels(): string[] {
   const configured = (process.env.OPENROUTER_MODELS || '')
-    .split(/[;,\n]/)
-    .map((x) => x.trim().replace(/^['\"]|['\"]$/g, ''))
+    .split(/[;,\\n]/)
+    .map((x) => x.trim().replace(/^['"\\]|['"\\]$/g, ''))
     .filter(Boolean);
 
-  // Keep this fallback free-only. In particular, reject the paid slug
-  // "qwen/qwen3.8-27b" and accept it only if the free variant is explicitly named.
+  // Keep OpenRouter fallback requests free-only. The qwen/qwen3.8-27b free
+  // variant is no longer a dependable free route; its paid slug is not allowed.
   const configuredFree = configured.filter((model) =>
-    model === 'openrouter/free' || /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/i.test(model)
+    model === 'openrouter/free' ||
+    (
+      /^[a-z0-9][a-z0-9._-]*\\/[a-z0-9][a-z0-9._-]*:free$/i.test(model) &&
+      !/^qwen\\/qwen3\\.8-27b:free$/i.test(model)
+    )
   );
-  const knownFreeFallbacks = [
-    'nvidia/nemotron-3-ultra-550b-a55b:free',
-    'nvidia/nemotron-3.5-lightning:free',
-    'qwen/qwen3.8-27b:free',
-  ];
 
-  // The dynamic router selects from currently available free models, avoiding
-  // reliance on one hard-coded slug when provider availability changes.
-  return [...new Set(['openrouter/free', ...(configuredFree.length ? configuredFree.filter((m) => m !== 'openrouter/free') : knownFreeFallbacks)])];
+  // openrouter/free is maintained by OpenRouter and routes to a currently
+  // available free model, so it remains the first choice as availability changes.
+  return [...new Set(['openrouter/free', ...configuredFree.filter((model) => model !== 'openrouter/free')])];
 }
