@@ -53,7 +53,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number; maxOutputTokens?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -111,7 +111,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               config: {
                 systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
                 temperature: 0.15,
-                maxOutputTokens: 32768,
+                maxOutputTokens: Math.min(32768, Math.max(1024, Number(options.maxOutputTokens) || 32768)),
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: 'low' },
               },
@@ -269,7 +269,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           config: {
             systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
             temperature: 0.15,
-            maxOutputTokens: 32768,
+            maxOutputTokens: Math.min(32768, Math.max(1024, Number(options.maxOutputTokens) || 32768)),
             ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
           },
         });
@@ -481,7 +481,7 @@ ${vaultContext}
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', continuationContext, deadlineAt: draftingAnalysisDeadline });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', continuationContext, deadlineAt: draftingAnalysisDeadline, maxOutputTokens: 8192 });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -497,7 +497,7 @@ ${vaultContext}
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', continuationContext, deadlineAt: draftingAnalysisDeadline });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', continuationContext, deadlineAt: draftingAnalysisDeadline, maxOutputTokens: 8192 });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
