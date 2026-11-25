@@ -557,7 +557,7 @@ export function getDraftingVaultContext(criteria: LawVaultSearchCriteria, userId
 
   const exemplarBlocks = references.map(({ model, score }, index) => {
     const metadata = [model.title, model.judicialWorkType, model.category].filter(Boolean).join(' — ');
-    const excerpt = String(model.content || '').trim().slice(0, 4500);
+    const excerpt = String(model.content || '').trim().slice(0, 1200);
     const profile = deriveStyleProfile(String(model.content || ''), true);
     return [
       `[مرجع ${index + 1} | درجة الصلة ${score}${metadata ? ` | ${metadata}` : ''}]`,
