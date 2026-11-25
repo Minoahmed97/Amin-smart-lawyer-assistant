@@ -412,14 +412,6 @@ function isInternalWorkerRequest(req: any) {
   }
 }
 
-function isPdfOcrPayload(taskType: string, payload: Record<string, string>) {
-  return taskType === 'ocr' && (
-    String(payload.mimeType || '').toLowerCase() === 'application/pdf' ||
-    typeof payload.storagePath === 'string' ||
-    typeof payload.images === 'string'
-  );
-}
-
 function scheduleBackground(task: Promise<unknown>) {
   try {
     waitUntil(task);
@@ -620,7 +612,7 @@ async function retryTransientOcrJob(jobId: string, userId: string, payload: Reco
   const rows = await response.json().catch(() => []);
   if (!Array.isArray(rows) || !rows.length) return false;
   try {
-    await send('amin-ai-jobs', { jobId });
+    await send('amin-ai-jobs', { jobId }, { idempotencyKey: `${jobId}:ocr-retry:${attempts + 1}` });
   } catch (queueError: any) {
     // The job is already safely queued in the database; use the existing
     // dispatcher rather than turning a queue transport hiccup into failure.
@@ -770,7 +762,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
           let queued = false;
           for (let attempt = 0; attempt < 4 && !queued; attempt += 1) {
             try {
-              await send('amin-ai-jobs', { jobId: String(payload.nextJobId) });
+              await send('amin-ai-jobs', { jobId: String(payload.nextJobId) }, { idempotencyKey: String(payload.nextJobId) });
               queued = true;
             } catch (queueError: any) {
               if (attempt === 3) throw queueError;
@@ -876,7 +868,7 @@ export default async function handler(req: any, res: any) {
         }
 
         if (queuedJobs.length) {
-          await send('amin-ai-jobs', { jobId: queuedJobs[0].id });
+          await send('amin-ai-jobs', { jobId: queuedJobs[0].id }, { idempotencyKey: queuedJobs[0].id });
         }
         return res.status(202).json({
           queued: true,
@@ -955,12 +947,8 @@ export default async function handler(req: any, res: any) {
           const existingRows = await existingRes.json();
           const existing = Array.isArray(existingRows) ? existingRows[0] : null;
           if (existing?.id) {
-            if (existing.status === 'queued') {
-              if (isPdfOcrPayload(taskType, payload) || taskType !== 'ocr') {
-                scheduleBackground(dispatchQueuedJob(existing.id));
-              } else if (requestBody?.deferQueue !== true) {
-                await send('amin-ai-jobs', { jobId: existing.id });
-              }
+            if (existing.status === 'queued' && !(taskType === 'ocr' && requestBody?.deferQueue === true)) {
+              await send('amin-ai-jobs', { jobId: existing.id }, { idempotencyKey: existing.id });
             }
             return res.status(202).json({ jobId: existing.id, status: existing.status || 'queued' });
           }
@@ -969,19 +957,19 @@ export default async function handler(req: any, res: any) {
       }
 
       try {
-        if (isPdfOcrPayload(taskType, payload) || taskType !== 'ocr') {
-          scheduleBackground(dispatchQueuedJob(id));
-        } else if (requestBody?.deferQueue !== true) {
-          await send('amin-ai-jobs', { jobId: id });
+        // OCR image batches are deliberately held until the client submits the
+        // complete ordered batch. Every other AI task enters the durable queue.
+        if (!(taskType === 'ocr' && requestBody?.deferQueue === true)) {
+          await send('amin-ai-jobs', { jobId: id }, { idempotencyKey: id });
         }
       } catch (queueError: any) {
         await patchJob(id, session.userId, {
           status: 'failed',
-          error: 'تعذر إدخال مهمة الصور إلى الطابور الخلفي. أعد المحاولة.',
+          error: 'تعذر إدخال المهمة إلى الطابور الخلفي. أعد المحاولة.',
           payload: {},
           completed_at: new Date().toISOString(),
         });
-        throw new Error('تعذر تشغيل طابور الصور الخلفي على الخادم.');
+        throw new Error('تعذر تشغيل طابور المهام الخلفي على الخادم.');
       }
       return res.status(202).json({ jobId: id, status: 'queued' });
     }
@@ -1003,8 +991,6 @@ export default async function handler(req: any, res: any) {
       if (!job) return res.status(404).json({ error: 'لم يتم العثور على المهمة.' });
 
       // PDF OCR keeps the original Mino-ocr dispatcher; image OCR uses Vercel Queues.
-      const isPdfJob = isPdfOcrPayload('ocr', toPayload(job.payload));
-
       const lastActivityAt = Date.parse(String(job.updated_at || job.created_at || ''));
       if (job.status === 'running' && Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= JOB_STALE_TIMEOUT_MS) {
         // Do not convert an interrupted background task into a terminal failure.
@@ -1020,8 +1006,7 @@ export default async function handler(req: any, res: any) {
           );
           const changedRows = requeued.ok ? await requeued.json() : [];
           if (Array.isArray(changedRows) && changedRows.length) {
-            if (isPdfJob || job.task_type !== 'ocr') scheduleBackground(dispatchQueuedJob(id));
-            else await send('amin-ai-jobs', { jobId: id });
+            await send('amin-ai-jobs', { jobId: id }, { idempotencyKey: `${id}:recovery:${Date.now()}` });
           }
           const refreshed = await supabase(jobPath);
           const refreshedRows = await refreshed.json();
