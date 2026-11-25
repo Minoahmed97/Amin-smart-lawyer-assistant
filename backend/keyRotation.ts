@@ -613,6 +613,8 @@ type KeyRotationExecutionOptions = {
   draftingMode?: boolean;
   /** Minimum remaining request deadline for scoped drafting compression calls. */
   minimumAttemptMs?: number;
+  /** Limit model pairs for a single bounded drafting compression operation. */
+  maxModelAttempts?: number;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -648,10 +650,13 @@ export async function executeWithKeyRotation<T>(
   // that every managed key has exhausted its quota.
   let lastTemporaryError: any = null;
   let attemptedModelCount = 0;
+  const maxModelAttempts = Number.isFinite(Number(executionOptions?.maxModelAttempts)) && Number(executionOptions?.maxModelAttempts) > 0
+    ? Math.floor(Number(executionOptions?.maxModelAttempts))
+    : Number.POSITIVE_INFINITY;
   const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
   const startIndex = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
 
-  for (let offset = 0; offset < keys.length; offset++) {
+  for (let offset = 0; offset < keys.length && attemptedModelCount < maxModelAttempts; offset++) {
     const currentKeyIndex = (startIndex + offset) % keys.length;
     const currentKey = keys[currentKeyIndex];
     if ((draftingMode
@@ -664,6 +669,7 @@ export async function executeWithKeyRotation<T>(
     }
 
     for (const model of models) {
+      if (attemptedModelCount >= maxModelAttempts) break;
       const pair = rotationPairKey(currentKey, model);
       const remainingMs = deadlineAt - Date.now();
       const minimumAttemptMs = Math.max(3000, Number(executionOptions?.minimumAttemptMs || 3000));
@@ -683,7 +689,7 @@ export async function executeWithKeyRotation<T>(
       });
 
       let pairSucceeded = false;
-      for (let attempt = 1; attempt <= 2; attempt++) {
+      for (let attempt = 1; attempt <= (Number.isFinite(maxModelAttempts) ? 1 : 2); attempt++) {
         const attemptRemainingMs = deadlineAt - Date.now();
         if (attemptRemainingMs < minimumAttemptMs) {
           lastError = timeoutError();
