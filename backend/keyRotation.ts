@@ -528,8 +528,19 @@ export async function executeWithKeyRotation<T>(
 
   const finalKind = getGeminiErrorKind(lastError);
   if (finalKind === 'quota') {
-    const quotaError: any = new Error('تعذر تنفيذ الطلب: استنفدت حصص مفاتيح Gemini المتاحة أو تم بلوغ حد الاستخدام.');
+    // Keep Google's provider message: a 429 may mean RPM, TPM, or daily quota,
+    // and those require different remedies. Never collapse them into a generic error.
+    const providerMessage = String(lastError?.message || lastError?.error?.message || '').trim();
+    const quotaError: any = new Error(
+      providerMessage
+        ? `رفض Gemini الطلب بسبب حد استخدام (429): ${providerMessage.slice(0, 1200)}`
+        : 'رفض Gemini الطلب بسبب حد استخدام (429 RESOURCE_EXHAUSTED). راجع نوع الحصة وحدود النموذج في Google AI Studio.',
+    );
+    quotaError.status = 429;
+    quotaError.statusCode = 429;
+    quotaError.providerStatus = 429;
     quotaError.allGeminiQuotasExhausted = keys.length > 0 && keys.every((key) => keyFailureKinds.get(key) === 'quota');
+    quotaError.cause = lastError;
     throw quotaError;
   }
   throw lastError || new Error('فشلت جميع محاولات تدوير المفاتيح.');
