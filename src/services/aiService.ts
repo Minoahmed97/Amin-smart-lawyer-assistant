@@ -671,7 +671,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
     courtType: params.courtType,
     briefType: params.briefType,
     judicialWorkType: effectiveWorkType,
-    factsOrSubject: [params.facts, params.defenses, params.requests].filter(Boolean).join('\\n'),
+    factsOrSubject: [params.facts, params.defenses, params.requests].filter(Boolean).join('\n'),
   }, params.userId);
 
   try {
