@@ -450,9 +450,9 @@ async function compactDraftingInputs(facts: string, priorAnalysis: string, deadl
   };
 }
 
-function assertDraftingInputBudget(prompt: string): void {
+function assertDraftingInputBudget(prompt: string, maxTokens = DRAFTING_MAX_INPUT_TOKENS): void {
   const estimatedTokens = Math.ceil((String(prompt || '').length + EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length) / 2.5);
-  if (estimatedTokens > DRAFTING_MAX_INPUT_TOKENS) {
+  if (estimatedTokens > maxTokens) {
     const error: any = new Error('سياق الطلب النهائي أكبر من حد المدخلات الآمن (6,000 token تقريباً). قلّل التعليمات أو سياق الخزانة/التحليل السابق ثم أعد المحاولة؛ لم يُخصم رصيد');
     error.status = 413;
     error.statusCode = 413;
@@ -587,7 +587,7 @@ ${vaultContext}
       `بصمة الخزانة: ${draftingVaultContext}`,
       'التزم بالنوع والطلبات المحددة، ولا تختلق وقائع أو أسانيد. أكمل المستند من حيث انتهى النص السابق وبنفس بصمة المحامي.'
     ].join('\n\n');
-    assertDraftingInputBudget(continuationContext);
+    assertDraftingInputBudget(continuationContext, 4500);
 
     if (body?.stream === true) {
       res.statusCode = 200;
