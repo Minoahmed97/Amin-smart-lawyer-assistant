@@ -469,12 +469,14 @@ function rankDraftingReferences(
   const base = rankVaultModels(models, criteria);
   const requestedType = criteria.judicialWorkType || criteria.briefType || '';
   const requestedClass = draftingDocumentClass(requestedType);
-  const requestedLegal = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
+  const requestedLegalText = normalizeVaultText(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
+  const requestedLegal = requestedLegalText.includes('شرعي') ? 'أحوال شخصية' : legalFamily(requestedLegalText);
 
   return base.map((item) => {
     const metadata = [item.model.judicialWorkType, item.model.title, item.model.category, item.model.notes].filter(Boolean).join(' ');
     const modelClass = draftingDocumentClass(metadata);
-    const modelLegal = legalFamily(metadata);
+    const normalizedModelLegal = normalizeVaultText(metadata);
+    const modelLegal = normalizedModelLegal.includes('شرعي') ? 'أحوال شخصية' : legalFamily(normalizedModelLegal);
     let score = item.score;
 
     if (requestedClass && modelClass) {
@@ -509,7 +511,14 @@ export function getDraftingVaultContext(criteria: LawVaultSearchCriteria, userId
 
   const ranked = rankDraftingReferences(models, criteria);
   const selected = ranked.slice(0, 4).filter((item) => item.score >= 12);
-  const references = selected.length ? selected : ranked.slice(0, Math.min(2, ranked.length));
+  const references = selected.length ? [...selected] : ranked.slice(0, Math.min(2, ranked.length));
+  const newestStrongMatch = ranked
+    .filter((item) => item.score >= 30)
+    .sort((a, b) => (Date.parse(String(b.model.createdAt || '')) || 0) - (Date.parse(String(a.model.createdAt || '')) || 0))[0];
+  if (newestStrongMatch && !references.some((item) => item.model.id === newestStrongMatch.model.id)) {
+    if (references.length >= 4) references[3] = newestStrongMatch;
+    else references.push(newestStrongMatch);
+  }
   const cache = readDraftingFingerprint(userId);
   const newestRelevantTimestamp = references.reduce((latest, item) => {
     const timestamp = Date.parse(String(item.model.createdAt || ''));
