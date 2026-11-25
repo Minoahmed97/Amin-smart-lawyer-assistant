@@ -115,7 +115,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
   const [keyAddingLoading, setKeyAddingLoading] = useState<boolean>(false);
   const [keyActionMsg, setKeyActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [aiHealthLoading, setAiHealthLoading] = useState(false);
-  const [aiHealthResult, setAiHealthResult] = useState<{ ok: boolean; tested?: boolean; checkType?: 'metadata' | 'generation'; message: string; latencyMs?: number; checkedKeys?: number; cloudKeysReadable?: boolean; routing?: { primary?: string; fallback?: string }; providers?: { openrouter?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; model?: string; usage?: number | null; limit?: number | null; limitRemaining?: number | null; quotaRemaining?: number | null }; gemini?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; keysCount?: number; keysChecked?: number; validKeys?: number; cloudKeysReadable?: boolean; model?: string; quotaRemaining?: number | null; keyResults?: Array<{ index: number; masked: string; valid: boolean; status: string; message: string }> } } } | null>(null);
+  const [aiHealthResult, setAiHealthResult] = useState<{ ok: boolean; tested?: boolean; checkType?: 'metadata' | 'generation'; message: string; latencyMs?: number; checkedKeys?: number; cloudKeysReadable?: boolean; routing?: { primary?: string }; providers?: { gemini?: { configured?: boolean; ok?: boolean | null; message?: string; latencyMs?: number; keysCount?: number; keysChecked?: number; validKeys?: number; cloudKeysReadable?: boolean; model?: string; quotaRemaining?: number | null; keyResults?: Array<{ index: number; masked: string; valid: boolean; status: string; message: string }> } } } | null>(null);
 
   const [analyticsData, setAnalyticsData] = useState<PlatformAnalyticsMetrics | null>(null);
   const [isAnalyticsLoading, setIsAnalyticsLoading] = useState<boolean>(false);
@@ -692,7 +692,7 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                           فحص وصول الذكاء الاصطناعي للعميل
                         </h5>
                         <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                          الفحص يقرأ حالة المفاتيح وبيانات الاستخدام دون توليد نص، ولا يستهلك حصة توليد المحتوى. Google لا تعرض الحصة المتبقية الدقيقة لـ Gemini عبر هذا الفحص؛ بينما قد تعرض OpenRouter حد الإنفاق المتبقي إذا كان متاحًا.
+                          الفحص يقرأ حالة المفاتيح وبيانات الاستخدام دون توليد نص، ولا يستهلك حصة توليد المحتوى. Google لا تعرض الحصة المتبقية الدقيقة لـ Gemini عبر هذا الفحص.
                         </p>
                       </div>
                       <button
@@ -709,23 +709,23 @@ export const AdminApiModal: React.FC<AdminApiModalProps> = ({ isOpen, onClose })
                       <div className={`rounded-lg border p-3 text-xs ${aiHealthResult.checkType === 'metadata' ? (aiHealthResult.ok ? 'border-emerald-600 bg-emerald-950/60 text-emerald-200' : 'border-rose-600 bg-rose-950/60 text-rose-200') : !aiHealthResult.tested ? 'border-slate-600 bg-slate-900/70 text-slate-200' : aiHealthResult.ok ? 'border-emerald-600 bg-emerald-950/60 text-emerald-200' : 'border-rose-600 bg-rose-950/60 text-rose-200'}`} role="status">
                         <div className="font-bold flex items-center gap-2">
                           {aiHealthResult.checkType === 'metadata' ? (aiHealthResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />) : !aiHealthResult.tested ? <RefreshCw className="w-4 h-4" /> : aiHealthResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-                          {aiHealthResult.checkType === 'metadata' ? (aiHealthResult.ok ? 'تم فحص الاتصال دون توليد نص' : 'تعذر تأكيد اتصال أحد المزودين') : aiHealthResult.tested ? (aiHealthResult.providers?.openrouter?.ok === true && aiHealthResult.providers?.gemini?.ok === true ? 'نجح التوليد من المزوّدين' : aiHealthResult.ok ? 'التوليد يعمل عبر مزوّد واحد على الأقل' : 'فشل اختبار التوليد من المزوّدين') : 'حالة الإعدادات فقط — التوليد لم يُختبر'}
+                          {aiHealthResult.checkType === 'metadata' ? (aiHealthResult.ok ? 'تم فحص الاتصال دون توليد نص' : 'تعذر تأكيد اتصال أحد المزودين') : aiHealthResult.tested ? (aiHealthResult.ok ? 'نجح التوليد من Gemini' : 'فشل اختبار التوليد من Gemini') : 'حالة الإعدادات فقط — التوليد لم يُختبر'}
                         </div>
                         <p className="mt-1 leading-relaxed">{aiHealthResult.message}</p>
-                        {aiHealthResult.routing && <p className="mt-1 opacity-90">المزوّد الأساسي: {aiHealthResult.routing.primary === 'gemini' ? 'Gemini' : 'OpenRouter'} — البديل: {aiHealthResult.routing.fallback === 'gemini' ? 'Gemini' : 'OpenRouter'}</p>}
+                        {aiHealthResult.routing && <p className="mt-1 opacity-90">المزوّد الوحيد: Gemini</p>}
                         {aiHealthResult.providers && (
                           <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                            {(['openrouter', 'gemini'] as const).map((provider) => {
+                            {(['gemini'] as const).map((provider) => {
                               const result = aiHealthResult.providers?.[provider];
                               if (!result) return null;
-                              const label = provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
-                              const status = aiHealthResult.checkType === 'metadata' ? (result.ok === true ? (provider === 'gemini' ? 'مفتاح/مفاتيح مقبولة دون توليد' : 'المفتاح مقبول دون توليد') : result.ok === false ? 'تعذر التحقق' : result.configured ? 'مُعدّ — لم يُتحقق' : 'غير مُعدّ') : result.ok === true ? 'نجح التوليد' : result.ok === false ? 'فشل التوليد' : result.configured ? 'مُعدّ — لم يُختبر' : 'غير مُعدّ';
+                              const label = 'Gemini';
+                              const status = aiHealthResult.checkType === 'metadata' ? (result.ok === true ? 'مفتاح/مفاتيح مقبولة دون توليد' : result.ok === false ? 'تعذر التحقق' : result.configured ? 'مُعدّ — لم يُتحقق' : 'غير مُعدّ') : result.ok === true ? 'نجح التوليد' : result.ok === false ? 'فشل التوليد' : result.configured ? 'مُعدّ — لم يُختبر' : 'غير مُعدّ';
                               return (
                                 <div key={provider} className="rounded-lg border border-slate-600 bg-slate-900/70 p-2">
                                   <div className="font-bold">{label}: {status}</div>
                                   <div className="mt-1 leading-relaxed">{result.message}</div>
                                   {'keysCount' in result && typeof result.keysCount === 'number' && <div className="mt-1 opacity-80">عدد مفاتيح Gemini: {result.keysCount} • المقبولة: {result.validKeys ?? 'غير معروف'}</div>}
-                                  {provider === 'openrouter' && aiHealthResult.checkType === 'metadata' && 'limitRemaining' in result && typeof result.limitRemaining === 'number' && <div className="mt-1 opacity-80">حد الإنفاق المتبقي: ${result.limitRemaining.toFixed(4)}{'usage' in result && typeof result.usage === 'number' ? ` • الاستخدام: $${result.usage.toFixed(4)}` : ''}</div>}
+                                  
                                   {'keyResults' in result && Array.isArray(result.keyResults) && result.keyResults.map((keyResult) => <div key={`${keyResult.index}-${keyResult.masked}`} className="mt-2 border-t border-slate-700 pt-2"><div className="font-semibold">مفتاح {keyResult.index} ({keyResult.masked}): {keyResult.valid ? 'تم التحقق من صلاحيته' : 'تعذر التحقق أو الوصول'}</div><div className="mt-1 opacity-80">{keyResult.message}</div></div>)}
                                   {typeof result.latencyMs === 'number' && <div className="mt-1 opacity-80">زمن الاختبار: {result.latencyMs} مللي ثانية</div>}
                                 </div>
