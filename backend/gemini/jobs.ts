@@ -349,8 +349,11 @@ function safePayload(input: any, taskType: string) {
     error.statusCode = 400;
     throw error;
   }
-  // This field is injected only from the trusted persisted job record, never from client input.
+  // These checkpoint/worker fields are internal; never accept them from the client.
   delete payload._resumePartialText;
+  delete payload._draftingState;
+  delete payload._jobId;
+  delete payload._jobUserId;
   return payload;
 }
 
