@@ -53,7 +53,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number; draftingMode?: boolean } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number; draftingMode?: boolean; maxOutputTokens?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -112,7 +112,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               config: {
                 systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
                 temperature: 0.15,
-                maxOutputTokens: 32768,
+                maxOutputTokens: Math.min(32768, Math.max(1024, Number(options.maxOutputTokens) || 32768)),
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: 'low' },
               },
@@ -270,7 +270,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           config: {
             systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
             temperature: 0.15,
-            maxOutputTokens: 32768,
+            maxOutputTokens: Math.min(32768, Math.max(1024, Number(options.maxOutputTokens) || 32768)),
             ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
           },
         });
@@ -388,7 +388,7 @@ async function prepareDraftingFactsLedger(facts: string, deadlineAt: number): Pr
 ${source}`;
       summaries[index] = await generateDeepLegalResponse(extractionPrompt, undefined, {
         deadlineAt,
-        continuationContext: extractionPrompt,
+        continuationContext: extractionPrompt,\n        maxOutputTokens: 4096,
       });
     }
   };
