@@ -141,7 +141,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
-  assertDraftingInputBudget(optimizedPrompt);\n  const maxContinuations = 5;
+  const maxContinuations = 5;
   // Keep the last successful Gemini connection preferred while continuing this document.
   const deadlineAt = Number(options.deadlineAt || (Date.now() + 270000));
   let accumulatedText = typeof options.resumeText === 'string' ? options.resumeText : '';
@@ -163,7 +163,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   if (onChunk) {
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
-      const segmentPrompt = makeContinuationPrompt();\n    assertDraftingInputBudget(segmentPrompt);\n      assertDraftingInputBudget(segmentPrompt);
+      const segmentPrompt = makeContinuationPrompt();
       const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
       let segmentPrefixResolved = !segmentBaseText.length;
@@ -567,7 +567,7 @@ ${draftingPriorAnalysisContext}
 طابقه مع الوقائع الحالية، ولا تنقل منه معلومة أو دفعاً أو طلباً دون التحقق من سنده، وقدّم البيانات الحالية عند التعارض.` : ''}
 
 ${draftingVaultContext ? `[مرجع الخزانة — أسلوب وبنية فقط]
-${vaultContext}
+${draftingVaultContext}
 استخلص منه بصمة المحامي والترويسة وتسلسل الأقسام والعبارات وطريقة الطلبات. لا تنقل وقائع أو أسماء أو تواريخ أو أرقاماً أو دفوعاً أو طلبات تخص النموذج المرجعي.` : ''}
 
 [منهج التنفيذ]
@@ -594,6 +594,8 @@ ${vaultContext}
       '[بصمة المحامي — أسلوب وبناء فقط]', String(draftingVaultContext || '').slice(0, 1200),
       'المصدر الأصلي محفوظ في بيانات المهمة. هذا الفهرس ليس حصراً لكل معلومة؛ عند الحاجة إلى نص أو رقم غير ظاهر، ارجع إلى المصدر الأصلي ولا تخمّن. أكمل من آخر موضع دون تكرار النص المكتمل، مع الحفاظ على التكييف والدفوع والطلبات والهدف النهائي.'
     ].join('\n\n').slice(0, 7500);
+    assertDraftingInputBudget(prompt);
+    assertDraftingInputBudget(continuationContext);
 
     if (body?.stream === true) {
       res.statusCode = 200;
