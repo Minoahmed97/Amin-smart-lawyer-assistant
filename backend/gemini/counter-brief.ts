@@ -334,7 +334,7 @@ export default async function handler(req: any, res: any) {
     await enforceAiCooldown(req);
 
     limitBodyString(facts, 200000, 'الوقائع');
-    limitBodyString(vaultContext, 30000, 'سياق الخزانة');
+    limitBodyString(vaultContext, 10000, 'سياق الخزانة');
     if (typeof vaultContext !== 'string' || !vaultContext.includes('[بصمة أسلوب المحامي')) {
       const err: any = new Error('لم يتم العثور على نموذج شخصي من خزانة هذا الحساب. لم يبدأ التوليد ولم يُخصم رصيد؛ أضف أو استعد نماذجك الشخصية أولاً.');
       err.statusCode = 400;
