@@ -53,7 +53,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number; draftingMode?: boolean } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -76,7 +76,8 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
 
   const continuationBasePrompt = String(options.continuationContext || optimizedPrompt);
   const makeContinuationPrompt = () => accumulatedText
-    ? continuationBasePrompt + ' [استكمال إلزامي] هذا آخر مقطع من النص السابق للربط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
+    ? (options.draftingMode ? continuationBasePrompt : continuationBasePrompt + ' [استكمال إلزامي] هذا آخر مقطع من النص السابق للربط؛ ما قبله مكتمل ولا تعِد كتابته: ') +
+      (options.draftingMode ? '\\n\\n[استكمال الصياغة] هذا آخر مقطع من النص السابق؛ ما قبله مكتمل. تابع بقية المستند ولا تعِد كتابة ما سبق. ' : '') +
       accumulatedText.slice(-3000) +
       '\n\nتابع مباشرة من آخر موضع، وأكمل بقية أقسام المستند والطلبات والخاتمة دون تكرار. حافظ على الوقائع والطلبات المحددة وبصمة المحامي. أضف علامة الاكتمال ' +
       completionMarker + ' في نهاية المستند فقط بعد إتمامه بالكامل.'
@@ -504,7 +505,17 @@ ${vaultContext}
 ثم أخرج المستند وحده بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، وابدأ مباشرة بديباجته المناسبة. لا تخلط التوصية بمتن المستند. أكمل جميع أقسام نوع المستند والطلبات والخاتمة اللازمة، ولا تتوقف عند منتصفه.`;
 
     // Reuse the compact, prepared prompt for continuations; do not resend a second copy of the raw facts/vault.
-    const continuationContext = prompt;
+    const continuationContext = [
+      '[سياق استكمال الصياغة — سجل القضية المختصر]',
+      workTypeInstruction,
+      `المحكمة: ${courtType || ''}؛ الدائرة: ${circuit || ''}؛ الموكل: ${clientName || ''}؛ الصفة: ${clientRole || ''}؛ الخصم: ${opponentName || ''}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}`,
+      `سجل الوقائع والأدلة: ${draftingFactsContext}`,
+      `دفوع المحامي: ${String(defenses || '').slice(0, 12000)}`,
+      `طلبات المحامي المحددة: ${String(requests || '').slice(0, 8000)}`,
+      `تعليمات المحامي: ${String(customInstructions || '').slice(0, 8000)}`,
+      draftingPriorAnalysisContext ? `التحليل السابق المرتبط بالقضية: ${String(draftingPriorAnalysisContext).slice(0, 18000)}` : '',
+      'استخدم الخزانة للأسلوب فقط كما ورد في الطلب الأول؛ لا تستورد منها أي واقعة أو اسم أو طلب. حافظ على كل الوقائع والطلبات الحالية، وأكمل من موضع التوقف.'
+    ].filter(Boolean).join('\\n\\n');
 
     if (body?.stream === true) {
       res.statusCode = 200;
@@ -533,7 +544,7 @@ ${vaultContext}
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', continuationContext, deadlineAt: draftingAnalysisDeadline });
+        await generateDeepLegalResponse(prompt, writeChunk, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', continuationContext, deadlineAt: draftingAnalysisDeadline, draftingMode: true });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -549,7 +560,7 @@ ${vaultContext}
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', continuationContext, deadlineAt: draftingAnalysisDeadline });
+    const resultText = await generateDeepLegalResponse(prompt, undefined, { legalResearch, resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '', continuationContext, deadlineAt: draftingAnalysisDeadline, draftingMode: true });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
