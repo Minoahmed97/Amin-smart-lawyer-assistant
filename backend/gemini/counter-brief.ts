@@ -42,11 +42,12 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let previousPair = '';
   let continuationGeminiStartKey = '';
 
-  // Keep the original case facts and drafting instructions, but do not resend the
-  // entire generated document on every continuation. A bounded tail is enough
-  // to anchor the next segment and prevents the input from growing each round.
+  // The first request already contains the complete case file and drafting brief.
+  // Re-sending that large input on every continuation multiplies input-token usage
+  // and can trigger Gemini TPM 429 responses. Continuations therefore receive only
+  // a bounded tail of the generated document; the initial full case analysis remains intact.
   const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] آخر جزء من النص الذي تم توليده بالفعل (للسياق والربط فقط):\n${accumulatedText.slice(-6000)}\n\nتابع مباشرة بعد آخر جملة معروضة. لا تعِد كتابة النص السابق ولا تلخصه ولا تكرر أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل.`
+    ? `[استكمال المستند القانوني السابق دون إعادة إرسال ملف القضية]\\nهذا استكمال لذات المستند الذي بدأت صياغته في الطلب السابق. حافظ على نوع المستند وبنيته وأسلوبه وموقف الموكل والطلبات التي ظهرت في النص السابق. لا تضف وقائع أو أسماء أو تواريخ أو أسانيد غير موجودة في النص السابق. لا تلخص ولا تعِد كتابة أي جزء مكتمل. تابع مباشرة من آخر جملة، واستكمل الأقسام اللازمة حتى يكتمل المستند.\\n\\nآخر جزء من المستند المكتوب حتى الآن (لضبط الترابط ومنع التكرار):\\n${accumulatedText.slice(-9000)}\\n\\nأضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل.`
     : optimizedPrompt;
 
   if (onChunk) {
