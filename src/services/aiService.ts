@@ -1,4 +1,4 @@
-import { getLawyerStyleContext } from '../utils/legalVaultService.ts';
+import { getLawyerStyleContext, getDraftingVaultContext } from '../utils/legalVaultService.ts';
 import { getSessionToken } from './authService.ts';
 
 // Throttling control to prevent burst requests
@@ -667,11 +667,11 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
       ? params.customJudicialWorkType.trim()
       : params.judicialWorkType || params.briefType || '';
 
-  const lawyerVaultContext = getLawyerStyleContext({
+  const lawyerVaultContext = getDraftingVaultContext({
     courtType: params.courtType,
     briefType: params.briefType,
     judicialWorkType: effectiveWorkType,
-    factsOrSubject: params.facts,
+    factsOrSubject: [params.facts, params.defenses, params.requests].filter(Boolean).join('\\n'),
   }, params.userId);
 
   try {
@@ -705,7 +705,7 @@ export async function qualifyLegalCase( disputeDetails: string, clientGoals?: st
 
 export async function refineDraftText( draftText: string, enhancementType: 'moreDecisive' | 'addPrecedents' | 'addProceduralDefenses' | 'auditCheck', onChunk?: (text: string) => void, userId?: string ): Promise<string> {
   await throttleRequests();
-  const lawyerVaultContext = getLawyerStyleContext({
+  const lawyerVaultContext = getDraftingVaultContext({
     factsOrSubject: draftText,
   }, userId);
 
