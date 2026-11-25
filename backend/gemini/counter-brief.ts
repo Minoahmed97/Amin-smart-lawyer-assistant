@@ -78,7 +78,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const continuationBasePrompt = String(options.continuationContext || optimizedPrompt);
   const makeContinuationPrompt = () => accumulatedText
     ? continuationBasePrompt + ' [استكمال إلزامي] هذا آخر مقطع من النص السابق للربط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
-      accumulatedText.slice(-3000) +
+      accumulatedText.slice(-1400) +
       '\n\nتابع مباشرة من آخر موضع، وأكمل بقية أقسام المستند والطلبات والخاتمة دون تكرار. حافظ على الوقائع والطلبات المحددة وبصمة المحامي. أضف علامة الاكتمال ' +
       completionMarker + ' في نهاية المستند فقط بعد إتمامه بالكامل.'
     : optimizedPrompt;
@@ -501,13 +501,13 @@ ${vaultContext}
       draftingAnchorLedger,
       '[ركائز الاستراتيجية القانونية]',
       draftingStrategy.context,
-      '[دفوع المحامي المحددة]', String(defenses || '').slice(0, 8000),
-      '[طلبات المحامي المحددة — لا تغيّر]', String(requests || '').slice(0, 6000),
-      '[تعليمات المحامي]', String(customInstructions || '').slice(0, 5000),
-      '[التحليل السابق — مقتطف توجيهي]', String(draftingPriorAnalysisContext || '').slice(0, 9000),
-      '[بصمة المحامي — أسلوب وبناء فقط]', String(vaultContext || '').slice(0, 6500),
+      '[دفوع المحامي المحددة]', String(defenses || '').slice(0, 3000),
+      '[طلبات المحامي المحددة — لا تغيّر]', String(requests || '').slice(0, 2500),
+      '[تعليمات المحامي]', String(customInstructions || '').slice(0, 2500),
+      '[التحليل السابق — مقتطف توجيهي]', String(draftingPriorAnalysisContext || '').slice(0, 3500),
+      '[بصمة المحامي — أسلوب وبناء فقط]', String(vaultContext || '').slice(0, 2500),
       'المصدر الأصلي محفوظ في بيانات المهمة. هذا الفهرس ليس حصراً لكل معلومة؛ عند الحاجة إلى نص أو رقم غير ظاهر، ارجع إلى المصدر الأصلي ولا تخمّن. أكمل من آخر موضع دون تكرار النص المكتمل، مع الحفاظ على التكييف والدفوع والطلبات والهدف النهائي.'
-    ].join('\n\n').slice(0, 42000);
+    ].join('\n\n').slice(0, 7500);
 
     if (body?.stream === true) {
       res.statusCode = 200;
