@@ -70,7 +70,7 @@ export function buildLegalAnchorLedger(input: Partial<LegalStrategyInput>): stri
     input.priorAnalysis, input.priorDraft,
   ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\n');
 
-  const collect = (pattern: RegExp, max = 80): string[] => {
+  const collect = (pattern: RegExp, max = 220): string[] => {
     const flags = pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g';
     const matcher = new RegExp(pattern.source, flags);
     const found: string[] = [];
@@ -96,7 +96,8 @@ export function buildLegalAnchorLedger(input: Partial<LegalStrategyInput>): stri
   const dates = collect(/(?:[٠-٩0-9]{1,2}[\/.-][٠-٩0-9]{1,2}[\/.-][٠-٩0-9]{2,4}|(?:19|20)[٠-٩0-9]{2}[\/.-][٠-٩0-9]{1,2}[\/.-][٠-٩0-9]{1,2}|[٠-٩0-9]{1,2}\s+(?:يناير|فبراير|مارس|أبريل|ابريل|مايو|يونيو|يوليو|أغسطس|اغسطس|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر)\s+[٠-٩0-9]{2,4})/gu);
   const amounts = collect(/[٠-٩0-9][٠-٩0-9,،٬.٫\s]{0,24}(?:جنيه(?:اً|ا|ات)?|ج\.?م\.?|قرش|دولار(?:اً|ا)?|ريال(?:اً|ا)?|درهم(?:اً|ا)?)/giu);
   const refs = collect(/(?:المادة|قانون|قرار|حكم|طعن|الدعوى|قضية|محضر|إنذار)\s*(?:رقم\s*)?[٠-٩0-9][٠-٩0-9/\-.:]*/gu);
-  const names = collect(/(?:السيد(?:ة)?|الأستاذ(?:ة)?|المهندس(?:ة)?|الدكتور(?:ة)?|المحامي(?:ة)?|المستشار)\s+[^،؛\n.]{2,80}/gu);
+  const names = collect(/(?:السيد(?:ة)?|الأستاذ(?:ة)?|المهندس(?:ة)?|الدكتور(?:ة)?|المحامي(?:ة)?|المستشار|المدعي(?:ة)?|المدعى\s+عليه(?:ا)?|المتهم(?:ة)?|الموكل(?:ة)?|الخصم)\s+[^،؛\n.]{2,100}/gu);
+  const numberAnchors = collect(/(?:^|[^٠-٩0-9])[٠-٩0-9][٠-٩0-9/\\-.,،٬.٫]{0,30}(?:[^٠-٩0-9]|$)/gu, 300);
 
   const section = (label: string, values: string[]) =>
     `[${label}]\n${values.length ? values.map((value) => `- ${value}`).join('\n') : '- لم تُستخرج عناصر صريحة؛ ارجع إلى المصدر الأصلي ولا تفترض عدم وجودها.'}`;
@@ -107,8 +108,9 @@ export function buildLegalAnchorLedger(input: Partial<LegalStrategyInput>): stri
     section('المبالغ والعملات الواردة حرفياً', amounts),
     section('المراجع القانونية والإجرائية والأرقام', refs),
     section('الأسماء بصيغ تعريف صريحة', names),
+    section('مقاطع الأرقام كما وردت في المصدر', numberAnchors),
     'هذا الفهرس ليس حصراً للمعلومات. طابق كل اسم ورقم وتاريخ ومبلغ مع النص الأصلي؛ غياب عنصر من الفهرس لا يعني غيابه من المصدر.',
-  ].join('\n\n').slice(0, 14000);
+  ].join('\n\n').slice(0, 26000);
 }
 
 export function prepareLegalStrategy(input: LegalStrategyInput): LegalStrategyBrief {
