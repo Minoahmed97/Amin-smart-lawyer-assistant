@@ -42,8 +42,11 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let previousPair = '';
   let continuationGeminiStartKey = '';
 
+  // Keep the original case facts and drafting instructions, but do not resend the
+  // entire generated document on every continuation. A bounded tail is enough
+  // to anchor the next segment and prevents the input from growing each round.
   const makeContinuationPrompt = () => accumulatedText
-    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] هذا هو النص الذي تم توليده بالفعل حتى الآن، وهو جزء من المستند نفسه: ${accumulatedText}\n\nتابع من آخر موضع في النص السابق دون إعادة كتابته أو تلخيصه أو إعادة أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند، بما في ذلك الخاتمة والطلبات الختامية المطلوبة. لا تعتبر المستند مكتملاً إلا بعد إنهاء جميع أجزائه. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل. سبب طلب الاستكمال: الجزء السابق انتهى قبل وصول علامة الاكتمال.`
+    ? `${optimizedPrompt} [استكمال إلزامي للنتيجة غير المكتملة] آخر جزء من النص الذي تم توليده بالفعل (للسياق والربط فقط):\n${accumulatedText.slice(-6000)}\n\nتابع مباشرة بعد آخر جملة معروضة. لا تعِد كتابة النص السابق ولا تلخصه ولا تكرر أي قسم مكتمل. أكمل الأجزاء المتبقية فقط حتى نهاية المستند. أضف علامة الاكتمال ${completionMarker} في نهاية المستند فقط بعد إتمامه بالكامل.`
     : optimizedPrompt;
 
   if (onChunk) {
@@ -361,6 +364,14 @@ export default async function handler(req: any, res: any) {
       requests,
       customInstructions,
       vaultContext,
+    });
+
+    // Log sizes only (never case contents) to diagnose provider input failures.
+    console.info('[counter-brief] input size', {
+      promptCharacters: prompt.length,
+      factsCharacters: String(facts || '').length,
+      vaultCharacters: String(vaultContext || '').length,
+      customInstructionsCharacters: String(customInstructions || '').length,
     });
 
     if (body?.stream === true) {
