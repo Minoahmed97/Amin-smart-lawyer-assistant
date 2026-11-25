@@ -21,6 +21,83 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
 
+
+const DRAFTING_COMPRESSION_CHUNK = 5800;
+
+/** Split long legal input at paragraph/sentence boundaries without silently dropping text. */
+function splitDraftingInput(source: string, maxChars = DRAFTING_COMPRESSION_CHUNK): string[] {
+  const text = String(source || '').replace(/\r\n?/g, '\n').trim();
+  if (!text) return [];
+  const pieces = text.split(/\n\s*\n+/);
+  const chunks: string[] = [];
+  let current = '';
+  for (const piece of pieces) {
+    if (piece.length > maxChars) {
+      if (current) { chunks.push(current); current = ''; }
+      const sentences = piece.split(/(?<=[.!؟?])\s+/);
+      for (const sentence of sentences) {
+        if (sentence.length > maxChars) {
+          for (let i = 0; i < sentence.length; i += maxChars) chunks.push(sentence.slice(i, i + maxChars));
+        } else if (current && current.length + sentence.length + 1 > maxChars) {
+          chunks.push(current); current = sentence;
+        } else current = current ? current + ' ' + sentence : sentence;
+      }
+    } else if (current && current.length + piece.length + 2 > maxChars) {
+      chunks.push(current); current = piece;
+    } else current = current ? current + '\n\n' + piece : piece;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+/** Compress only oversized legal drafting context; process every chunk and consolidate summaries. */
+async function compressDraftingInput(source: string, label: string, targetChars: number, deadlineAt: number, styleOnly = false): Promise<string> {
+  const original = String(source || '').replace(/\r\n?/g, '\n').trim();
+  if (!original || original.length <= targetChars) return original;
+  let current = original;
+  for (let pass = 0; pass < 4 && current.length > targetChars; pass++) {
+    const chunks = splitDraftingInput(current);
+    const summaries: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      if (Date.now() > deadlineAt - 8000) {
+        const timeout: any = new Error('انتهى الوقت أثناء تجهيز النص القانوني الطويل؛ لم يُخصم رصيد. أعد المحاولة.');
+        timeout.status = 504; timeout.statusCode = 504; throw timeout;
+      }
+      const task = styleOnly
+        ? 'استخرج من هذا الجزء أسلوب المحامي والترويسة العامة وترتيب الأقسام وطريقة عرض الدفوع والطلبات والخاتمة فقط. لا تنقل أي وقائع أو أسماء أو تواريخ أو أرقام أو دفوع أو طلبات تخص قضية النموذج.'
+        : 'لخص هذا الجزء من ملف القضية بدقة محافظة. احتفظ بكل واقعة مؤثرة، والأسماء والصفات والتواريخ والمبالغ والعملات وأرقام القضايا والمستندات والمواد والأحكام والطلبات والدفوع والأدلة والتناقضات والنواقص. انقل الأرقام والمراجع الحساسة حرفياً، وميز ادعاء الخصم عن الثابت. لا تختلق ولا تدمج المتعارض ولا تحذف تفصيلاً قد يؤثر قانوناً؛ قلل التكرار فقط.';
+      const chunkPrompt = task + '\nالجزء ' + (i + 1) + '/' + chunks.length + ':\n' + chunks[i];
+      const summary = await executeWithKeyRotation(async (ai, _key, model) => {
+        const response = await ai.models.generateContent({
+          model, contents: chunkPrompt,
+          config: {
+            systemInstruction: styleOnly ? 'محرر أسلوب قانوني مصري؛ استخرج الأسلوب والبنية فقط.' : 'مساعد قانوني مصري؛ حافظ على الوقائع والمراجع دون اختلاق.',
+            temperature: 0.1, maxOutputTokens: styleOnly ? 1000 : 1500,
+          },
+        });
+        const output = typeof response.text === 'string' ? response.text.trim() : '';
+        if (!output) throw new Error('لم ينتج ملخص صالح لتجهيز سياق الصياغة.');
+        return output;
+      }, undefined, undefined, false, { deadlineAt, draftingMode: true });
+      summaries.push('[ملخص الجزء ' + (i + 1) + ']\n' + summary);
+    }
+    current = summaries.join('\n\n');
+  }
+  if (current.length > targetChars) {
+    const error: any = new Error('تعذر ضغط ' + label + ' إلى الحد الآمن دون احتمال فقد تفاصيل؛ لم يبدأ التوليد ولم يُخصم رصيد. قلّل النص ثم أعد المحاولة.');
+    error.status = 413; error.statusCode = 413; throw error;
+  }
+  return current;
+}
+
+function assertDraftingInputBudget(prompt: string): void {
+  const estimatedTokens = Math.ceil((prompt.length + EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length) / 3);
+  if (estimatedTokens > 5500) {
+    const error: any = new Error('سياق الصياغة القانونية أكبر من الحد الآمن (5,500 token تقديري). قلّل سياق القضية أو الخزانة ثم أعد المحاولة؛ لم يُخصم رصيد');
+    error.status = 413; error.statusCode = 413; throw error;
+  }
+}
+
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
 async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
   // The key-rotation adapter exposes generation methods, not the SDK token-count endpoint.
@@ -64,7 +141,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
-  const maxContinuations = 5;
+  assertDraftingInputBudget(optimizedPrompt);\n  const maxContinuations = 5;
   // Keep the last successful Gemini connection preferred while continuing this document.
   const deadlineAt = Number(options.deadlineAt || (Date.now() + 270000));
   let accumulatedText = typeof options.resumeText === 'string' ? options.resumeText : '';
@@ -86,7 +163,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   if (onChunk) {
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
-      const segmentPrompt = makeContinuationPrompt();
+      const segmentPrompt = makeContinuationPrompt();\n    assertDraftingInputBudget(segmentPrompt);\n      assertDraftingInputBudget(segmentPrompt);
       const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
       let segmentPrefixResolved = !segmentBaseText.length;
@@ -112,7 +189,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               config: {
                 systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
                 temperature: 0.15,
-                maxOutputTokens: 32768,
+                maxOutputTokens: 8192,
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: 'low' },
               },
@@ -403,7 +480,7 @@ export default async function handler(req: any, res: any) {
     // Keep the source in the persisted form/job payload. Remove only exact
     // duplicate paragraphs from the model-facing copy; unique information stays.
     const seenSourceParagraphs = new Set<string>();
-    const draftingFactsContext = String(facts || '')
+    let draftingFactsContext = String(facts || '')
       .replace(/\r\n?/g, '\n')
       .split(/\n\s*\n+/)
       .map((paragraph) => paragraph.trim())
@@ -415,7 +492,7 @@ export default async function handler(req: any, res: any) {
         return true;
       })
       .join('\n\n');
-    const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string'
+    let draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string'
       ? caseAnalysisContext
           .replace(/\r\n?/g, '\n')
           .split(/\n\s*\n+/)
@@ -430,6 +507,15 @@ export default async function handler(req: any, res: any) {
           .join('\n\n')
       : '';
     const draftingAnalysisDeadline = Date.now() + 210000;
+
+    // Compress only the legal-drafting payload. Source text remains in the
+    // persisted job; model calls receive bounded, labeled context instead.
+    draftingFactsContext = await compressDraftingInput(draftingFactsContext, 'وقائع القضية', 5200, draftingAnalysisDeadline);
+    draftingPriorAnalysisContext = await compressDraftingInput(draftingPriorAnalysisContext, 'التحليل السابق', 1200, draftingAnalysisDeadline);
+    const draftingVaultContext = await compressDraftingInput(String(vaultContext || ''), 'خزانة أسلوب المحامي', 1200, draftingAnalysisDeadline, true);
+    const draftingDefensesContext = await compressDraftingInput(String(defenses || ''), 'دفوع المحامي', 1200, draftingAnalysisDeadline);
+    const draftingRequestsContext = await compressDraftingInput(String(requests || ''), 'طلبات المحامي', 1400, draftingAnalysisDeadline);
+    const draftingCustomInstructionsContext = await compressDraftingInput(String(customInstructions || ''), 'تعليمات المحامي', 1200, draftingAnalysisDeadline);
 
     const draftingStrategy = prepareLegalStrategy({
       task: 'drafting', courtType, circuit, opponentName,
@@ -468,19 +554,19 @@ ${draftingAnchorLedger}
 ${draftingStrategy.context}
 
 [دفوع المحامي]
-${defenses || 'لم تُدخل دفوع محددة.'}
+${draftingDefensesContext || 'لم تُدخل دفوع محددة.'}
 
 [طلبات المحامي — التزم بها دون إضافة أو حذف أو توسيع]
-${requests || 'لم تُحدد طلبات صراحةً؛ لا تفترض تفويضاً مفتوحاً.'}
+${draftingRequestsContext || 'لم تُحدد طلبات صراحةً؛ لا تفترض تفويضاً مفتوحاً.'}
 
 [تعليمات المحامي الإضافية]
-${customInstructions || 'لا توجد.'}
+${draftingCustomInstructionsContext || 'لا توجد.'}
 
 ${draftingPriorAnalysisContext ? `[تحليل سابق مرتبط بالقضية]
 ${draftingPriorAnalysisContext}
 طابقه مع الوقائع الحالية، ولا تنقل منه معلومة أو دفعاً أو طلباً دون التحقق من سنده، وقدّم البيانات الحالية عند التعارض.` : ''}
 
-${vaultContext ? `[مرجع الخزانة — أسلوب وبنية فقط]
+${draftingVaultContext ? `[مرجع الخزانة — أسلوب وبنية فقط]
 ${vaultContext}
 استخلص منه بصمة المحامي والترويسة وتسلسل الأقسام والعبارات وطريقة الطلبات. لا تنقل وقائع أو أسماء أو تواريخ أو أرقاماً أو دفوعاً أو طلبات تخص النموذج المرجعي.` : ''}
 
@@ -501,11 +587,11 @@ ${vaultContext}
       draftingAnchorLedger,
       '[ركائز الاستراتيجية القانونية]',
       draftingStrategy.context,
-      '[دفوع المحامي المحددة]', String(defenses || '').slice(0, 3000),
-      '[طلبات المحامي المحددة — لا تغيّر]', String(requests || '').slice(0, 2500),
-      '[تعليمات المحامي]', String(customInstructions || '').slice(0, 2500),
-      '[التحليل السابق — مقتطف توجيهي]', String(draftingPriorAnalysisContext || '').slice(0, 3500),
-      '[بصمة المحامي — أسلوب وبناء فقط]', String(vaultContext || '').slice(0, 2500),
+      '[دفوع المحامي المحددة]', draftingDefensesContext.slice(0, 1200),
+      '[طلبات المحامي المحددة — لا تغيّر]', draftingRequestsContext.slice(0, 1400),
+      '[تعليمات المحامي]', draftingCustomInstructionsContext.slice(0, 1200),
+      '[التحليل السابق — مقتطف توجيهي]', String(draftingPriorAnalysisContext || '').slice(0, 1200),
+      '[بصمة المحامي — أسلوب وبناء فقط]', String(draftingVaultContext || '').slice(0, 1200),
       'المصدر الأصلي محفوظ في بيانات المهمة. هذا الفهرس ليس حصراً لكل معلومة؛ عند الحاجة إلى نص أو رقم غير ظاهر، ارجع إلى المصدر الأصلي ولا تخمّن. أكمل من آخر موضع دون تكرار النص المكتمل، مع الحفاظ على التكييف والدفوع والطلبات والهدف النهائي.'
     ].join('\n\n').slice(0, 7500);
 
