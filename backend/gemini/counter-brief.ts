@@ -77,7 +77,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   const continuationBasePrompt = String(options.continuationContext || optimizedPrompt);
   const makeContinuationPrompt = () => accumulatedText
     ? (options.draftingMode ? continuationBasePrompt : continuationBasePrompt + ' [استكمال إلزامي] هذا آخر مقطع من النص السابق للربط؛ ما قبله مكتمل ولا تعِد كتابته: ') +
-      (options.draftingMode ? '\\n\\n[استكمال الصياغة] هذا آخر مقطع من النص السابق؛ ما قبله مكتمل. تابع بقية المستند ولا تعِد كتابة ما سبق. ' : '') +
+      (options.draftingMode ? '\n\n[استكمال الصياغة] هذا آخر مقطع من النص السابق؛ ما قبله مكتمل. تابع بقية المستند ولا تعِد كتابة ما سبق. ' : '') +
       accumulatedText.slice(-3000) +
       '\n\nتابع مباشرة من آخر موضع، وأكمل بقية أقسام المستند والطلبات والخاتمة دون تكرار. حافظ على الوقائع والطلبات المحددة وبصمة المحامي. أضف علامة الاكتمال ' +
       completionMarker + ' في نهاية المستند فقط بعد إتمامه بالكامل.'
