@@ -86,7 +86,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     let completed = false;
     while (continuationCount <= maxContinuations && Date.now() < deadlineAt) {
       const segmentPrompt = makeContinuationPrompt();
-    assertDraftingInputBudget(segmentPrompt);
+      assertDraftingInputBudget(segmentPrompt);
       const segmentBaseText = accumulatedText;
       let segmentBuffer = '';
       let segmentPrefixResolved = !segmentBaseText.length;
@@ -453,7 +453,7 @@ async function compactDraftingInputs(facts: string, priorAnalysis: string, vault
 }
 
 function assertDraftingInputBudget(prompt: string, maxTokens = DRAFTING_MAX_INPUT_TOKENS): void {
-  const estimatedTokens = Math.ceil((String(prompt || '').length + EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length) / 2.5);
+  const estimatedTokens = Math.ceil((String(prompt || '').length + EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length) / 3);
   if (estimatedTokens > maxTokens) {
     const error: any = new Error('سياق الطلب النهائي أكبر من حد المدخلات الآمن (6,000 token تقريباً). قلّل التعليمات أو سياق الخزانة/التحليل السابق ثم أعد المحاولة؛ لم يُخصم رصيد');
     error.status = 413;
