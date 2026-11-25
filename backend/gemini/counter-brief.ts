@@ -350,7 +350,7 @@ async function prepareDraftingFactsLedger(facts: string, deadlineAt: number): Pr
     if (end < facts.length) {
       const preferredStart = start + Math.floor(maxChunkCharacters * 0.72);
       let boundary = -1;
-      for (const separator of ['\\n', '。', '！', '？', '.', '؛', ';']) {
+      for (const separator of ['\n', '。', '！', '？', '.', '؛', ';']) {
         const candidate = facts.lastIndexOf(separator, end);
         if (candidate >= preferredStart && candidate > boundary) boundary = candidate;
       }
@@ -465,7 +465,8 @@ export default async function handler(req: any, res: any) {
     // Send both unchanged to Gemini; do not spend extra requests re-analyzing them.
     const draftingAnalysisDeadline = Date.now() + 270000;
     const draftingFactsContext = await prepareDraftingFactsLedger(String(facts), draftingAnalysisDeadline);
-    const rawDraftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';\n    const draftingPriorAnalysisContext = rawDraftingPriorAnalysisContext.length > 48000\n      ? await prepareDraftingFactsLedger(rawDraftingPriorAnalysisContext, draftingAnalysisDeadline)\n      : rawDraftingPriorAnalysisContext;
+    const rawDraftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';
+    const draftingPriorAnalysisContext = rawDraftingPriorAnalysisContext.length > 48000\n      ? await prepareDraftingFactsLedger(rawDraftingPriorAnalysisContext, draftingAnalysisDeadline)\n      : rawDraftingPriorAnalysisContext;
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
@@ -516,7 +517,7 @@ ${vaultContext}
       `تعليمات المحامي: ${String(customInstructions || '').slice(0, 8000)}`,
       draftingPriorAnalysisContext ? `التحليل السابق المرتبط بالقضية: ${String(draftingPriorAnalysisContext).slice(0, 18000)}` : '',
       'استخدم الخزانة للأسلوب فقط كما ورد في الطلب الأول؛ لا تستورد منها أي واقعة أو اسم أو طلب. حافظ على كل الوقائع والطلبات الحالية، وأكمل من موضع التوقف.'
-    ].filter(Boolean).join('\\n\\n');
+    ].filter(Boolean).join('\n\n');
 
     if (body?.stream === true) {
       res.statusCode = 200;
