@@ -283,8 +283,8 @@ export function createOpenRouterCompatibleClient(defaultTimeoutMs = 120000, requ
 
 export function getOpenRouterModels(): string[] {
   const configured = (process.env.OPENROUTER_MODELS || '')
-    .split(/[;,\\n]/)
-    .map((x) => x.trim().replace(/^['"\\]|['"\\]$/g, ''))
+    .split(/[;,\n]/)
+    .map((x) => x.trim().replace(/^['"]|['"]$/g, ''))
     .filter(Boolean);
 
   // Keep OpenRouter fallback requests free-only. The qwen/qwen3.8-27b free
@@ -292,8 +292,8 @@ export function getOpenRouterModels(): string[] {
   const configuredFree = configured.filter((model) =>
     model === 'openrouter/free' ||
     (
-      /^[a-z0-9][a-z0-9._-]*\\/[a-z0-9][a-z0-9._-]*:free$/i.test(model) &&
-      !/^qwen\\/qwen3\\.8-27b:free$/i.test(model)
+      /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/i.test(model) &&
+      !/^qwen\/qwen3\.8-27b:free$/i.test(model)
     )
   );
 
