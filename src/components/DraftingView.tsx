@@ -497,7 +497,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
       const caseAnalysisContextForPrompt = [
         formData.caseAnalysisContext?.trim() || '',
         caseContextForPrompt
-          ? `[البيانات المنظمة المحدثة لملف القضية — لا تفترض القيم الفارغة ولا تستنتج المرحلة الإجرائية]:\n${JSON.stringify(caseContextForPrompt, null, 2)}`
+          ? `[البيانات المنظمة المحدثة لملف القضية — لا تفترض القيم الفارغة ولا تستنتج المرحلة الإجرائية]:\n${JSON.stringify(caseContextForPrompt)}`
           : '',
       ].filter(Boolean).join('\n\n');
 
