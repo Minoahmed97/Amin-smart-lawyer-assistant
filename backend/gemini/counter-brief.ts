@@ -380,6 +380,12 @@ async function compactDraftingSource(source: string, label: string, deadlineAt: 
   const original = String(source || '');
   if (original.length <= DRAFTING_INPUT_CHUNK_CHARS) return original;
   const chunks = splitDraftingSource(original);
+  if (chunks.length > DRAFTING_MAX_INPUT_CHUNKS) {
+    const error: any = new Error('هذا النص يحتاج إلى أكثر من 12 جزءاً. قلّل حجمه أو أرسله على مراحل؛ لم تُحذف أي معلومات.');
+    error.status = 413;
+    error.statusCode = 413;
+    throw error;
+  }
   const summaries: string[] = [];
   for (let index = 0; index < chunks.length; index++) {
     if (Date.now() >= deadlineAt - 5000) {
@@ -396,7 +402,7 @@ async function compactDraftingSource(source: string, label: string, deadlineAt: 
         config: {
           systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
           temperature: 0.1,
-          maxOutputTokens: 384,
+          maxOutputTokens: 256,
           thinkingConfig: { thinkingLevel: 'low' },
         },
       });
@@ -445,7 +451,7 @@ async function compactDraftingInputs(facts: string, priorAnalysis: string, deadl
 }
 
 function assertDraftingInputBudget(prompt: string): void {
-  const estimatedTokens = Math.ceil((String(prompt || '').length + EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length) / 3);
+  const estimatedTokens = Math.ceil((String(prompt || '').length + EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length) / 2.5);
   if (estimatedTokens > DRAFTING_MAX_INPUT_TOKENS) {
     const error: any = new Error('سياق الطلب النهائي أكبر من حد المدخلات الآمن (6,000 token تقريباً). قلّل التعليمات أو سياق الخزانة/التحليل السابق ثم أعد المحاولة؛ لم يُخصم رصيد');
     error.status = 413;
