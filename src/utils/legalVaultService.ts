@@ -445,13 +445,69 @@ function buildGlobalDraftingFingerprint(models: LawModelItem[]): string {
  * found for the current drafting task. Several close exemplars are supplied
  * together; the strategic-analysis path continues using its existing service.
  */
+function draftingDocumentClass(value: string): string {
+  const text = normalizeVaultText(value);
+  if (!text) return '';
+  if (text.includes('اسباب استئناف')) return 'أسباب استئناف';
+  if (text.includes('صحيفه استئناف') || text.includes('صحيفة استئناف')) return 'صحيفة استئناف';
+  if (text.includes('استئناف') && text.includes('مذكره')) return 'مذكرة استئناف';
+  if (text.includes('نقض')) return text.includes('اسباب') ? 'أسباب طعن بالنقض' : 'طعن بالنقض';
+  if (text.includes('مفوضي الدوله') || text.includes('هيئه مفوضي')) return 'مذكرة أمام مفوضي الدولة';
+  if (text.includes('اعلان')) return 'إعلان';
+  if (text.includes('انذار')) return 'إنذار';
+  if (text.includes('صحيفه دعوي') || text.includes('عريضه') || text.includes('صحيفة دعوى')) return 'صحيفة أو عريضة دعوى';
+  if (text.includes('مذكره')) return 'مذكرة';
+  if (text.includes('عقد')) return 'عقد';
+  if (text.includes('طلب')) return 'طلب قضائي';
+  return '';
+}
+
+function rankDraftingReferences(
+  models: LawModelItem[],
+  criteria: LawVaultSearchCriteria,
+): Array<{ model: LawModelItem; score: number }> {
+  const base = rankVaultModels(models, criteria);
+  const requestedType = criteria.judicialWorkType || criteria.briefType || '';
+  const requestedClass = draftingDocumentClass(requestedType);
+  const requestedLegal = legalFamily(`${criteria.courtType || ''} ${requestedType} ${criteria.factsOrSubject || ''}`);
+
+  return base.map((item) => {
+    const metadata = [item.model.judicialWorkType, item.model.title, item.model.category, item.model.notes].filter(Boolean).join(' ');
+    const modelClass = draftingDocumentClass(metadata);
+    const modelLegal = legalFamily(metadata);
+    let score = item.score;
+
+    if (requestedClass && modelClass) {
+      if (requestedClass === modelClass) score += 70;
+      else if (
+        (requestedClass === 'مذكرة استئناف' && modelClass === 'مذكرة')
+        || (requestedClass === 'مذكرة' && modelClass === 'مذكرة استئناف')
+        || (requestedClass === 'صحيفة استئناف' && modelClass === 'صحيفة أو عريضة دعوى')
+      ) score += 8;
+      else score -= 35;
+    }
+
+    if (requestedLegal && modelLegal) {
+      if (requestedLegal === modelLegal) score += 35;
+      else score -= 35;
+    }
+
+    return { model: item.model, score };
+  }).sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const aDate = Date.parse(String(a.model.createdAt || '')) || 0;
+    const bDate = Date.parse(String(b.model.createdAt || '')) || 0;
+    return bDate - aDate;
+  });
+}
+
 export function getDraftingVaultContext(criteria: LawVaultSearchCriteria, userId?: string): string {
   const models = getAllLawModels(userId).filter((model) => String(model.content || '').trim());
   if (!models.length) {
     return '[بصمة أسلوب المحامي]\nلا توجد نماذج شخصية محفوظة؛ لا تدّعِ وجود بصمة أو نموذج مرجعي.';
   }
 
-  const ranked = rankVaultModels(models, criteria);
+  const ranked = rankDraftingReferences(models, criteria);
   const selected = ranked.slice(0, 4).filter((item) => item.score >= 12);
   const references = selected.length ? selected : ranked.slice(0, Math.min(2, ranked.length));
   const cache = readDraftingFingerprint(userId);
