@@ -23,7 +23,7 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
 
 
 
-const DRAFTING_COMPRESSION_CHUNK = 5800;
+const DRAFTING_COMPRESSION_CHUNK = 2600;
 const DRAFTING_CHECKPOINT_VERSION = 1;
 
 type DraftingCompressionEntry = {
