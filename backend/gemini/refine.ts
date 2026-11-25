@@ -90,7 +90,7 @@ export default async function handler(req: any, res: any) {
             refinementAnchorLedger,
             String(caseContext || '').slice(0, 9000),
             'المسودة الأصلية محفوظة في سياق المهمة؛ ارجع إليها عند الحاجة، ولا تغيّر الوقائع أو الأسماء أو التواريخ أو المبالغ أو الطلبات.'
-          ].join('\\n\\n').slice(0, 32000),
+          ].join('\n\n').slice(0, 32000),
         });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
@@ -114,7 +114,7 @@ export default async function handler(req: any, res: any) {
         refinementAnchorLedger,
         String(caseContext || '').slice(0, 9000),
         'المسودة الأصلية محفوظة في سياق المهمة؛ ارجع إليها عند الحاجة، ولا تغيّر الوقائع أو الأسماء أو التواريخ أو المبالغ أو الطلبات.'
-      ].join('\\n\\n').slice(0, 32000),
+      ].join('\n\n').slice(0, 32000),
     });
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
