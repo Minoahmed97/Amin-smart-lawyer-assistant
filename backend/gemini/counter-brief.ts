@@ -23,7 +23,7 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
 
 
 
-const DRAFTING_COMPRESSION_CHUNK = 2600;
+const DRAFTING_COMPRESSION_CHUNK = 4200;
 const DRAFTING_CHECKPOINT_VERSION = 1;
 
 type DraftingCompressionEntry = {
@@ -153,6 +153,7 @@ async function compressDraftingInput(
         ? 'استخرج من هذا الجزء أسلوب المحامي والترويسة العامة وترتيب الأقسام وطريقة عرض الدفوع والطلبات والخاتمة فقط. لا تنقل أي وقائع أو أسماء أو تواريخ أو أرقام أو دفوع أو طلبات تخص قضية النموذج.'
         : 'لخص هذا الجزء من ملف القضية بدقة محافظة. احتفظ بالوقائع المؤثرة والأسماء والصفات والتواريخ والمبالغ والعملات وأرقام القضايا والمستندات والمواد والأحكام والطلبات والدفوع والأدلة والتناقضات والنواقص. انقل الأرقام والمراجع الحساسة حرفياً، وميز ادعاء الخصم عن الثابت. لا تختلق ولا تدمج المتعارض ولا تحذف تفصيلاً قد يؤثر قانوناً؛ قلل التكرار فقط.';
       const chunkPrompt = task + '\nالجزء ' + (i + 1) + '/' + chunks.length + ':\n' + chunks[i];
+      const chunkStartedAt = Date.now();
       const summary = await executeWithKeyRotation(async (ai, _key, model) => {
         const response = await ai.models.generateContent({
           model, contents: chunkPrompt,
@@ -167,6 +168,16 @@ async function compressDraftingInput(
       }, undefined, undefined, false, { deadlineAt, draftingMode: true });
 
       summaries[i] = summary;
+      console.info('[counter-brief] drafting compression chunk saved', {
+        section: label,
+        pass: pass + 1,
+        chunkIndex: i + 1,
+        chunkCount: chunks.length,
+        sourceChunkCharacters: chunks[i].length,
+        summaryCharacters: summary.length,
+        elapsedMs: Date.now() - chunkStartedAt,
+        checkpointEnabled: Boolean(checkpoint),
+      });
       const updatedEntry: DraftingCompressionEntry = {
         sourceHash, sourceLength: original.length, pass,
         workingText: current, chunks: summaries,
