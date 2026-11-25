@@ -415,7 +415,20 @@ export default async function handler(req: any, res: any) {
         return true;
       })
       .join('\n\n');
-    const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';
+    const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string'
+      ? caseAnalysisContext
+          .replace(/\\r\\n?/g, '\\n')
+          .split(/\\n\\s*\\n+/)
+          .map((paragraph) => paragraph.trim())
+          .filter((paragraph) => {
+            if (!paragraph) return false;
+            const key = paragraph.replace(/[\\t ]+/g, ' ').trim();
+            if (seenSourceParagraphs.has(key)) return false;
+            seenSourceParagraphs.add(key);
+            return true;
+          })
+          .join('\\n\\n')
+      : '';
     const draftingAnalysisDeadline = Date.now() + 210000;
 
     const draftingStrategy = prepareLegalStrategy({
