@@ -59,6 +59,58 @@ function clean(value: unknown, max = 12000): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
 }
 
+/**
+ * Exact-value index for legally sensitive anchors. This supplements but never
+ * replaces the original source; matches are copied verbatim for cross-checking.
+ */
+export function buildLegalAnchorLedger(input: Partial<LegalStrategyInput>): string {
+  const source = [
+    input.facts, input.disputeDetails, input.opponentBriefText, input.ourPosition,
+    input.defenses, input.requests, input.customInstructions,
+    input.priorAnalysis, input.priorDraft,
+  ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).join('\\n');
+
+  const collect = (pattern: RegExp, max = 80): string[] => {
+    const flags = pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g';
+    const matcher = new RegExp(pattern.source, flags);
+    const found: string[] = [];
+    const seen = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = matcher.exec(source)) && found.length < max) {
+      const exact = match[0].replace(/\\s+/g, ' ').trim();
+      if (exact && !seen.has(exact)) { seen.add(exact); found.push(exact); }
+      if (!match[0]) matcher.lastIndex += 1;
+    }
+    return found;
+  };
+
+  const fields = [
+    ['اسم الموكل', input.clientName], ['صفة الموكل', input.clientRole],
+    ['اسم الخصم', input.opponentName], ['المحكمة', input.courtType],
+    ['الدائرة', input.circuit], ['رقم الدعوى', input.caseNumber],
+    ['تاريخ الجلسة', input.sessionDate],
+    ['نوع المستند', input.selectedDocumentType || input.judicialWorkType],
+  ].filter(([, value]) => typeof value === 'string' && Boolean(value.trim()))
+    .map(([label, value]) => `- ${label}: ${String(value).trim()}`);
+
+  const dates = collect(/(?:[٠-٩0-9]{1,2}[\\/.-][٠-٩0-9]{1,2}[\\/.-][٠-٩0-9]{2,4}|(?:19|20)[٠-٩0-9]{2}[\\/.-][٠-٩0-9]{1,2}[\\/.-][٠-٩0-9]{1,2}|[٠-٩0-9]{1,2}\\s+(?:يناير|فبراير|مارس|أبريل|ابريل|مايو|يونيو|يوليو|أغسطس|اغسطس|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر)\\s+[٠-٩0-9]{2,4})/gu);
+  const amounts = collect(/[٠-٩0-9][٠-٩0-9,،٬.٫\\s]{0,24}(?:جنيه(?:اً|ا|ات)?|ج\\.?م\\.?|قرش|دولار(?:اً|ا)?|ريال(?:اً|ا)?|درهم(?:اً|ا)?)/giu);
+  const refs = collect(/(?:المادة|قانون|قرار|حكم|طعن|الدعوى|قضية|محضر|إنذار)\\s*(?:رقم\\s*)?[٠-٩0-9][٠-٩0-9/\\-.:]*/gu);
+  const names = collect(/(?:السيد(?:ة)?|الأستاذ(?:ة)?|المهندس(?:ة)?|الدكتور(?:ة)?|المحامي(?:ة)?|المستشار)\\s+[^،؛\\n.]{2,80}/gu);
+
+  const section = (label: string, values: string[]) =>
+    `[${label}]\\n${values.length ? values.map((value) => `- ${value}`).join('\\n') : '- لم تُستخرج عناصر صريحة؛ ارجع إلى المصدر الأصلي ولا تفترض عدم وجودها.'}`;
+  return [
+    '[سجل المراسي الواقعية والقانونية — فهرس تحقق مكمل للمصدر الأصلي]',
+    section('بيانات القضية', fields),
+    section('التواريخ الواردة حرفياً', dates),
+    section('المبالغ والعملات الواردة حرفياً', amounts),
+    section('المراجع القانونية والإجرائية والأرقام', refs),
+    section('الأسماء بصيغ تعريف صريحة', names),
+    'هذا الفهرس ليس حصراً للمعلومات. طابق كل اسم ورقم وتاريخ ومبلغ مع النص الأصلي؛ غياب عنصر من الفهرس لا يعني غيابه من المصدر.',
+  ].join('\\n\\n').slice(0, 14000);
+}
+
 export function prepareLegalStrategy(input: LegalStrategyInput): LegalStrategyBrief {
   const facts = clean(input.facts || input.disputeDetails, 18000);
   const opponent = clean(input.opponentBriefText, 18000);
