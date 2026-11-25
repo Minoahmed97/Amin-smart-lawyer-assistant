@@ -16,6 +16,7 @@ export interface LegalStrategyInput {
   courtType?: string;
   caseNature?: string;
   judicialWorkType?: string;
+  clientName?: string;
   clientRole?: string;
   clientGoals?: string;
   sessionDate?: string;
