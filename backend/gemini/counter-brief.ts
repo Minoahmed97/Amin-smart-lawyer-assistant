@@ -2,6 +2,7 @@ import { executeWithKeyRotation, executeWithKeyRotationStream } from '../keyRota
 
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
 import { rateLimit, limitBodyString } from '../security.ts';
+import { buildLegalAnchorLedger, prepareLegalStrategy } from './legal-strategy.ts';
 export const EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION = `أنت «أمين»، مساعد قانوني مصري مهني للمحامي. حلّل المهمة بحسب نوعها ومرحلتها، ولا تفترض أن كل عمل مذكرة دفاع. التزم بنوع المستند الذي حدده المحامي، أو حدّد الأنسب إذا فوّضك أو لم يحدد النوع.
 
 قواعد العمل:
@@ -399,9 +400,39 @@ export default async function handler(req: any, res: any) {
 
     // The caller already supplies the case facts and any prior legal analysis.
     // Send both unchanged to Gemini; do not spend extra requests re-analyzing them.
-    const draftingFactsContext = facts;
+    // Keep the source in the persisted form/job payload. Remove only exact
+    // duplicate paragraphs from the model-facing copy; unique information stays.
+    const seenSourceParagraphs = new Set<string>();
+    const draftingFactsContext = String(facts || '')
+      .replace(/\r\n?/g, '\n')
+      .split(/\n\s*\n+/)
+      .map((paragraph) => paragraph.trim())
+      .filter((paragraph) => {
+        if (!paragraph) return false;
+        const key = paragraph.replace(/[\t ]+/g, ' ').trim();
+        if (seenSourceParagraphs.has(key)) return false;
+        seenSourceParagraphs.add(key);
+        return true;
+      })
+      .join('\n\n');
     const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';
     const draftingAnalysisDeadline = Date.now() + 210000;
+
+    const draftingStrategy = prepareLegalStrategy({
+      task: 'drafting', courtType, circuit, opponentName,
+      judicialWorkType: finalWorkType, selectedDocumentType: finalWorkType,
+      clientRole, clientGoals: String(caseContext?.clientGoals || ''),
+      sessionDate, caseNumber, facts: draftingFactsContext, defenses, requests,
+      customInstructions, priorAnalysis: draftingPriorAnalysisContext,
+      proceduralStage: String(caseContext?.proceduralStage || ''),
+      proceduralStageSource: caseContext?.proceduralStageSource,
+    });
+    const draftingAnchorLedger = buildLegalAnchorLedger({
+      task: 'drafting', courtType, circuit, clientName, clientRole, opponentName,
+      caseNumber, sessionDate, judicialWorkType: finalWorkType,
+      selectedDocumentType: finalWorkType, facts: draftingFactsContext,
+      defenses, requests, customInstructions, priorAnalysis: draftingPriorAnalysisContext,
+    });
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
@@ -414,8 +445,14 @@ ${workTypeInstruction}
 الموكل وصفته: ${clientName || 'غير محدد'} — ${clientRole || 'الصفة تحتاج تحديداً إذا لم تحسمها الوقائع'}
 الخصم: ${opponentName || 'غير محدد'} | رقم الدعوى: ${caseNumber || ''} | الجلسة: ${sessionDate || ''}
 
-[وقائع القضية وسجل الأدلة الكامل]
+[وقائع القضية وسجل الأدلة الكامل — النص الفريد بعد إزالة الفقرات المكررة حرفياً فقط]
 ${draftingFactsContext}
+
+[السجل المنظم للمراسي القانونية والواقعية — تحقق مع المصدر الأصلي]
+${draftingAnchorLedger}
+
+[التحليل الاستراتيجي المرتبط بالمهمة]
+${draftingStrategy.context}
 
 [دفوع المحامي]
 ${defenses || 'لم تُدخل دفوع محددة.'}
@@ -441,18 +478,23 @@ ${vaultContext}
 أخرج أولاً توصية مهنية موجزة بين [[AMIN_STRATEGY]] و[[/AMIN_STRATEGY]] تتضمن الإجراء الأنسب وسببه والنقطة الحاسمة والمخاطر والخطوة التالية، دون كشف التفكير الداخلي.
 ثم أخرج المستند وحده بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، وابدأ مباشرة بديباجته المناسبة. لا تخلط التوصية بمتن المستند. أكمل جميع أقسام نوع المستند والطلبات والخاتمة اللازمة، ولا تتوقف عند منتصفه.`;
 
+    // Continuations receive a compact strategy/anchor ledger, not the full
+    // original prompt again. The original remains in the persisted task payload.
     const continuationContext = [
-      '[سياق استكمال مختصر — مرجع القضية الحالي]',
+      '[سياق استكمال مضغوط — مرجع للقضية الحالية]',
       workTypeInstruction,
-      `المحكمة: ${courtType || ''}؛ الدائرة: ${circuit || ''}؛ الموكل: ${clientName || ''}؛ الصفة: ${clientRole || ''}؛ الخصم: ${opponentName || ''}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}`,
-      `الوقائع الأصلية كاملة: ${String(draftingFactsContext || '')}`,
-      `دفوع المحامي كاملة: ${String(defenses || '')}`,
-      `طلبات المحامي كاملة: ${String(requests || '')}`,
-      `تعليمات المحامي كاملة: ${String(customInstructions || '')}`,
-      `التحليل السابق كاملًا: ${String(draftingPriorAnalysisContext || '')}`,
-      `بصمة الخزانة: ${String(vaultContext || '')}`,
-      'التزم بالنوع والطلبات المحددة، ولا تختلق وقائع أو أسانيد. أكمل المستند من حيث انتهى النص السابق وبنفس بصمة المحامي.'
-    ].join('\n\n');
+      `بيانات القضية: المحكمة ${courtType || ''}؛ الدائرة ${circuit || ''}؛ الموكل ${clientName || ''}؛ الصفة ${clientRole || ''}؛ الخصم ${opponentName || ''}؛ الدعوى ${caseNumber || ''}؛ الجلسة ${sessionDate || ''}`,
+      '[مراسي الوقائع والأرقام والمراجع — فهرس تحقق لا يحل محل الأصل]',
+      draftingAnchorLedger,
+      '[ركائز الاستراتيجية القانونية]',
+      draftingStrategy.context,
+      '[دفوع المحامي المحددة]', String(defenses || '').slice(0, 8000),
+      '[طلبات المحامي المحددة — لا تغيّر]', String(requests || '').slice(0, 6000),
+      '[تعليمات المحامي]', String(customInstructions || '').slice(0, 5000),
+      '[التحليل السابق — مقتطف توجيهي]', String(draftingPriorAnalysisContext || '').slice(0, 9000),
+      '[بصمة المحامي — أسلوب وبناء فقط]', String(vaultContext || '').slice(0, 6500),
+      'المصدر الأصلي محفوظ في بيانات المهمة. هذا الفهرس ليس حصراً لكل معلومة؛ عند الحاجة إلى نص أو رقم غير ظاهر، ارجع إلى المصدر الأصلي ولا تخمّن. أكمل من آخر موضع دون تكرار النص المكتمل، مع الحفاظ على التكييف والدفوع والطلبات والهدف النهائي.'
+    ].join('\n\n').slice(0, 42000);
 
     if (body?.stream === true) {
       res.statusCode = 200;
