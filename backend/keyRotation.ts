@@ -611,6 +611,8 @@ type KeyRotationExecutionOptions = {
   attemptedPairs?: Set<string>;
   /** Drafting excludes a key only for confirmed quota exhaustion. */
   draftingMode?: boolean;
+  /** Minimum remaining request deadline for scoped drafting compression calls. */
+  minimumAttemptMs?: number;
 };
 
 export async function executeWithKeyRotation<T>(
@@ -664,7 +666,8 @@ export async function executeWithKeyRotation<T>(
     for (const model of models) {
       const pair = rotationPairKey(currentKey, model);
       const remainingMs = deadlineAt - Date.now();
-      if (remainingMs < 3000) {
+      const minimumAttemptMs = Math.max(3000, Number(executionOptions?.minimumAttemptMs || 3000));
+      if (remainingMs < minimumAttemptMs) {
         lastError = timeoutError();
         break;
       }
@@ -682,7 +685,7 @@ export async function executeWithKeyRotation<T>(
       let pairSucceeded = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
         const attemptRemainingMs = deadlineAt - Date.now();
-        if (attemptRemainingMs < 3000) {
+        if (attemptRemainingMs < minimumAttemptMs) {
           lastError = timeoutError();
           break;
         }
