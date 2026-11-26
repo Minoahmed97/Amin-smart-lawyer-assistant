@@ -146,7 +146,7 @@ async function consumePersistentRateLimit(scope: string, identity: string, limit
   }
 }
 
-function isAiRateLimitExempt(session: { userId: string }): boolean {
+function isAiRateLimitExempt(session: { userId: string; username?: string }): boolean {
   const exemptId = (process.env.AI_RATE_LIMIT_EXEMPT_USER_ID || '').trim();
   return session.username?.trim().toLowerCase() === getPersonalOwnerUsername()
     || Boolean(exemptId && session.userId === exemptId);
@@ -156,7 +156,7 @@ function isAiRateLimitExempt(session: { userId: string }): boolean {
  * The old 30-second cooldown stays disabled. Existing per-endpoint limits and
  * all original account/credit checks remain intact; only aggregate limits are added.
  */
-export async function enforceAiCooldown(req: any, validatedSession?: { userId: string }) {
+export async function enforceAiCooldown(req: any, validatedSession?: { userId: string; username?: string }) {
   const session = validatedSession || (await requireActiveSession(req)).session;
   if (!isAiRateLimitExempt(session)) {
     await consumePersistentRateLimit('ai-global-10m', session.userId, 5, 10 * 60 * 1000, req);
@@ -208,13 +208,13 @@ async function supabase(path: string, init: RequestInit = {}) {
   // Supabase's new `sb_secret_*` API keys are not JWTs and must not be
   // sent as `Authorization: Bearer ...`. Legacy service_role keys are JWTs,
   // so keep the Authorization header for those.
-  const headers: Record<string, string> = {
-    apikey: key,
-    'Content-Type': 'application/json',
-    ...(init.headers || {}),
-  };
+  const headers = new Headers(init.headers);
+  headers.set('apikey', key);
+  headers.set('Content-Type', 'application/json');
   if (!key.startsWith('sb_')) {
-    headers.Authorization = `Bearer ${key}`;
+    headers.set('Authorization', `Bearer ${key}`);
+  } else {
+    headers.delete('Authorization');
   }
   return fetch(`${url}/rest/v1/${path}`, { ...init, headers });
 }

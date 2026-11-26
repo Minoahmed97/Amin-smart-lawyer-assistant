@@ -3,11 +3,11 @@ import test from 'node:test';
 import { ApiRequestError, requestJson } from '../src/services/httpClient.ts';
 
 test('requestJson sends JSON and the authenticated session token', async () => {
-  let seenHeaders: Headers | null = null;
+  const seenHeaders: Headers[] = [];
   const result = await requestJson<{ ok: boolean }>('/api/auth/me', { method: 'GET' }, {
     token: 'session-token',
     fetchImpl: async (_input, init) => {
-      seenHeaders = new Headers(init?.headers);
+      seenHeaders.push(new Headers(init?.headers));
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -16,8 +16,8 @@ test('requestJson sends JSON and the authenticated session token', async () => {
   });
 
   assert.equal(result.ok, true);
-  assert.equal(seenHeaders?.get('Authorization'), 'Bearer session-token');
-  assert.equal(seenHeaders?.get('Content-Type'), 'application/json');
+  assert.equal(seenHeaders[0]?.get('Authorization'), 'Bearer session-token');
+  assert.equal(seenHeaders[0]?.get('Content-Type'), 'application/json');
 });
 
 test('requestJson preserves HTTP status and Retry-After for API errors', async () => {

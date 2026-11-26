@@ -706,7 +706,7 @@ async function retryDeadlineDraftingJob(
   const attempts = Math.max(0, Number(mergedPayload._draftingRetryCount || 0));
   if (attempts >= 8) return false;
 
-  const nextPayload = { ...mergedPayload, _draftingRetryCount: String(attempts + 1) };
+  const nextPayload: Record<string, string> = { ...mergedPayload, _draftingRetryCount: String(attempts + 1) };
   delete nextPayload._resumePartialText;
   const response = await supabase(
     `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running`,
@@ -770,7 +770,7 @@ async function retryIncompleteDeconstructionJob(
   const attempts = Math.max(0, Number(mergedPayload._deconstructRetryCount || 0));
   if (attempts >= 4) return false;
 
-  const nextPayload = { ...mergedPayload, _deconstructRetryCount: String(attempts + 1) };
+  const nextPayload: Record<string, string> = { ...mergedPayload, _deconstructRetryCount: String(attempts + 1) };
   delete nextPayload._resumePartialText;
   const response = await supabase(
     `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.deconstruct&status=eq.running`,

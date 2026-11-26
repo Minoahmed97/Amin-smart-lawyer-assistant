@@ -150,7 +150,7 @@ export async function deductServiceOperation(serviceName: string): Promise<{
     return {
       success: true,
       remainingCredits: remaining,
-      message: result.message || `تم خصم عملية لخدمة [${serviceName}]. المتبقي: ${remaining}.`,
+      message: String(result.message || `تم خصم عملية لخدمة [${serviceName}]. المتبقي: ${remaining}.`),
     };
   } catch (e: any) {
     return {

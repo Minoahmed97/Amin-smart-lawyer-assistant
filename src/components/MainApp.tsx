@@ -154,8 +154,10 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     setActiveTab('deconstruct');
   };
 
-  const handleTabChange = (targetTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community') => {
-    setActiveTab(targetTab);
+  const handleTabChange = (targetTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community' | 'packages') => {
+    // Package management is reachable from the vault's package action; keep the
+    // main navigation tab state limited to the tabs actually rendered here.
+    setActiveTab(targetTab === 'packages' ? 'vault' : targetTab);
   };
 
   useEffect(() => {
@@ -190,14 +192,14 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       clientGoals: clientGoals.trim() || existingCase?.clientGoals || '',
       materials: [...(existingCase?.materials || []), ...(facts.trim() ? [{
         id: `material-${Date.now()}`,
-        kind: 'case_facts',
+        kind: 'case_facts' as const,
         title: 'وقائع النزاع المقدمة في مرحلة التكييف',
         content: facts.trim(),
-        sourceView: 'qualification',
+        sourceView: 'qualification' as const,
         capturedAt,
       }] : [])],
       priorAnalysis: [...(existingCase?.priorAnalysis || []), ...(qualificationAnalysis.trim() ? [{
-        type: 'qualification',
+        type: 'qualification' as const,
         content: qualificationAnalysis.trim(),
         capturedAt,
       }] : [])],
@@ -285,14 +287,14 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       clientGoals: existingCase?.clientGoals || '',
       materials: [...(existingCase?.materials || []), ...(opponentFacts.trim() ? [{
         id: `material-${Date.now()}`,
-        kind: 'opponent_pleading',
+        kind: 'opponent_pleading' as const,
         title: 'المذكرة أو المستند المقدم من الخصم',
         content: opponentFacts.trim(),
-        sourceView: 'deconstruction',
+        sourceView: 'deconstruction' as const,
         capturedAt,
       }] : [])],
       priorAnalysis: [...(existingCase?.priorAnalysis || []), ...(analysisContext?.trim() ? [{
-        type: 'deconstruction',
+        type: 'deconstruction' as const,
         content: analysisContext.trim().slice(0, 26000),
         capturedAt,
       }] : [])],

@@ -1,3 +1,4 @@
+import { ThinkingLevel } from '@google/genai';
 import { executeWithKeyRotation, executeWithKeyRotationStream } from '../keyRotation.ts';
 
 import { enforceAiCooldown, consumeOperation } from '../auth.ts';
@@ -113,7 +114,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
                 temperature: 0.15,
                 maxOutputTokens: 32768,
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-                thinkingConfig: { thinkingLevel: 'low' },
+                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
               },
             });
 
