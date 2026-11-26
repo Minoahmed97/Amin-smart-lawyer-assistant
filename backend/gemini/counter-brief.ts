@@ -197,7 +197,9 @@ async function compressDraftingInput(
               section: label, pass: pass + 1, chunkIndex: i + 1, chunkCount: chunks.length,
               providerStatus: providerStatus || 'unknown', completedChunks: summaries.filter(Boolean).length,
             });
-            return DRAFTING_STEP_YIELDED;
+            // Do not emit a stage-yield on a failed provider request.
+            // processJob treats yield as immediate stage continuation, which
+            // would requeue this same failed chunk in a tight loop.
           }
         }
         throw providerError;
