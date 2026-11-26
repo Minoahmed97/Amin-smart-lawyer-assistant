@@ -374,6 +374,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           startModel: continuationGeminiStartModel || undefined,
           draftingMode: true,
           attemptedPairs: attemptedGeminiPairs,
+          maxModelAttempts: 4,
         });
       } catch (error: any) {
         segmentError = error;
@@ -490,6 +491,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         startKey: continuationGeminiStartKey || undefined,
         startModel: continuationGeminiStartModel || undefined,
         draftingMode: true,
+        maxModelAttempts: 4,
       });
     } catch (error: any) {
       lastError = error;
