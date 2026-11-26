@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { rateLimit, getClientIp, getRegistrationGuardKey } from './security.ts';
+import { rateLimit, getClientIp, getRegistrationGuardKey, isVerifiedInternalWorkerRequest } from './security.ts';
 
 type Json = Record<string, any>;
 
@@ -156,8 +156,11 @@ function isAiRateLimitExempt(session: { userId: string }): boolean {
  * The old 30-second cooldown stays disabled. Existing per-endpoint limits and
  * all original account/credit checks remain intact; only aggregate limits are added.
  */
-export async function enforceAiCooldown(req: any, validatedSession?: { userId: string }) {
+export async function enforceAiCooldown(req: any, validatedSession?: { userId: string; username?: string }) {
   const session = validatedSession || (await requireActiveSession(req)).session;
+  // Durable worker replays are already covered by the original user submission limit.
+  // Require a valid signed worker session; never trust a client-supplied job marker.
+  if (session.username === 'background-worker' && isVerifiedInternalWorkerRequest(req)) return { session };
   if (!isAiRateLimitExempt(session)) {
     await consumePersistentRateLimit('ai-global-10m', session.userId, 5, 10 * 60 * 1000, req);
     await consumePersistentRateLimit('ai-global-24h', session.userId, 50, 24 * 60 * 60 * 1000, req);
