@@ -727,7 +727,7 @@ ${workTypeInstruction}
 الخصم: ${opponentName || 'غير محدد'} | رقم الدعوى: ${caseNumber || ''} | الجلسة: ${sessionDate || ''}
 
 [وقائع القضية وسجل الأدلة الكامل — النص الفريد بعد إزالة الفقرات المكررة حرفياً فقط]
-${draftingFactsContext}
+${draftingFactsContext.slice(0, 4000)}
 
 [السجل المنظم للمراسي القانونية والواقعية — تحقق مع المصدر الأصلي]
 ${draftingAnchorLedger}
@@ -736,13 +736,13 @@ ${draftingAnchorLedger}
 ${draftingStrategy.context.slice(0, 1400)}
 
 [دفوع المحامي]
-${draftingDefensesContext || 'لم تُدخل دفوع محددة.'}
+${draftingDefensesContext.slice(0, 650) || 'لم تُدخل دفوع محددة.'}
 
 [طلبات المحامي — التزم بها دون إضافة أو حذف أو توسيع]
-${draftingRequestsContext || 'لم تُحدد طلبات صراحةً؛ لا تفترض تفويضاً مفتوحاً.'}
+${draftingRequestsContext.slice(0, 900) || 'لم تُحدد طلبات صراحةً؛ لا تفترض تفويضاً مفتوحاً.'}
 
 [تعليمات المحامي الإضافية]
-${draftingCustomInstructionsContext || 'لا توجد.'}
+${draftingCustomInstructionsContext.slice(0, 500) || 'لا توجد.'}
 
 ${draftingPriorAnalysisContext ? `[تحليل سابق مرتبط بالقضية]
 ${draftingPriorAnalysisContext.slice(0, 650)}
@@ -776,6 +776,16 @@ ${draftingVaultContext.slice(0, 500)}
       '[بصمة المحامي — أسلوب وبناء فقط]', String(draftingVaultContext || '').slice(0, 1200),
       'المصدر الأصلي محفوظ في بيانات المهمة. هذا الفهرس ليس حصراً لكل معلومة؛ عند الحاجة إلى نص أو رقم غير ظاهر، ارجع إلى المصدر الأصلي ولا تخمّن. أكمل من آخر موضع دون تكرار النص المكتمل، مع الحفاظ على التكييف والدفوع والطلبات والهدف النهائي.'
     ].join('\n\n').slice(0, 7500);
+    console.info('[counter-brief] final prompt section sizes', {
+      facts: draftingFactsContext.length,
+      anchorLedger: draftingAnchorLedger.length,
+      strategy: draftingStrategy.context.slice(0, 1400).length,
+      defenses: draftingDefensesContext.slice(0, 650).length,
+      requests: draftingRequestsContext.slice(0, 900).length,
+      instructions: draftingCustomInstructionsContext.slice(0, 500).length,
+      priorAnalysis: String(draftingPriorAnalysisContext || '').slice(0, 650).length,
+      vaultStyle: String(draftingVaultContext || '').slice(0, 500).length,
+    });
     assertDraftingInputBudget(prompt);
     assertDraftingInputBudget(continuationContext);
 
