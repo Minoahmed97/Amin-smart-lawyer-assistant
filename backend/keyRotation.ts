@@ -82,7 +82,7 @@ function isGeminiDailyPerModelQuotaError(error: any): boolean {
 
 function markDraftingDailyModelQuota(model: string, error: any): void {
   const text = getGeminiErrorTextDeep(error);
-  const retryMatch = text.match(/retryDelay["']?\\s*[:=]\\s*["']?(\\d+(?:\\.\\d+)?)s/i);
+  const retryMatch = text.match(/retryDelay["']?\s*[:=]\s*["']?(\d+(?:\.\d+)?)s/i);
   const retryMs = retryMatch ? Number(retryMatch[1]) * 1000 : 0;
   const cooldownMs = Math.max(60_000, retryMs || DRAFTING_DAILY_MODEL_QUOTA_FALLBACK_MS);
   draftingDailyModelQuotaCooldownUntil.set(model, Date.now() + cooldownMs);
