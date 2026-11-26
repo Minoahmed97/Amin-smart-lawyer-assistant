@@ -44,6 +44,51 @@ const KEY_QUOTA_COOLDOWN_MS = 60_000;
 const MODEL_BUSY_COOLDOWN_MS = 30_000;
 const CONNECTION_COOLDOWN_MS = 12_000;
 const MODEL_PAIR_COOLDOWN_MS = 15_000;
+const DRAFTING_DAILY_MODEL_QUOTA_FALLBACK_MS = 24 * 60 * 60 * 1000;
+const draftingDailyModelQuotaCooldownUntil = new Map<string, number>();
+
+function getGeminiErrorTextDeep(error: any): string {
+  const parts: string[] = [];
+  const seen = new Set<any>();
+  const visit = (value: any, depth = 0): void => {
+    if (value == null || depth > 7) return;
+    if (typeof value === 'string') {
+      parts.push(value.replace(/\\_/g, '_'));
+      const first = value.indexOf('{');
+      const last = value.lastIndexOf('}');
+      if (first >= 0 && last > first) {
+        try { visit(JSON.parse(value.slice(first, last + 1)), depth + 1); } catch {}
+      }
+      return;
+    }
+    if (typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    for (const candidate of [value.message, value.status, value.code, value.error, value.details, value.data, value.metadata]) {
+      if (candidate !== undefined) visit(candidate, depth + 1);
+    }
+  };
+  visit(error);
+  return parts.join(' ');
+}
+
+function isGeminiDailyPerModelQuotaError(error: any): boolean {
+  const text = getGeminiErrorTextDeep(error).toLowerCase();
+  return /generaterequestsperdaypermodel|generate_content_free_tier_requests|requests_per_day_per_model|daily.{0,60}per.{0,20}model.{0,60}quota/.test(text);
+}
+
+function markDraftingDailyModelQuota(model: string, error: any): void {
+  const text = getGeminiErrorTextDeep(error);
+  const retryMatch = text.match(/retryDelay["']?\\s*[:=]\\s*["']?(\\d+(?:\\.\\d+)?)s/i);
+  const retryMs = retryMatch ? Number(retryMatch[1]) * 1000 : 0;
+  const cooldownMs = Math.max(60_000, retryMs || DRAFTING_DAILY_MODEL_QUOTA_FALLBACK_MS);
+  draftingDailyModelQuotaCooldownUntil.set(model, Date.now() + cooldownMs);
+  console.warn('[Gemini drafting rotation] daily per-model quota exhausted; skipping model across keys', { model, cooldownMs });
+}
+
 
 function rotationPairKey(key: string, model: string): string {
   return `${key}:${model}`;
@@ -116,6 +161,7 @@ function selectModelsForKey( models: string[], key: string, pool: 'general' | 'o
   const modelCooldowns = pool === 'ocr' ? ocrModelCooldownUntil : modelCooldownUntil;
   const available = models.filter((model) =>
     (quotaOnlyMode || !isCooling(modelCooldowns, model, now)) &&
+    (!quotaOnlyMode || !isCooling(draftingDailyModelQuotaCooldownUntil, model, now)) &&
     (quotaOnlyMode
       ? !isCooling(draftingQuotaKeyCooldownUntil, key, now) &&
         !isCooling(pairCooldowns, rotationPairKey(key, model), now)
@@ -711,7 +757,8 @@ export async function executeWithKeyRotation<T>(
           return result;
         } catch (error: any) {
           lastError = error;
-          const kind = draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error);
+          const dailyModelQuota = draftingMode && isGeminiDailyPerModelQuotaError(error);
+          const kind = dailyModelQuota ? 'quota' : (draftingMode ? getDraftingGeminiErrorKind(error) : getGeminiErrorKind(error));
           const status = Number(error?.status || error?.statusCode || error?.response?.status || error?.response?.statusCode || error?.code || error?.error?.code || 0);
           if (draftingMode && kind === 'temporary') lastTemporaryError = error;
           console.warn('[Gemini rotation] attempt failed', {
@@ -730,7 +777,8 @@ export async function executeWithKeyRotation<T>(
           }
           executionOptions?.attemptedPairs?.add(pair);
 
-          markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
+          if (dailyModelQuota) markDraftingDailyModelQuota(model, error);
+          else markRotationFailure(currentKey, model, error, 'general', kind, draftingMode);
           if (draftingMode) await persistGeminiAttemptStatus(currentKey, model, kind, error);
           if (kind === 'quota' && isCooling(draftingQuotaKeyCooldownUntil, currentKey)) quotaExhaustedKeys.add(currentKey);
           if (!draftingMode && permanentlyInvalidKeys.has(currentKey)) break;
