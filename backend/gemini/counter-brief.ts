@@ -154,7 +154,9 @@ async function compressDraftingInput(
         : 'حوّل هذا الجزء إلى سجل وقائع قانوني محافظ في نقاط واضحة، وليس ملخصاً عاماً. احتفظ بكل واقعة واسم وصفة وتاريخ ومبلغ وعملة ورقم قضية أو مستند أو مادة أو حكم وطلب ودفع ودليل وتناقض ونقص، وانقل الأرقام والمراجع الحساسة حرفياً. ميّز الثابت عن الادعاء وعن الاستنتاج، ولا تختلق أو تدمج معلومات متعارضة أو تحذف أي تفصيل قد يؤثر قانوناً. احذف التكرار اللفظي فقط. يجب أن يكون الناتج مفصلاً بما يكفي لإعادة صياغة المذكرة دون الرجوع إلى هذا الجزء.';
       const chunkPrompt = task + '\nالجزء ' + (i + 1) + '/' + chunks.length + ':\n' + chunks[i];
       const chunkStartedAt = Date.now();
-      const summary = await executeWithKeyRotation(async (ai, _key, model) => {
+      let summary: string;
+      try {
+        summary = await executeWithKeyRotation(async (ai, _key, model) => {
         const response = await ai.models.generateContent({
           model, contents: chunkPrompt,
           config: {
@@ -173,7 +175,33 @@ async function compressDraftingInput(
           throw shortOutput;
         }
         return output;
-      }, undefined, undefined, false, { deadlineAt, draftingMode: true, minimumAttemptMs: 10000, maxModelAttempts: 3 });
+        }, undefined, undefined, false, { deadlineAt, draftingMode: true, minimumAttemptMs: 10000, maxModelAttempts: 3 });
+      } catch (providerError: any) {
+        const providerStatus = Number(providerError?.status || providerError?.statusCode ||
+          providerError?.response?.status || providerError?.response?.statusCode || 0);
+        const temporaryProviderFailure = [408, 429, 500, 502, 503, 504].includes(providerStatus) ||
+          /high demand|service unavailable|temporarily unavailable|timed out|timeout|network|fetch failed|connection|socket|econn/i.test(String(providerError?.message || ''));
+
+        // Save completed compression chunks and yield the durable job on
+        // transient Gemini failures. The worker resumes this exact chunk in a
+        // fresh invocation instead of letting the request deadline mask the
+        // provider's 503/504 or repeating already-completed work.
+        if (checkpoint && checkpointContext) {
+          checkpoint.entries[label] = {
+            sourceHash, sourceLength: original.length, pass,
+            workingText: current, chunks: summaries,
+          };
+          await persistDraftingCheckpoint(checkpointContext.jobId, checkpointContext.userId, checkpoint);
+          if (temporaryProviderFailure && checkpointContext.yieldEachChunk) {
+            console.warn('[counter-brief] yielded drafting compression after transient Gemini failure', {
+              section: label, pass: pass + 1, chunkIndex: i + 1, chunkCount: chunks.length,
+              providerStatus: providerStatus || 'unknown', completedChunks: summaries.filter(Boolean).length,
+            });
+            return DRAFTING_STEP_YIELDED;
+          }
+        }
+        throw providerError;
+      }
 
       summaries[i] = summary;
       console.info('[counter-brief] drafting compression chunk saved', {
