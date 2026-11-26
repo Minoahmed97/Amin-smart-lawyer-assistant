@@ -75,11 +75,13 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let continuationGeminiStartModel = String(options.resumeGeminiModel || '');
   const attemptedGeminiPairs = new Set<string>();
 
-  const continuationBasePrompt = String(options.continuationContext || optimizedPrompt);
+  const continuationBasePrompt = String(options.continuationContext || '');
   const makeContinuationPrompt = () => accumulatedText
-    ? continuationBasePrompt + ' [استكمال إلزامي] هذا آخر مقطع من النص السابق للربط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
-      accumulatedText.slice(-3000) +
-      '\n\nتابع مباشرة من آخر موضع، وأكمل بقية أقسام المستند والطلبات والخاتمة دون تكرار. حافظ على الوقائع والطلبات المحددة وبصمة المحامي. أضف علامة الاكتمال ' +
+    ? '[استكمال مستند قانوني — لا تعِد إرسال أو إعادة تحليل المستندات الأصلية] ' +
+      (continuationBasePrompt ? continuationBasePrompt + '\\n' : '') +
+      'النص السابق محفوظ بالكامل في المهمة. هذا آخر جزء منه للربط فقط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
+      accumulatedText.slice(-8000) +
+      '\\n\\nتابع من آخر جملة مباشرة، وأكمل الأقسام والحجج والطلبات والخاتمة التي لم تُكتب بعد. لا تكرر السابق ولا تختصر ما تبقى. التزم بالوقائع والطلبات والأسماء والأرقام التي ظهرت في النص السابق. إذا احتجت إلى معلومة غير موجودة، اذكر أنها تحتاج تحققاً ولا تخترعها. أضف علامة الاكتمال ' +
       completionMarker + ' في نهاية المستند فقط بعد إتمامه بالكامل.'
     : optimizedPrompt;
 
@@ -112,7 +114,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               config: {
                 systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
                 temperature: 0.15,
-                maxOutputTokens: 32768,
+                maxOutputTokens: 8192,
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
               },
