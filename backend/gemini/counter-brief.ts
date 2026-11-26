@@ -23,8 +23,8 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
 
 
 
-const DRAFTING_COMPRESSION_CHUNK = 4200;
-const DRAFTING_CHECKPOINT_VERSION = 1;
+const DRAFTING_COMPRESSION_CHUNK = 1800;
+const DRAFTING_CHECKPOINT_VERSION = 2;
 
 type DraftingCompressionEntry = {
   sourceHash: string;
@@ -139,7 +139,7 @@ async function compressDraftingInput(
   let pass = entryMatches ? Math.max(0, Number(saved!.pass || 0)) : 0;
   let savedChunks = entryMatches && Array.isArray(saved!.chunks) ? saved!.chunks : [];
 
-  for (; pass < 4 && current.length > targetChars; pass++) {
+  for (; pass < 4 && current.length > targetChars;) {
     const chunks = splitDraftingInput(current);
     const summaries: string[] = Array.from({ length: chunks.length }, (_, index) =>
       typeof savedChunks[index] === 'string' ? savedChunks[index] : '');
@@ -151,7 +151,7 @@ async function compressDraftingInput(
       }
       const task = styleOnly
         ? 'استخرج من هذا الجزء أسلوب المحامي والترويسة العامة وترتيب الأقسام وطريقة عرض الدفوع والطلبات والخاتمة فقط. لا تنقل أي وقائع أو أسماء أو تواريخ أو أرقام أو دفوع أو طلبات تخص قضية النموذج.'
-        : 'لخص هذا الجزء من ملف القضية بدقة محافظة. احتفظ بالوقائع المؤثرة والأسماء والصفات والتواريخ والمبالغ والعملات وأرقام القضايا والمستندات والمواد والأحكام والطلبات والدفوع والأدلة والتناقضات والنواقص. انقل الأرقام والمراجع الحساسة حرفياً، وميز ادعاء الخصم عن الثابت. لا تختلق ولا تدمج المتعارض ولا تحذف تفصيلاً قد يؤثر قانوناً؛ قلل التكرار فقط.';
+        : 'حوّل هذا الجزء إلى سجل وقائع قانوني محافظ في نقاط واضحة، وليس ملخصاً عاماً. احتفظ بكل واقعة واسم وصفة وتاريخ ومبلغ وعملة ورقم قضية أو مستند أو مادة أو حكم وطلب ودفع ودليل وتناقض ونقص، وانقل الأرقام والمراجع الحساسة حرفياً. ميّز الثابت عن الادعاء وعن الاستنتاج، ولا تختلق أو تدمج معلومات متعارضة أو تحذف أي تفصيل قد يؤثر قانوناً. احذف التكرار اللفظي فقط. يجب أن يكون الناتج مفصلاً بما يكفي لإعادة صياغة المذكرة دون الرجوع إلى هذا الجزء.';
       const chunkPrompt = task + '\nالجزء ' + (i + 1) + '/' + chunks.length + ':\n' + chunks[i];
       const chunkStartedAt = Date.now();
       const summary = await executeWithKeyRotation(async (ai, _key, model) => {
@@ -159,11 +159,19 @@ async function compressDraftingInput(
           model, contents: chunkPrompt,
           config: {
             systemInstruction: styleOnly ? 'محرر أسلوب قانوني مصري؛ استخرج الأسلوب والبنية فقط.' : 'مساعد قانوني مصري؛ حافظ على الوقائع والمراجع دون اختلاق.',
-            temperature: 0.1, maxOutputTokens: styleOnly ? 700 : 900,
+            temperature: 0.1, maxOutputTokens: styleOnly ? 900 : 2200,
           },
         });
         const output = typeof response.text === 'string' ? response.text.trim() : '';
         if (!output) throw new Error('لم ينتج ملخص صالح لتجهيز سياق الصياغة.');
+        const minimumOutputChars = styleOnly
+          ? Math.min(180, Math.max(60, Math.ceil(chunks[i].length * 0.08)))
+          : Math.min(500, Math.max(120, Math.ceil(chunks[i].length * 0.12)));
+        if (output.length < minimumOutputChars) {
+          const shortOutput: any = new Error(`ملخص الجزء ${i + 1} غير كافٍ للحفاظ على التفاصيل (${output.length} حرفاً؛ الحد الأدنى ${minimumOutputChars}). أُرفض الملخص لمنع إسقاط الوقائع.`);
+          shortOutput.status = 502; shortOutput.statusCode = 502;
+          throw shortOutput;
+        }
         return output;
       }, undefined, undefined, false, { deadlineAt, draftingMode: true, minimumAttemptMs: 10000, maxModelAttempts: 3 });
 
