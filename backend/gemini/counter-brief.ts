@@ -680,22 +680,22 @@ export default async function handler(req: any, res: any) {
       }
       return result;
     };
-    const compressedFacts = await compressStep(draftingFactsContext, 'وقائع القضية', 5200);
+    const compressedFacts = await compressStep(draftingFactsContext, 'وقائع القضية', 4000);
     if (compressedFacts === null) return;
     draftingFactsContext = compressedFacts;
-    const compressedAnalysis = await compressStep(draftingPriorAnalysisContext, 'التحليل السابق', 1200);
+    const compressedAnalysis = await compressStep(draftingPriorAnalysisContext, 'التحليل السابق', 650);
     if (compressedAnalysis === null) return;
     draftingPriorAnalysisContext = compressedAnalysis;
-    const compressedVault = await compressStep(String(vaultContext || ''), 'خزانة أسلوب المحامي', 1200, true);
+    const compressedVault = await compressStep(String(vaultContext || ''), 'خزانة أسلوب المحامي', 500, true);
     if (compressedVault === null) return;
     const draftingVaultContext = compressedVault;
-    const compressedDefenses = await compressStep(String(defenses || ''), 'دفوع المحامي', 1200);
+    const compressedDefenses = await compressStep(String(defenses || ''), 'دفوع المحامي', 650);
     if (compressedDefenses === null) return;
     const draftingDefensesContext = compressedDefenses;
-    const compressedRequests = await compressStep(String(requests || ''), 'طلبات المحامي', 1400);
+    const compressedRequests = await compressStep(String(requests || ''), 'طلبات المحامي', 900);
     if (compressedRequests === null) return;
     const draftingRequestsContext = compressedRequests;
-    const compressedInstructions = await compressStep(String(customInstructions || ''), 'تعليمات المحامي', 1200);
+    const compressedInstructions = await compressStep(String(customInstructions || ''), 'تعليمات المحامي', 500);
     if (compressedInstructions === null) return;
     const draftingCustomInstructionsContext = compressedInstructions;
 
@@ -713,7 +713,7 @@ export default async function handler(req: any, res: any) {
       caseNumber, sessionDate, judicialWorkType: finalWorkType,
       selectedDocumentType: finalWorkType, facts: draftingFactsContext,
       defenses: draftingDefensesContext, requests: draftingRequestsContext, customInstructions: draftingCustomInstructionsContext, priorAnalysis: draftingPriorAnalysisContext,
-    }).slice(0, 5000);
+    }).slice(0, 1600);
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
@@ -733,7 +733,7 @@ ${draftingFactsContext}
 ${draftingAnchorLedger}
 
 [التحليل الاستراتيجي المرتبط بالمهمة]
-${draftingStrategy.context.slice(0, 3000)}
+${draftingStrategy.context.slice(0, 1400)}
 
 [دفوع المحامي]
 ${draftingDefensesContext || 'لم تُدخل دفوع محددة.'}
@@ -745,11 +745,11 @@ ${draftingRequestsContext || 'لم تُحدد طلبات صراحةً؛ لا ت�
 ${draftingCustomInstructionsContext || 'لا توجد.'}
 
 ${draftingPriorAnalysisContext ? `[تحليل سابق مرتبط بالقضية]
-${draftingPriorAnalysisContext}
+${draftingPriorAnalysisContext.slice(0, 650)}
 طابقه مع الوقائع الحالية، ولا تنقل منه معلومة أو دفعاً أو طلباً دون التحقق من سنده، وقدّم البيانات الحالية عند التعارض.` : ''}
 
 ${draftingVaultContext ? `[مرجع الخزانة — أسلوب وبنية فقط]
-${draftingVaultContext}
+${draftingVaultContext.slice(0, 500)}
 استخلص منه بصمة المحامي والترويسة وتسلسل الأقسام والعبارات وطريقة الطلبات. لا تنقل وقائع أو أسماء أو تواريخ أو أرقاماً أو دفوعاً أو طلبات تخص النموذج المرجعي.` : ''}
 
 [منهج التنفيذ]
