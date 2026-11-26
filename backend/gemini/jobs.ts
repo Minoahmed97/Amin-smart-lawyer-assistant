@@ -671,46 +671,58 @@ async function retryTransientOcrJob(jobId: string, userId: string, payload: Reco
   return true;
 }
 
+function parseGeminiRetryDelaySeconds(message: string): number {
+  // Honor provider-supplied retry durations when present (e.g. 7s, 2h9m).
+  const retryText = message.match(/(?:retry(?:\s+after|\s+in|Delay)?|retryDelay)\s*["':= ]*([0-9hms\s]+(?:[0-9]+[hms])*)/i)?.[1] || '';
+  const normalized = retryText.replace(/\s+/g, '');
+  let total = 0;
+  const units = normalized.matchAll(/(\d+)(h|m|s)/gi);
+  for (const match of units) {
+    const value = Number(match[1]);
+    total += value * (match[2].toLowerCase() === 'h' ? 3600 : match[2].toLowerCase() === 'm' ? 60 : 1);
+  }
+  if (total > 0) return Math.min(24 * 60 * 60, Math.max(60, Math.ceil(total)));
+
+  // Daily Gemini free-tier quota resets later; don't hammer the API or exhaust
+  // the queue by retrying every 45 seconds. Keep the task pending for two hours.
+  if (/PerDay|per.?day|daily.?quota|quota.*day|requestsperday/i.test(message)) return 2 * 60 * 60;
+  return 0;
+}
+
 async function retryDeadlineDraftingJob(
   jobId: string, userId: string, payload: Record<string, string>, partialText: string, error: unknown,
 ): Promise<boolean> {
   const message = String((error as any)?.message || error || '');
   const status = Number((error as any)?.statusCode || (error as any)?.status || (message.match(/"(?:code|status)"\s*:\s*(\d{3})/i) || message.match(/(?:HTTP|statusCode|code)[^0-9]{0,8}(429|503|504)/i) || [])[1] || 0);
-  // A model-scoped Gemini Free Tier quota does not mean every model/key is exhausted.
-  // Retry the same durable job so its saved drafting ledger can continue.
-  const modelScopedQuota = status === 429 &&
-    /RESOURCE_EXHAUSTED|GenerateRequestsPerDayPerProjectPerModel|PerProjectPerModel/i.test(message) &&
-    /quotaDimensions[\s\S]{0,300}model|model[\s\S]{0,100}gemini/i.test(message) &&
-    !/project[- ]wide|quota for (?:the )?(?:entire )?project|spend.?cap|billing.?limit/i.test(message);
-  const deadlineFailure = status === 503 || status === 504 ||
-    /deadline.?exceeded|deadline expired|انتهى الوقت المتاح|timed?\s*out|high demand|service unavailable|temporarily unavailable/i.test(message);
-  if (!deadlineFailure && !modelScopedQuota) return false;
+  const quotaFailure = status === 429 ||
+    /RESOURCE_EXHAUSTED|quota exceeded|rate.?limit|too many requests|GenerateRequestsPerDay/i.test(message);
+  const deadlineFailure = status === 408 || status === 500 || status === 502 || status === 503 || status === 504 ||
+    /deadline.?exceeded|deadline expired|انتهى الوقت المتاح|timed?\s*out|high demand|service unavailable|temporarily unavailable|network|fetch failed|econnreset|socket hang up/i.test(message);
+  if (!deadlineFailure && !quotaFailure) return false;
 
-  // The drafting handler checkpoints its chunk/reduction ledger directly in
-  // the running job payload. The worker's local payload is an older snapshot;
-  // rebuilding from it would overwrite the latest checkpoint on retry.
+  // Read the latest durable ledger, not the worker's stale in-memory payload.
   const currentResponse = await supabase(
     `${JOB_TABLE}?select=payload&id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running&limit=1`,
   );
-  if (!currentResponse.ok) {
-    throw new Error(`تعذر استرجاع نقطة حفظ الصياغة قبل الاستكمال (${currentResponse.status}).`);
-  }
+  if (!currentResponse.ok) throw new Error(`تعذر استرجاع نقطة حفظ الصياغة قبل الاستكمال (${currentResponse.status}).`);
   const currentRows = await currentResponse.json().catch(() => []);
   if (!Array.isArray(currentRows) || !currentRows.length) return false;
   const latestPayload = currentRows[0]?.payload && typeof currentRows[0].payload === 'object'
     ? currentRows[0].payload as Record<string, unknown>
     : {};
-  // Prefer the database snapshot, which contains the newest _draftingState,
-  // while retaining any original request fields absent from that snapshot.
   const mergedPayload: Record<string, string> = { ...payload };
   for (const [key, value] of Object.entries(latestPayload)) {
     if (typeof value === 'string') mergedPayload[key] = value;
   }
-  const attempts = Math.max(0, Number(mergedPayload._draftingRetryCount || 0));
-  if (attempts >= 3) return false;
 
+  const attempts = Math.max(0, Number(mergedPayload._draftingRetryCount || 0));
+  const retryDelay = parseGeminiRetryDelaySeconds(message);
+  const delaySeconds = retryDelay || (quotaFailure
+    ? Math.min(6 * 60 * 60, 60 * 60 * Math.pow(2, Math.min(attempts, 2)))
+    : Math.min(5 * 60, 45 * Math.pow(2, Math.min(attempts, 3))));
   const nextPayload = { ...mergedPayload, _draftingRetryCount: String(attempts + 1) };
   delete nextPayload._resumePartialText;
+
   const response = await supabase(
     `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running`,
     {
@@ -718,7 +730,9 @@ async function retryDeadlineDraftingJob(
       headers: { Prefer: 'return=representation' },
       body: JSON.stringify({
         status: 'queued',
-        error: 'توقفت محاولة Gemini مؤقتاً (مهلة تنفيذ أو حصة نموذج)؛ حُفظت الأجزاء المكتملة ونقطة الاستكمال وستُعاد المحاولة تلقائياً.',
+        error: quotaFailure
+          ? `حصة Gemini أو معدل الطلبات مستنفد مؤقتاً؛ تم حفظ التقدم وسيُستأنف تلقائياً بعد انتظار ${Math.ceil(delaySeconds / 60)} دقيقة.`
+          : `توقفت استجابة Gemini مؤقتاً؛ تم حفظ التقدم وسيُعاد الاستكمال تلقائياً بعد ${delaySeconds} ثانية.`,
         payload: nextPayload,
         partial_result: partialText,
         updated_at: new Date().toISOString(),
@@ -728,14 +742,25 @@ async function retryDeadlineDraftingJob(
   if (!response.ok) throw new Error(`تعذر حفظ حالة استكمال الصياغة بعد انتهاء المهلة (${response.status}).`);
   const rows = await response.json().catch(() => []);
   if (!Array.isArray(rows) || !rows.length) return false;
+
+  // Vercel Queues supports durable delayed delivery (up to seven days).
+  // The job remains queued in Supabase and its saved drafting ledger survives
+  // the wait; this avoids the previous immediate-requeue loop.
   try {
-    await enqueueDurableAiJob(jobId);
+    await send('amin-ai-jobs', { jobId }, {
+      delaySeconds,
+      retentionSeconds: 7 * 24 * 60 * 60,
+      idempotencyKey: `${jobId}-draft-retry-${attempts + 1}`,
+    });
   } catch (queueError: any) {
+    // If delayed queue delivery itself is unavailable, use the existing
+    // dispatcher as a delivery fallback; the durable DB record remains queued.
     scheduleBackground(dispatchQueuedJob(jobId));
-    console.warn('Drafting deadline retry delivery deferred:', safeDiagnosticMessage(queueError?.message || queueError));
+    console.warn('Drafting delayed retry delivery deferred:', safeDiagnosticMessage(queueError?.message || queueError));
   }
-  console.info('Drafting job checkpoint retained for automatic resume:', JSON.stringify({
-    jobId, retryCount: attempts + 1, maxAutomaticRetries: 3, savedOutputCharacters: partialText.length,
+  console.info('Drafting job checkpoint retained for delayed automatic resume:', JSON.stringify({
+    jobId, retryCount: attempts + 1, retryDelaySeconds: delaySeconds,
+    quotaFailure, savedOutputCharacters: partialText.length,
     hasLedgerCheckpoint: Boolean(nextPayload._draftingState),
   }));
   return true;
