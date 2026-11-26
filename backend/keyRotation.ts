@@ -784,6 +784,9 @@ export async function executeWithKeyRotationStream(
   const explicitlyAvoidedPairs = new Set(executionOptions?.avoidPairs || []);
   const avoidedPairs = new Set([...explicitlyAvoidedPairs, ...(executionOptions?.attemptedPairs || [])]);
   let attemptedModelCount = 0;
+  const maxModelAttempts = Number.isFinite(Number(executionOptions?.maxModelAttempts)) && Number(executionOptions?.maxModelAttempts) > 0
+    ? Math.floor(Number(executionOptions.maxModelAttempts))
+    : Number.POSITIVE_INFINITY;
   let lastError: any = null;
   const quotaExhaustedKeys = new Set<string>(keys.filter((key) => draftingMode
     ? isCooling(draftingQuotaKeyCooldownUntil, key)
@@ -791,7 +794,7 @@ export async function executeWithKeyRotationStream(
   const requestedStartIndex = executionOptions?.startKey ? keys.indexOf(executionOptions.startKey) : -1;
   const startIndex = requestedStartIndex >= 0 ? requestedStartIndex : reserveStartIndex(keys.length, 'general');
 
-  for (let offset = 0; offset < keys.length; offset++) {
+  for (let offset = 0; offset < keys.length && attemptedModelCount < maxModelAttempts; offset++) {
     const currentKeyIndex = (startIndex + offset) % keys.length;
     const currentKey = keys[currentKeyIndex];
     if ((draftingMode
@@ -804,6 +807,7 @@ export async function executeWithKeyRotationStream(
     }
 
     for (const model of models) {
+      if (attemptedModelCount >= maxModelAttempts) break;
       const pair = rotationPairKey(currentKey, model);
       if (deadlineAt - Date.now() < 3000) {
         lastError = timeoutError();
