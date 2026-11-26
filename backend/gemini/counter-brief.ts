@@ -305,7 +305,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let continuationGeminiStartModel = String(options.resumeGeminiModel || '');
   const attemptedGeminiPairs = new Set<string>();
 
-  assertDraftingInputBudget(optimizedPrompt);
+  // This shared generator is also used by deconstruct/refine. The legal-drafting
+  // budget is enforced by the counter-brief handler on its assembled prompt;
+  // applying it here incorrectly blocks other task types with a drafting error.
   const continuationBasePrompt = String(options.continuationContext || optimizedPrompt);
   const makeContinuationPrompt = () => accumulatedText
     ? continuationBasePrompt + ' [استكمال إلزامي] هذا آخر مقطع من النص السابق للربط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
