@@ -166,7 +166,7 @@ async function compressDraftingInput(
         if (!output) throw new Error('لم ينتج ملخص صالح لتجهيز سياق الصياغة.');
         const minimumOutputChars = styleOnly
           ? Math.min(180, Math.max(60, Math.ceil(chunks[i].length * 0.08)))
-          : Math.min(500, Math.max(120, Math.ceil(chunks[i].length * 0.12)));
+          : Math.min(500, Math.max(80, Math.ceil(chunks[i].length * 0.12)));
         if (output.length < minimumOutputChars) {
           const shortOutput: any = new Error(`ملخص الجزء ${i + 1} غير كافٍ للحفاظ على التفاصيل (${output.length} حرفاً؛ الحد الأدنى ${minimumOutputChars}). أُرفض الملخص لمنع إسقاط الوقائع.`);
           shortOutput.status = 502; shortOutput.statusCode = 502;
