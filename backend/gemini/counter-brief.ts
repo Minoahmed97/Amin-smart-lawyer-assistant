@@ -23,7 +23,7 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
 
 
 
-const DRAFTING_COMPRESSION_CHUNK = 1800;
+const DRAFTING_COMPRESSION_CHUNK = 9000;
 const DRAFTING_CHECKPOINT_VERSION = 2;
 
 type DraftingCompressionEntry = {
@@ -141,8 +141,9 @@ async function compressDraftingInput(
 
   for (; pass < 4 && current.length > targetChars;) {
     const chunks = splitDraftingInput(current);
+    const reusableSavedChunks = savedChunks.length === chunks.length ? savedChunks : [];
     const summaries: string[] = Array.from({ length: chunks.length }, (_, index) =>
-      typeof savedChunks[index] === 'string' ? savedChunks[index] : '');
+      typeof reusableSavedChunks[index] === 'string' ? reusableSavedChunks[index] : '');
     for (let i = 0; i < chunks.length; i++) {
       if (summaries[i]) continue;
       if (Date.now() > deadlineAt - 8000) {
@@ -161,7 +162,7 @@ async function compressDraftingInput(
           model, contents: chunkPrompt,
           config: {
             systemInstruction: styleOnly ? 'محرر أسلوب قانوني مصري؛ استخرج الأسلوب والبنية فقط.' : 'مساعد قانوني مصري؛ حافظ على الوقائع والمراجع دون اختلاق.',
-            temperature: 0.1, maxOutputTokens: styleOnly ? 900 : 2200,
+            temperature: 0.1, maxOutputTokens: styleOnly ? 900 : 3000,
           },
         });
         const output = typeof response.text === 'string' ? response.text.trim() : '';
@@ -243,8 +244,9 @@ async function compressDraftingInput(
 
 function assertDraftingInputBudget(prompt: string): void {
   const estimatedTokens = Math.ceil((prompt.length + EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length) / 3);
-  if (estimatedTokens > 5500) {
-    const error: any = new Error('سياق الصياغة القانونية أكبر من الحد الآمن (5,500 token تقديري). قلّل سياق القضية أو الخزانة ثم أعد المحاولة؛ لم يُخصم رصيد');
+  console.info('[counter-brief] final prompt budget check', { promptCharacters: prompt.length, estimatedInputTokens: estimatedTokens, tokenCountIsEstimate: true });
+  if (estimatedTokens > 7500) {
+    const error: any = new Error('سياق الصياغة القانونية أكبر من الحد الآمن (7,500 token تقديري). تم حفظ المهمة؛ قلّل سياق القضية أو الخزانة ثم أعد المحاولة؛ لم يُخصم رصيد');
     error.status = 413; error.statusCode = 413; throw error;
   }
 }
@@ -303,6 +305,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
   let continuationGeminiStartModel = String(options.resumeGeminiModel || '');
   const attemptedGeminiPairs = new Set<string>();
 
+  assertDraftingInputBudget(optimizedPrompt);
   const continuationBasePrompt = String(options.continuationContext || optimizedPrompt);
   const makeContinuationPrompt = () => accumulatedText
     ? continuationBasePrompt + ' [استكمال إلزامي] هذا آخر مقطع من النص السابق للربط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
@@ -700,8 +703,8 @@ export default async function handler(req: any, res: any) {
       task: 'drafting', courtType, circuit, opponentName,
       judicialWorkType: finalWorkType, selectedDocumentType: finalWorkType,
       clientRole, clientGoals: String(caseContext?.clientGoals || ''),
-      sessionDate, caseNumber, facts: draftingFactsContext, defenses, requests,
-      customInstructions, priorAnalysis: draftingPriorAnalysisContext,
+      sessionDate, caseNumber, facts: draftingFactsContext, defenses: draftingDefensesContext, requests: draftingRequestsContext,
+      customInstructions: draftingCustomInstructionsContext, priorAnalysis: draftingPriorAnalysisContext,
       proceduralStage: String(caseContext?.proceduralStage || ''),
       proceduralStageSource: caseContext?.proceduralStageSource,
     });
@@ -709,8 +712,8 @@ export default async function handler(req: any, res: any) {
       task: 'drafting', courtType, circuit, clientName, clientRole, opponentName,
       caseNumber, sessionDate, judicialWorkType: finalWorkType,
       selectedDocumentType: finalWorkType, facts: draftingFactsContext,
-      defenses, requests, customInstructions, priorAnalysis: draftingPriorAnalysisContext,
-    });
+      defenses: draftingDefensesContext, requests: draftingRequestsContext, customInstructions: draftingCustomInstructionsContext, priorAnalysis: draftingPriorAnalysisContext,
+    }).slice(0, 5000);
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
@@ -730,7 +733,7 @@ ${draftingFactsContext}
 ${draftingAnchorLedger}
 
 [التحليل الاستراتيجي المرتبط بالمهمة]
-${draftingStrategy.context}
+${draftingStrategy.context.slice(0, 3000)}
 
 [دفوع المحامي]
 ${draftingDefensesContext || 'لم تُدخل دفوع محددة.'}
