@@ -1,3 +1,5 @@
+import { requestJson } from './httpClient.ts';
+
 const SESSION_KEY = 'amin_platform_session';
 const ADMIN_SESSION_KEY = 'amin_admin_session';
 
@@ -9,28 +11,20 @@ export interface PlatformUser {
   status: 'active' | 'suspended';
 }
 
-export function getAdminSessionToken(): string { try { return sessionStorage.getItem(ADMIN_SESSION_KEY) || ''; } catch { return ''; } }
-
-function getApiErrorMessage(value: unknown, fallback: string): string {
-  if (typeof value === 'string' && value.trim()) return value;
-  if (value && typeof value === 'object') {
-    const candidate = value as Record<string, unknown>;
-    if (typeof candidate.message === 'string' && candidate.message.trim()) return candidate.message;
-    if (typeof candidate.error === 'string' && candidate.error.trim()) return candidate.error;
-    try {
-      const serialized = JSON.stringify(value);
-      if (serialized && serialized !== '{}') return serialized;
-    } catch {}
-  }
-  return fallback;
+export function getAdminSessionToken(): string {
+  try { return sessionStorage.getItem(ADMIN_SESSION_KEY) || ''; } catch { return ''; }
 }
 
 export async function loginAdmin(pin: string): Promise<string> {
-  const res = await fetch('/api/auth/admin-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(getApiErrorMessage(data?.error, 'رمز المرور الإداري غير صحيح.'));
-  if (!data?.token || typeof data.token !== 'string') {
-    throw new Error(getApiErrorMessage(data?.error, 'استجابة تسجيل دخول الإدارة غير صالحة.'));
+  const data = await requestJson<{ token?: unknown }>('/api/auth/admin-login', {
+    method: 'POST',
+    body: JSON.stringify({ pin }),
+  }, {
+    fallbackErrorMessage: 'رمز المرور الإداري غير صحيح.',
+  });
+
+  if (typeof data?.token !== 'string' || !data.token) {
+    throw new Error('استجابة تسجيل دخول الإدارة غير صالحة.');
   }
   sessionStorage.setItem(ADMIN_SESSION_KEY, data.token);
   return data.token;
@@ -39,7 +33,6 @@ export async function loginAdmin(pin: string): Promise<string> {
 export function getSessionToken(): string {
   try { return localStorage.getItem(SESSION_KEY) || ''; } catch { return ''; }
 }
-
 
 export function getSessionExpiry(): number {
   const token = getSessionToken();
@@ -74,57 +67,52 @@ export function clearSession() {
     localStorage.removeItem('amin_account_snapshot');
     localStorage.removeItem('judicial_open_credits_v6');
     localStorage.removeItem('judicial_active_user_id');
-    // Do not delete another user's scoped vault blindly; the vault resolver
-    // must switch to the authenticated user ID on the next login.
+    // Preserve user-scoped vault data; the next login resolves its own user ID.
   } catch {}
 }
 
-async function request(path: string, init: RequestInit = {}) {
-  const headers = new Headers(init.headers || {});
-  headers.set('Content-Type', 'application/json');
-  const token = getSessionToken();
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  const res = await fetch(path, { ...init, headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const error: any = new Error(getApiErrorMessage(data?.error, 'تعذر تنفيذ الطلب.'));
-    error.statusCode = res.status;
-    throw error;
-  }
-  return data;
+async function request<T = Record<string, unknown>>(path: string, init: RequestInit = {}): Promise<T> {
+  return requestJson<T>(path, init, {
+    token: getSessionToken(),
+    fallbackErrorMessage: 'تعذر تنفيذ الطلب.',
+  });
 }
 
 export async function registerAccount(username: string, password: string, displayName: string, deviceFingerprint: string) {
-  const data = await request('/api/auth/register', {
+  const data = await request<{ token: string; user: PlatformUser }>('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify({ username, password, displayName, deviceFingerprint }),
   });
   saveSession(data.token);
-  const user = data.user as PlatformUser; cacheUser(user); return user;
+  const user = data.user as PlatformUser;
+  cacheUser(user);
+  return user;
 }
 
 export async function loginAccount(username: string, password: string, deviceFingerprint: string) {
-  const data = await request('/api/auth/login', {
+  const data = await request<{ token: string; user: PlatformUser }>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password, deviceFingerprint }),
   });
   saveSession(data.token);
-  const user = data.user as PlatformUser; cacheUser(user); return user;
+  const user = data.user as PlatformUser;
+  cacheUser(user);
+  return user;
 }
 
 export async function getCurrentAccount(): Promise<PlatformUser> {
-  const data = await request('/api/auth/me');
-  const user = data.user as PlatformUser; cacheUser(user); return user;
+  const data = await request<{ user: PlatformUser }>('/api/auth/me');
+  const user = data.user as PlatformUser;
+  cacheUser(user);
+  return user;
 }
 
 export async function consumeOperation(serviceName: string) {
-  const data = await request('/api/auth/consume', {
+  return await request('/api/auth/consume', {
     method: 'POST',
     body: JSON.stringify({ serviceName }),
   });
-  return data;
 }
-
 
 export async function redeemRechargeCode(code: string) {
   return await request('/api/auth/redeem', {
