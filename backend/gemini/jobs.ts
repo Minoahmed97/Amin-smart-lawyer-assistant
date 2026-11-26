@@ -707,7 +707,7 @@ async function retryDeadlineDraftingJob(
     if (typeof value === 'string') mergedPayload[key] = value;
   }
   const attempts = Math.max(0, Number(mergedPayload._draftingRetryCount || 0));
-  if (attempts >= 8) return false;
+  if (attempts >= 3) return false;
 
   const nextPayload = { ...mergedPayload, _draftingRetryCount: String(attempts + 1) };
   delete nextPayload._resumePartialText;
@@ -735,7 +735,7 @@ async function retryDeadlineDraftingJob(
     console.warn('Drafting deadline retry delivery deferred:', safeDiagnosticMessage(queueError?.message || queueError));
   }
   console.info('Drafting job checkpoint retained for automatic resume:', JSON.stringify({
-    jobId, retryCount: attempts + 1, savedOutputCharacters: partialText.length,
+    jobId, retryCount: attempts + 1, maxAutomaticRetries: 3, savedOutputCharacters: partialText.length,
     hasLedgerCheckpoint: Boolean(nextPayload._draftingState),
   }));
   return true;
