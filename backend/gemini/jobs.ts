@@ -738,6 +738,72 @@ async function retryDeadlineDraftingJob(
   return true;
 }
 
+/**
+ * Deconstruction reports can be long (analysis + point-by-point rebuttal +
+ * proposed pleading). If the provider/platform deadline interrupts generation,
+ * keep the same durable task and resume from its persisted partial output.
+ * Do not retry quota/auth/validation failures as those cannot be fixed by
+ * restarting the same request.
+ */
+async function retryIncompleteDeconstructionJob(
+  jobId: string,
+  userId: string,
+  payload: Record<string, string>,
+  partialText: string,
+  error: unknown,
+): Promise<boolean> {
+  const message = String((error as any)?.message || error || '');
+  const status = Number((error as any)?.statusCode || (error as any)?.status || 0);
+  const incompleteOutput = status === 502 || status === 503 || status === 504 ||
+    /لم تكتمل الإجابة|لم يصل نص جديد أثناء الاستكمال|انتهى الوقت المتاح|انتهت المهلة|deadline.?exceeded|deadline expired|timed?\\s*out|stream.*(?:closed|ended)|انقطع تدفق النتيجة/i.test(message);
+  if (!incompleteOutput) return false;
+
+  const currentResponse = await supabase(
+    `${JOB_TABLE}?select=payload&id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.deconstruct&status=eq.running&limit=1`,
+  );
+  if (!currentResponse.ok) throw new Error(`تعذر استرجاع نقطة حفظ التفنيد قبل الاستكمال (${currentResponse.status}).`);
+  const rows = await currentResponse.json().catch(() => []);
+  if (!Array.isArray(rows) || !rows.length) return false;
+
+  const latestPayload = toPayload(rows[0]?.payload);
+  const mergedPayload: Record<string, string> = { ...payload, ...latestPayload };
+  const attempts = Math.max(0, Number(mergedPayload._deconstructRetryCount || 0));
+  if (attempts >= 4) return false;
+
+  const nextPayload = { ...mergedPayload, _deconstructRetryCount: String(attempts + 1) };
+  delete nextPayload._resumePartialText;
+  const response = await supabase(
+    `${JOB_TABLE}?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.deconstruct&status=eq.running`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({
+        status: 'queued',
+        error: 'توقف التفنيد قبل اكتمال التقرير؛ حُفظ النص الجزئي ونقطة الاستكمال وستُعاد المحاولة تلقائياً.',
+        payload: nextPayload,
+        partial_result: partialText,
+        updated_at: new Date().toISOString(),
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`تعذر حفظ نقطة استكمال التفنيد بعد انتهاء المهلة (${response.status}).`);
+  const changed = await response.json().catch(() => []);
+  if (!Array.isArray(changed) || !changed.length) return false;
+
+  try {
+    await enqueueDurableAiJob(jobId);
+  } catch (queueError: any) {
+    scheduleBackground(dispatchQueuedJob(jobId));
+    console.warn('Deconstruction continuation delivery deferred:', safeDiagnosticMessage(queueError?.message || queueError));
+  }
+  console.info('Deconstruction checkpoint queued:', JSON.stringify({
+    jobId,
+    retryCount: attempts + 1,
+    savedOutputCharacters: partialText.length,
+  }));
+  return true;
+}
+
 async function requeueDraftingStage(jobId: string, userId: string, partialText: string): Promise<void> {
   const currentResponse = await supabase(
     `${JOB_TABLE}?select=payload,partial_result&id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(userId)}&task_type=eq.counter-brief&status=eq.running&limit=1`,
@@ -863,6 +929,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       const error = streamError || `تعذر إكمال المهمة (HTTP ${fakeRes.statusCode}).`;
       phase = 'persist-handler-failure';
       if (taskType === 'counter-brief' && await retryDeadlineDraftingJob(jobId, userId, payload, fullText, error)) return;
+      if (taskType === 'deconstruct' && await retryIncompleteDeconstructionJob(jobId, userId, payload, fullText, error)) return;
       console.error('AI job handler returned failure:', JSON.stringify({ jobId, taskType, phase, statusCode: fakeRes.statusCode, error: safeDiagnosticMessage(error), hasPartialResult: Boolean(fullText.trim()) }));
       if (taskType === 'ocr') {
         if (await retryTransientOcrJob(jobId, userId, payload, error)) return;
@@ -901,6 +968,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     try {
       phase = 'persist-caught-failure';
       if (taskType === 'counter-brief' && await retryDeadlineDraftingJob(jobId, userId, payload, fullText, message)) return;
+      if (taskType === 'deconstruct' && await retryIncompleteDeconstructionJob(jobId, userId, payload, fullText, message)) return;
       if (taskType === 'ocr') {
         if (await retryTransientOcrJob(jobId, userId, payload, message)) return;
         const finalized = await finalizeOcrJob(jobId, userId, {

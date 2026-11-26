@@ -651,6 +651,7 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
         const isSse = (response.headers.get('content-type') || '').toLowerCase().includes('text/event-stream');
         let buffer = '';
         let fullText = '';
+        let streamCompleted = false;
 
         const processEvent = (raw: string) => {
           const lines = raw.split(/\r?\n/);
@@ -670,6 +671,8 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
             streamStarted = true;
             fullText += event.text;
             onChunk(event.text);
+          } else if (event.type === 'done') {
+            streamCompleted = true;
           } else if (event.type === 'error') {
             throw new Error(event.error || 'فشلت الاستجابة المتدفقة.');
           }
@@ -687,6 +690,17 @@ async function postWithSilentRetry( url: string, payload: any, maxRetries = 5, o
 
         buffer += decoder.decode();
         if (buffer.trim()) processEvent(buffer);
+
+        // EOF is not proof that Gemini finished the legal document. Vercel,
+        // the browser, or the upstream provider may close a stream mid-result.
+        // Require the explicit terminal event before returning success.
+        if (!streamCompleted) {
+          const incomplete: any = new Error('انقطع تدفق النتيجة قبل وصول علامة الاكتمال؛ تم الاحتفاظ بالنص الجزئي ولم يُعتمد كمستند كامل.');
+          incomplete.status = 502;
+          incomplete.statusCode = 502;
+          incomplete.partialResult = fullText;
+          throw incomplete;
+        }
 
         return { result: fullText };
       }
