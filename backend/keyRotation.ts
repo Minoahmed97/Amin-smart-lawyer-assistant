@@ -77,7 +77,7 @@ function getGeminiErrorTextDeep(error: any): string {
 
 function isGeminiDailyPerModelQuotaError(error: any): boolean {
   const text = getGeminiErrorTextDeep(error).toLowerCase();
-  return /generaterequestsperdaypermodel|generate_content_free_tier_requests|requests_per_day_per_model|daily.{0,60}per.{0,20}model.{0,60}quota/.test(text);
+  return /generaterequestsperdayper(?:project)?permodel|generate_content_free_tier_requests|requests_per_day_per_model|daily.{0,60}per.{0,20}model.{0,60}quota/.test(text);
 }
 
 function markDraftingDailyModelQuota(model: string, error: any): void {
