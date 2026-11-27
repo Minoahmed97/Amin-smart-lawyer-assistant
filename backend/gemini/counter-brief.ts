@@ -21,6 +21,69 @@ const DEEP_AUDIT_INSTRUCTION = `أنشئ قبل الإجابة النهائية 
 const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أولي. قبل الإخراج النهائي استخدم حزمة التدقيق كمدخل مساعد، ثم أعد اختبارها خصمياً: صحح أي استنتاج غير مدعوم، افصل الثابت عن الاستنتاج، لا تضف أي معلومة غير موجودة، وابحث مرة أخيرة عن أقوى حجة معاكسة ومعلومة ناقصة قد تقلب النتيجة. أخرج النتيجة العملية المطلوبة فقط، دون كشف حزمة التدقيق الداخلية أو سلسلة التفكير السرية.`;
 
 
+/**
+ * Build a bounded drafting context pack before the final document request.
+ * Long source material is summarized in small, serial requests so no single
+ * Gemini request receives the entire vault/analysis/case file.
+ */
+async function createDraftingContextPack(sources: Array<{ label: string; text: string }>, deadlineAt: number): Promise<string> {
+  const normalized = sources
+    .map((source) => ({ label: source.label, text: String(source.text || '').trim() }))
+    .filter((source) => source.text);
+  const sourceText = normalized.map((source) => `[${source.label}]\n${source.text}`).join('\n\n');
+  const chunkSize = 7200;
+  const chunks: string[] = [];
+  for (let offset = 0; offset < sourceText.length; offset += chunkSize) {
+    chunks.push(sourceText.slice(offset, offset + chunkSize));
+  }
+  const maxChunks = 16;
+  if (chunks.length > maxChunks) {
+    const error: any = new Error(`حجم ملف القضية كبير جداً للمعالجة الآمنة في طلب واحد (${chunks.length} جزءاً). قسّم المستند أو أرفق ملخصاً مركزاً؛ لم يبدأ توليد المذكرة ولم يُخصم رصيد.`);
+    error.statusCode = 413;
+    throw error;
+  }
+
+  const summaries: string[] = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (Date.now() + 35000 >= deadlineAt) {
+      const error: any = new Error('انتهى الوقت المتاح لتجهيز سياق القضية المختصر قبل بدء الصياغة. قلّل حجم الملف أو أعد المحاولة.');
+      error.statusCode = 504;
+      throw error;
+    }
+    // Stay below common free-tier request/minute limits; keep calls sequential.
+    if (index > 0) await new Promise((resolve) => setTimeout(resolve, 4200));
+    const chunk = chunks[index];
+    const response = await executeWithKeyRotation(async (ai) => ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: `لخّص هذا الجزء من ملف قضية لمحامٍ مصري في حزمة وقائع مرجعية شديدة الدقة لا تتجاوز 350 كلمة. احتفظ حرفياً بالأسماء والصفات والتواريخ والمبالغ وأرقام الدعوى والمواد والأحكام والمستندات والطلبات والاقتباسات المهمة. سجّل كل واقعة مع مصدرها/موضعها إن ظهر، وميّز ادعاء الطرف عن الثابت، والتناقضات والنواقص. لا تستنتج ولا تختلق ولا تسقط معلومة قانونية مهمة. لا تكتب مذكرة ولا مقدمة. هذا الجزء ${index + 1} من ${chunks.length}:\n\n${chunk}`,
+      config: { temperature: 0.1, maxOutputTokens: 900, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+    }), undefined, undefined, false, { deadlineAt });
+    const summary = String(response?.text || '').trim();
+    if (!summary) {
+      const error: any = new Error(`تعذر إعداد ملخص قانوني للجزء ${index + 1} من ملف القضية؛ لم يبدأ توليد المذكرة.`);
+      error.statusCode = 502;
+      throw error;
+    }
+    summaries.push(`[حزمة الجزء ${index + 1}]\n${summary}`);
+  }
+
+  const pack = summaries.join('\n\n');
+  const estimatedTokens = Math.ceil(pack.length / 3) + 1800;
+  console.info('[counter-brief] bounded legal context pack prepared', {
+    sourceCharacters: sourceText.length,
+    chunkCount: chunks.length,
+    packedCharacters: pack.length,
+    estimatedFinalInputTokens: estimatedTokens,
+    estimateOnly: true,
+  });
+  if (estimatedTokens > 6000) {
+    const error: any = new Error('حزمة القضية المختصرة ما زالت أكبر من حد المدخلات الآمن (نحو 6000 توكن). اختصر المستندات أو قلّل عددها قبل الصياغة؛ لم يبدأ توليد المذكرة.');
+    error.statusCode = 413;
+    throw error;
+  }
+  return pack;
+}
+
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
 async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
   // The key-rotation adapter exposes generation methods, not the SDK token-count endpoint.
@@ -400,11 +463,16 @@ export default async function handler(req: any, res: any) {
       ? `نوع المستند المطلوب من المحامي: ${finalWorkType}. التزم بهذا النوع.`
       : 'نوع المستند غير محدد مسبقاً: حدّد داخلياً أنسب نوع مستند قانوني للرد على المادة المنقولة (مذكرة رد/دفاع، عريضة/صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار أو غير ذلك) بناءً على الغرض والطلبات والوقائع، ولا تفترض تلقائياً أنها مذكرة دفاع.';
 
-    // The caller already supplies the case facts and any prior legal analysis.
-    // Send both unchanged to Gemini; do not spend extra requests re-analyzing them.
-    const draftingFactsContext = facts;
-    const draftingPriorAnalysisContext = typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '';
     const draftingAnalysisDeadline = Date.now() + 210000;
+    const draftingContextPack = await createDraftingContextPack([
+      { label: 'وقائع القضية والمستندات', text: facts },
+      { label: 'التحليل القانوني السابق', text: typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '' },
+      { label: 'خزانة المحامي — أسلوب وبنية فقط', text: typeof vaultContext === 'string' ? vaultContext : '' },
+    ], draftingAnalysisDeadline);
+    const draftingFactsContext = draftingContextPack;
+    // Prior analysis and vault have been incorporated into the bounded pack;
+    // never resend the raw versions in the final generation prompt.
+    const draftingPriorAnalysisContext = '';
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
@@ -448,12 +516,10 @@ ${vaultContext}
       '[سياق استكمال مختصر — مرجع القضية الحالي]',
       workTypeInstruction,
       `المحكمة: ${courtType || ''}؛ الدائرة: ${circuit || ''}؛ الموكل: ${clientName || ''}؛ الصفة: ${clientRole || ''}؛ الخصم: ${opponentName || ''}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}`,
-      `الوقائع الأصلية كاملة: ${String(draftingFactsContext || '')}`,
-      `دفوع المحامي كاملة: ${String(defenses || '')}`,
-      `طلبات المحامي كاملة: ${String(requests || '')}`,
-      `تعليمات المحامي كاملة: ${String(customInstructions || '')}`,
-      `التحليل السابق كاملًا: ${String(draftingPriorAnalysisContext || '')}`,
-      `بصمة الخزانة: ${String(vaultContext || '')}`,
+      `حزمة الوقائع والتحليل والخزانة المختصرة: ${String(draftingFactsContext || '')}`,
+      `دفوع المحامي: ${String(defenses || '')}`,
+      `طلبات المحامي: ${String(requests || '')}`,
+      `تعليمات المحامي: ${String(customInstructions || '')}`,
       'التزم بالنوع والطلبات المحددة، ولا تختلق وقائع أو أسانيد. أكمل المستند من حيث انتهى النص السابق وبنفس بصمة المحامي.'
     ].join('\n\n');
 
