@@ -133,6 +133,45 @@ function createDraftingContextPack(sources: Array<{ label: string; text: string 
   return pack;
 }
 
+function readDraftingState(value: unknown): { stage: number; initialDraft: string; legalDraft: string } {
+  let parsed: any = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { parsed = null; }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { stage: 0, initialDraft: '', legalDraft: '' };
+  }
+  const stage = Math.max(0, Math.min(2, Math.floor(Number(parsed.stage) || 0)));
+  return {
+    stage,
+    initialDraft: typeof parsed.initialDraft === 'string' ? parsed.initialDraft : '',
+    legalDraft: typeof parsed.legalDraft === 'string' ? parsed.legalDraft : '',
+  };
+}
+
+function classifyGeminiFailure(error: any): string {
+  const status = Number(error?.statusCode || error?.status || 0);
+  const message = String(error?.message || error || '');
+  if (status === 429 || /RESOURCE_EXHAUSTED/i.test(message)) {
+    if (/TokensPerMinute|token.*per.?minute|TPM/i.test(message)) return 'quota_tokens_per_minute';
+    if (/RequestsPerMinute|request.*per.?minute|RPM/i.test(message)) return 'quota_requests_per_minute';
+    if (/RequestsPerDay|per.?day|RPD/i.test(message)) return 'quota_requests_per_day';
+    return 'quota_or_rate_limit_unspecified';
+  }
+  if (status === 503 || status === 504 || /deadline|timed?\\s*out|temporarily unavailable/i.test(message)) return 'provider_or_function_timeout';
+  if (status === 400 || /INVALID_ARGUMENT/i.test(message)) return 'request_or_context_invalid';
+  return 'provider_error_other';
+}
+
+function redactProviderMessage(value: unknown): string {
+  return String(value || 'unknown')
+    .replace(/(?:AIza|AQ\\.)[0-9A-Za-z_.-]{20,}/g, '[REDACTED_KEY]')
+    .replace(/\\bBearer\\s+[^\\s,;]+/gi, 'Bearer [REDACTED]')
+    .replace(/https?:\\/\\/[^\\s\"'<>]+/gi, '[REDACTED_URL]')
+    .replace(/[\\r\\n\\t]+/g, ' ')
+    .slice(0, 500);
+}
+
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
 async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
   // The key-rotation adapter exposes generation methods, not the SDK token-count endpoint.
@@ -531,6 +570,94 @@ export default async function handler(req: any, res: any) {
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
+    // Durable legal-brain stages: one Gemini call-chain at a time, with a saved checkpoint between stages.
+    // The first pass receives case facts only; lawyer strategy and vault style are deliberately deferred.
+    if (body?.stream === true && body?._jobId) {
+      const savedState = readDraftingState(body?._draftingState);
+      const stage = savedState.stage;
+      const caseOnlyPack = createDraftingContextPack([
+        { label: 'وقائع القضية والمستندات', text: facts },
+      ], 9000);
+      const lawyerInstructionPack = createDraftingContextPack([
+        { label: 'دفوع المحامي', text: defenses || '' },
+        { label: 'طلبات المحامي', text: requests || '' },
+        { label: 'تعليمات المحامي الإضافية', text: customInstructions || '' },
+        { label: 'التحليل القانوني السابق', text: typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '' },
+      ], 4800);
+      const vaultStyleSample = String(vaultContext || '').trim().slice(0, 3000);
+      const caseMetadata = [
+        workTypeInstruction,
+        'المحكمة: ' + (courtType || 'المحكمة المختصة') + ' | الدائرة: ' + (circuit || ''),
+        'الموكل وصفته: ' + (clientName || 'غير محدد') + ' — ' + (clientRole || 'غير محدد'),
+        'الخصم: ' + (opponentName || 'غير محدد') + ' | رقم الدعوى: ' + (caseNumber || '') + ' | الجلسة: ' + (sessionDate || ''),
+      ].join('\\n');
+      const stageDeadline = draftingAnalysisDeadline;
+      const baseDraftSystem = 'أنت محرر قانوني مصري. أنشئ مسودة أولية كاملة من الوقائع والمستندات المعروضة فقط. لا تضف دفوعاً استراتيجية أو تعليمات خاصة غير موجودة في هذه المرحلة، ولا تستخدم نموذج خزانة أو وقائع قضية أخرى. لا تختلق أسماء أو تواريخ أو أرقاماً أو مواد قانونية. إذا كانت معلومة لازمة غير موجودة، ضع تنبيهاً موجزاً داخل المسودة بأنها تحتاج استكمالاً. اكتب المستند المطلوب بالعربية القانونية المصرية، ثم أضف علامة الاكتمال التي يحددها طلب المستخدم في آخر النص.';
+      const styleOnlySystem = 'أنت محرر قانوني مصري متخصص في ضبط أسلوب وبناء المستند. لا تغيّر الوقائع أو الأسماء أو التواريخ أو المبالغ أو الأرقام أو الطلبات أو الأسانيد التي سبق تدقيقها. استخدم نموذج الخزانة للأسلوب والبناء فقط، ولا تنقل منه أي بيانات لقضية أخرى. لا تضف معلومة جديدة ولا تحذف نقطة جوهرية. أخرج المستند كاملاً.';
+      const yieldAfterCheckpoint = (nextState: { stage: number; initialDraft?: string; legalDraft?: string }) => {
+        res.write(JSON.stringify({ type: 'checkpoint', state: nextState }) + '\\n');
+        res.write(JSON.stringify({ type: 'yield' }) + '\\n');
+        return res.end();
+      };
+
+      if (stage === 0) {
+        const basePrompt = '[المرحلة الأولى من العقل القانوني — مسودة الوقائع فقط]\\n' +
+          '[بيانات القضية]\\n' + caseMetadata +
+          '\\n\\n[وقائع القضية والمستندات — مقتطفات محلية منتقاة]\\n' + caseOnlyPack +
+          '\\n\\nاكتب المسودة الأولية الكاملة لنوع المستند المطلوب اعتماداً على الوقائع أعلاه وحدها. لا تُدخل في هذه المرحلة دفوعاً أو طلبات أو تعليمات استراتيجية منفصلة، ولا تستخدم التحليل السابق أو الخزانة. احفظ كل واقعة جوهرية وكل اسم وتاريخ ومبلغ ورقم وارد. إذا كان النص كبيراً، نظّم المستند بعناوين واضحة دون تكرار. أخرج المستند فقط بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، ثم علامة الاكتمال.';
+        const initialDraft = await generateDeepLegalResponse(basePrompt, undefined, {
+          legalResearch: false,
+          systemInstruction: baseDraftSystem,
+          maxOutputTokens: 8192,
+          deadlineAt: stageDeadline,
+          continuationContext: '[استكمال المسودة الأولية من الوقائع فقط. لا تضف دفوعاً أو استراتيجية أو نموذج خزانة. أكمل من آخر جزء دون إعادة السابق.]',
+        });
+        if (!initialDraft.trim()) throw new Error('لم تُنتج المرحلة الأولى مسودة أولية صالحة.');
+        return yieldAfterCheckpoint({ stage: 1, initialDraft });
+      }
+
+      if (stage === 1) {
+        if (!savedState.initialDraft.trim()) throw new Error('نقطة حفظ المرحلة الأولى مفقودة؛ أعد تشغيل الصياغة من البداية.');
+        const legalPrompt = '[المرحلة الثانية من العقل القانوني — تطبيق دفوع وتعليمات المحامي]\\n' +
+          '[بيانات القضية]\\n' + caseMetadata +
+          '\\n\\n[المسودة الأولية المحفوظة]\\n' + savedState.initialDraft +
+          '\\n\\n[دفوع المحامي وطلباته وتعليماته والتحليل السابق — مقتطفات منتقاة]\\n' + lawyerInstructionPack +
+          '\\n\\nراجع المسودة كاملةً وطبّق دفوع المحامي وطلباته وتعليماته والاستنتاجات المدعومة من التحليل السابق. اختبر قوة موقف الخصم والتناقضات والنواقص، وصحح ما يلزم دون اختلاق. لا تضف أو تحذف أو توسّع طلباً قضائياً حدده المحامي. لا تستخدم الخزانة في هذه المرحلة. أخرج توصية مهنية موجزة بين [[AMIN_STRATEGY]] و[[/AMIN_STRATEGY]] ثم المستند الكامل بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، مع علامة الاكتمال في النهاية.';
+        const legalDraft = await generateDeepLegalResponse(legalPrompt, undefined, {
+          legalResearch,
+          systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+          maxOutputTokens: 8192,
+          deadlineAt: stageDeadline,
+          continuationContext: '[استكمال مرحلة تطبيق الدفوع والتعليمات على المسودة المحفوظة. لا تعِد المسودة من البداية، ولا تستخدم نموذج الخزانة. حافظ على الطلبات المحددة وأكمل المستند كله.]',
+        });
+        if (!legalDraft.trim()) throw new Error('لم تُنتج المرحلة الثانية نتيجة قانونية صالحة.');
+        return yieldAfterCheckpoint({ stage: 2, legalDraft });
+      }
+
+      if (!savedState.legalDraft.trim()) throw new Error('نقطة حفظ المرحلة القانونية مفقودة؛ أعد تشغيل الصياغة من البداية.');
+      const stylePrompt = '[المرحلة الثالثة من العقل القانوني — ضبط الأسلوب والبنية فقط]\\n' +
+        '[المسودة القانونية المدققة من المرحلة السابقة — المرجع الوحيد للوقائع والطلبات]\\n' + savedState.legalDraft +
+        '\\n\\n[نموذج أسلوب وبنية من خزانة المحامي — لا تنقل وقائع أو أسماء أو أرقاماً]\\n' + vaultStyleSample +
+        '\\n\\nاضبط الصياغة النهائية لتقترب من أسلوب وبناء النموذج الشخصي فقط، مع الحفاظ على مضمون المسودة القانونية المدققة كاملةً. لا تضف أو تحذف دفاعاً أو طلباً أو واقعة أو سنداً. أخرج التوصية المهنية والمستند كاملاً بنفس العلامات [[AMIN_STRATEGY]] و[[AMIN_DOCUMENT]]، وأضف علامة الاكتمال في آخر النص فقط.';
+      let finalStreamedAny = false;
+      const finalText = await generateDeepLegalResponse(stylePrompt, (text) => {
+        if (!text) return;
+        finalStreamedAny = true;
+        res.write(JSON.stringify({ type: 'chunk', text }) + '\\n');
+      }, {
+        legalResearch: false,
+        systemInstruction: styleOnlySystem,
+        maxOutputTokens: 8192,
+        resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '',
+        deadlineAt: stageDeadline,
+        continuationContext: '[استكمال المرحلة النهائية لضبط الأسلوب فقط. حافظ على النص الذي وصل بالفعل، واستكمل المستند دون تكراره. لا تغير الوقائع أو الطلبات أو الدفوع المدققة. نموذج الأسلوب: ' + vaultStyleSample.slice(0, 1800) + '\\nالمسودة القانونية المرجعية (مقتطف تعريف وربط): ' + savedState.legalDraft.slice(0, 2500) + ']',
+      });
+      if (!finalText.trim()) throw new Error('لم تُنتج المرحلة النهائية مستنداً صالحاً.');
+      await consumeOperation(req, 'gemini-operation');
+      res.write(JSON.stringify({ type: 'done' }) + '\\n');
+      return res.end();
+    }
+
     const prompt = `[مهمة الصياغة القانونية]
 اكتب بالعربية القانونية المصرية فقط، ولا تضع كلمات إنجليزية لوصف التنسيق. التزم بنوع المستند الذي حدده المحامي؛ لا تفترض تلقائياً أنه مذكرة دفاع. إذا لم يحدد النوع، استنتج الأنسب من الغرض والمرحلة والوقائع، ونبّه إذا تعذر الحسم.
 
@@ -622,7 +749,12 @@ ${draftingPriorAnalysisContext}
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
   } catch (err: any) {
-    console.error('Error in /api/gemini/counter-brief:', err);
+    console.error('Error in /api/gemini/counter-brief:', JSON.stringify({
+      category: classifyGeminiFailure(err),
+      status: Number(err?.statusCode || err?.status || 0),
+      retryAfter: err?.retryAfter || null,
+      providerMessage: redactProviderMessage(err?.message || err),
+    }));
     const statusCode = Number(err?.statusCode);
     const status = Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600
       ? statusCode
