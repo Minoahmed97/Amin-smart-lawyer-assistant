@@ -852,6 +852,12 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   let stageYielded = false;
   let handlerJson: any = null;
   let phase = 'start';
+  // Metadata-only drafting diagnostics; never log case text or prompts.
+  const jobStartedAt = Date.now();
+  let firstChunkAt: number | null = null;
+  let receivedChunks = 0;
+  let checkpointCount = 0;
+  let yieldCount = 0;
   
   const heartbeat = setInterval(() => {
     void patchJob(jobId, userId, {}).catch(() => {});
@@ -879,6 +885,11 @@ async function processJob(jobId: string, userId: string, token: string, taskType
         try {
           const event = JSON.parse(candidate);
           if (event.type === 'checkpoint' && taskType === 'counter-brief') {
+            checkpointCount += 1;
+            console.info('Drafting checkpoint received:', JSON.stringify({
+              jobId, checkpointCount, elapsedMs: Date.now() - jobStartedAt,
+              stateType: typeof event.state,
+            }));
             const state = event.state;
             if (state && typeof state === 'object' && !Array.isArray(state)) {
               payload._draftingState = JSON.stringify(state);
@@ -896,7 +907,19 @@ async function processJob(jobId: string, userId: string, token: string, taskType
             }
           } else if (event.type === 'yield') {
             stageYielded = true;
+            yieldCount += 1;
+            console.info('Drafting stage yielded:', JSON.stringify({
+              jobId, yieldCount, elapsedMs: Date.now() - jobStartedAt,
+              outputCharacters: fullText.length, checkpointCount,
+            }));
           } else if (event.type === 'chunk' && typeof event.text === 'string') {
+            if (firstChunkAt === null) {
+              firstChunkAt = Date.now();
+              console.info('AI job first output chunk:', JSON.stringify({
+                jobId, taskType, timeToFirstChunkMs: firstChunkAt - jobStartedAt,
+              }));
+            }
+            receivedChunks += 1;
             fullText += event.text;
             // Persist every legal-drafting chunk immediately. Preserve the existing
             // OCR/other-task batching behavior to keep this change scoped to drafting.
@@ -929,7 +952,24 @@ async function processJob(jobId: string, userId: string, token: string, taskType
       body: { ...payload, stream: true, _jobId: jobId, _jobUserId: userId },
     };
     phase = 'run-handler';
+    if (taskType === 'counter-brief') {
+      let draftingStage: unknown = 'unknown';
+      try { draftingStage = JSON.parse(payload._draftingState || '{}')?.stage ?? 0; } catch {}
+      console.info('Drafting stage started:', JSON.stringify({
+        jobId, stage: draftingStage, resumeCharacters: fullText.length,
+        hasSavedDraftingState: Boolean(payload._draftingState),
+      }));
+    }
     await TASK_HANDLERS[taskType](fakeReq, fakeRes);
+    if (taskType === 'counter-brief') {
+      console.info('AI job handler returned:', JSON.stringify({
+        jobId, taskType, elapsedMs: Date.now() - jobStartedAt,
+        timeToFirstChunkMs: firstChunkAt === null ? null : firstChunkAt - jobStartedAt,
+        receivedChunks, outputCharacters: fullText.length, checkpointCount,
+        yieldCount, stageYielded, statusCode: fakeRes.statusCode,
+        hasStreamError: Boolean(streamError),
+      }));
+    }
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     phase = 'flush-partial-result';
     await pendingWrite;
@@ -986,7 +1026,13 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     if (taskType === 'ocr' && await isUserCancelledOcrJob(jobId, userId)) return;
     await pendingWrite.catch(() => {});
     const message = String(err?.message || 'تعذر إكمال العملية.').slice(0, 1000);
-    console.error('AI job processing failed:', JSON.stringify({ jobId, taskType, phase, error: safeDiagnosticMessage(message), hasPartialResult: Boolean(fullText.trim()) }));
+    console.error('AI job processing failed:', JSON.stringify({
+      jobId, taskType, phase, error: safeDiagnosticMessage(message),
+      hasPartialResult: Boolean(fullText.trim()), outputCharacters: fullText.length,
+      receivedChunks, checkpointCount, yieldCount,
+      elapsedMs: Date.now() - jobStartedAt,
+      timeToFirstChunkMs: firstChunkAt === null ? null : firstChunkAt - jobStartedAt,
+    }));
     try {
       phase = 'persist-caught-failure';
       if (taskType === 'counter-brief' && await retryDeadlineDraftingJob(jobId, userId, payload, fullText, message)) return;
