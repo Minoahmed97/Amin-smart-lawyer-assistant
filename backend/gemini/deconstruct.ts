@@ -16,6 +16,10 @@ export default async function handler(req: any, res: any) {
         body = JSON.parse(body);
       } catch {}
     }
+    if (body?.taskMode === 'drafting') {
+      const { default: counterBriefHandler } = await import('./counter-brief.ts');
+      return counterBriefHandler({ ...req, body }, res);
+    }
     const {
       opponentBriefText,
       courtType,
