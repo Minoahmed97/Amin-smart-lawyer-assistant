@@ -640,8 +640,13 @@ export default async function handler(req: any, res: any) {
       ].join('\n');
       let sourceChunks: string[] = savedState.sourceChunks.length ? [...savedState.sourceChunks] : [];
       if (!sourceChunks.length) {
-        for (let offset = 0; offset < casePack.length; offset += 1500) sourceChunks.push(casePack.slice(offset, offset + 1500));
+        // 6,000 characters is roughly 1,500 Arabic tokens in typical legal text;
+        // countTokens remains the final guard and oversized chunks are bisected.
+        for (let offset = 0; offset < casePack.length; offset += 6000) sourceChunks.push(casePack.slice(offset, offset + 6000));
       }
+      const chunkSummaries: string[] = Array.isArray(savedState.chunkSummaries)
+        ? savedState.chunkSummaries.filter((item: unknown) => typeof item === 'string')
+        : [];
       const emitCheckpoint = (state: Record<string, any>) => {
         res.write(JSON.stringify({ type: 'checkpoint', state }) + '\n';
         res.write(JSON.stringify({ type: 'yield' }) + '\n');
