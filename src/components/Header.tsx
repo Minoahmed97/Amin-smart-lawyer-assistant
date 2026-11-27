@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   Scale,
-  FileText,
   Crosshair,
   Compass,
   BookOpen,
@@ -225,9 +224,6 @@ export const Header: React.FC<HeaderProps> = ({
                     <>
                       <button onClick={() => { setActiveTab('deconstruct'); closeMenu(); }} className="header-menu-item" role="menuitem">
                         <Crosshair className="w-4 h-4 text-amber-300" /><span>التفنيد والرد على المستندات</span>
-                      </button>
-                      <button onClick={() => { setActiveTab('draft'); closeMenu(); }} className="header-menu-item" role="menuitem">
-                        <FileText className="w-4 h-4 text-amber-300" /><span>صياغة قضائية شاملة</span>
                       </button>
                       <button onClick={() => { setActiveTab('vault'); closeMenu(); }} className="header-menu-item" role="menuitem">
                         <FolderArchive className="w-4 h-4 text-amber-300" /><span>خزينة النماذج</span>
