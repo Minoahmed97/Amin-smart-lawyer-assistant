@@ -185,7 +185,7 @@ async function logDraftingPromptTokens(ai: any, model: string, prompt: string, c
   try {
     const counted = await ai.models.countTokens({
       model,
-      contents: prompt,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { systemInstruction },
     });
     const count = Number(counted?.totalTokens);
@@ -210,8 +210,14 @@ async function logDraftingPromptTokens(ai: any, model: string, prompt: string, c
     accumulatedCharacters,
   });
   if (maxInputTokens && inputTokens === null) {
-    const error: any = new Error('تعذر حساب توكنز الطلب النهائي؛ أوقف العقل القانوني الإرسال حتى لا يتجاوز الحد المحدد.');
-    error.status = 503; error.statusCode = 503; throw error;
+    // Conservative fail-safe when the provider's countTokens endpoint is unavailable:
+    // count each prompt/system character as one token, which intentionally overestimates
+    // normal text tokenization and keeps the request below the configured token budget.
+    inputTokens = prompt.length + systemCharacters;
+    console.warn('[counter-brief] using conservative character upper-bound because Gemini countTokens failed', {
+      model, promptCharacters: prompt.length, systemInstructionCharacters: systemCharacters,
+      conservativeInputTokens: inputTokens, countTokensError: countTokensError || undefined,
+    });
   }
   if (maxInputTokens && inputTokens !== null && inputTokens > maxInputTokens) {
     const error: any = new Error(`تم إيقاف إرسال الطلب لأن حجمه ${inputTokens} توكن ويتجاوز الحد التشغيلي ${maxInputTokens} توكن.`);
