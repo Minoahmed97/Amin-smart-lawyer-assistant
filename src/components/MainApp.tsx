@@ -55,10 +55,16 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     try {
       const savedTab = persistentStorage.getItem('judicial_active_tab', '');
       if (savedTab && ['draft', 'deconstruct', 'qualify', 'defenses', 'vault', 'community'].includes(savedTab)) {
-        return savedTab as any;
+        return savedTab === 'draft' ? 'deconstruct' : savedTab as any;
       }
     } catch {}
     return 'deconstruct';
+  });
+
+  const [aiWorkMode, setAiWorkMode] = useState<'deconstruct' | 'drafting'>(() => {
+    try {
+      return persistentStorage.getItem('judicial_active_tab', '') === 'draft' ? 'drafting' : 'deconstruct';
+    } catch { return 'deconstruct'; }
   });
 
   useEffect(() => {
@@ -155,6 +161,11 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
   };
 
   const handleTabChange = (targetTab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault' | 'community') => {
+    if (targetTab === 'draft') {
+      setAiWorkMode('drafting');
+      setActiveTab('deconstruct');
+      return;
+    }
     setActiveTab(targetTab);
   };
 
@@ -220,7 +231,8 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       caseContext,
     }));
     setCaseSelectionRevision((value) => value + 1);
-    setActiveTab('draft');
+    setAiWorkMode('drafting');
+    setActiveTab('deconstruct');
   };
 
   const handleInsertDefenseFromCodex = (defenseSnippet: string) => {
@@ -230,7 +242,8 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         ? `${prev.defenses}\n\n[دفع قضائي]:\n${defenseSnippet}`
         : `[دفع قضائي]:\n${defenseSnippet}`,
     }));
-    setActiveTab('draft');
+    setAiWorkMode('drafting');
+    setActiveTab('deconstruct');
   };
 
   const handleUseModelInDrafting = (modelContent: string) => {
@@ -240,7 +253,8 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         ? `${prev.facts}\n\n[نموذج استرشادي]:\n${modelContent.slice(0, 800)}...`
         : `[نموذج استرشادي]:\n${modelContent.slice(0, 800)}...`,
     }));
-    setActiveTab('draft');
+    setAiWorkMode('drafting');
+    setActiveTab('deconstruct');
   };
 
   const handleTransferFromDeconstruct = (
@@ -320,7 +334,8 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
       caseContext,
     });
     setCaseSelectionRevision((value) => value + 1);
-    setActiveTab('draft');
+    setAiWorkMode('drafting');
+    setActiveTab('deconstruct');
   };
 
   const handleEnableNotifications = async () => {
@@ -409,9 +424,16 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
 
       {/* Main Tab Content - Kept mounted in DOM to prevent losing state when navigating */}
       <main className="flex-1 py-3 sm:py-5">
+        {activeTab === 'deconstruct' && (
+          <div className="mx-auto mb-4 flex max-w-7xl flex-wrap items-center gap-2 px-3 sm:px-6 lg:px-8">
+            <span className="text-sm font-bold text-slate-300">نوع المهمة:</span>
+            <button type="button" onClick={() => setAiWorkMode('deconstruct')} aria-pressed={aiWorkMode === 'deconstruct'} className={`rounded-xl border px-4 py-2 text-sm font-bold transition-colors ${aiWorkMode === 'deconstruct' ? 'border-amber-400 bg-amber-600 text-white' : 'border-slate-600 bg-slate-900 text-slate-300'}`}>التفنيد والرد على المستندات</button>
+            <button type="button" onClick={() => setAiWorkMode('drafting')} aria-pressed={aiWorkMode === 'drafting'} className={`rounded-xl border px-4 py-2 text-sm font-bold transition-colors ${aiWorkMode === 'drafting' ? 'border-amber-400 bg-amber-600 text-white' : 'border-slate-600 bg-slate-900 text-slate-300'}`}>الصياغة القانونية</button>
+          </div>
+        )}
         {(
           <>
-            <div style={{ display: activeTab === 'deconstruct' ? 'block' : 'none' }}>
+            <div style={{ display: activeTab === 'deconstruct' && aiWorkMode === 'deconstruct' ? 'block' : 'none' }}>
               <DeconstructView
                 userId={userId}
                 caseContext={draftingData.caseContext}
@@ -420,7 +442,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
               />
             </div>
 
-            <div style={{ display: activeTab === 'draft' ? 'block' : 'none' }}>
+            <div style={{ display: activeTab === 'deconstruct' && aiWorkMode === 'drafting' ? 'block' : 'none' }}>
               <DraftingView
                 initialFormData={draftingData}
                 userId={userId}
