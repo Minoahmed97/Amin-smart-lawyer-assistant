@@ -872,7 +872,23 @@ async function processJob(jobId: string, userId: string, token: string, taskType
         const candidate = line.startsWith('data:') ? line.slice(5).trim() : line.trim();
         try {
           const event = JSON.parse(candidate);
-          if (event.type === 'yield') {
+          if (event.type === 'checkpoint' && taskType === 'counter-brief') {
+            const state = event.state;
+            if (state && typeof state === 'object' && !Array.isArray(state)) {
+              payload._draftingState = JSON.stringify(state);
+              const payloadSnapshot = { ...payload };
+              pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { payload: payloadSnapshot })).catch(() => {});
+            } else if (typeof state === 'string' && state.length <= 120000) {
+              try {
+                const parsed = JSON.parse(state);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  payload._draftingState = JSON.stringify(parsed);
+                  const payloadSnapshot = { ...payload };
+                  pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { payload: payloadSnapshot })).catch(() => {});
+                }
+              } catch {}
+            }
+          } else if (event.type === 'yield') {
             stageYielded = true;
           } else if (event.type === 'chunk' && typeof event.text === 'string') {
             fullText += event.text;
