@@ -165,10 +165,10 @@ function classifyGeminiFailure(error: any): string {
 
 function redactProviderMessage(value: unknown): string {
   return String(value || 'unknown')
-    .replace(/(?:AIza|AQ\\.)[0-9A-Za-z_.-]{20,}/g, '[REDACTED_KEY]')
-    .replace(/\\bBearer\\s+[^\\s,;]+/gi, 'Bearer [REDACTED]')
-    .replace(/https?:\\/\\/[^\\s\"'<>]+/gi, '[REDACTED_URL]')
-    .replace(/[\\r\\n\\t]+/g, ' ')
+    .replace(/(?:AIza|AQ\.)[0-9A-Za-z_.-]{20,}/g, '[REDACTED_KEY]')
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, '[REDACTED_URL]')
+    .replace(/[\r\n\t]+/g, ' ')
     .slice(0, 500);
 }
 
