@@ -27,57 +27,87 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
  * Gemini request receives the entire vault/analysis/case file.
  */
 async function createDraftingContextPack(sources: Array<{ label: string; text: string }>, deadlineAt: number): Promise<string> {
-  const normalized = sources
+  // Legal drafting controller: prepare a bounded set of source packets and
+  // send them to Gemini strictly one at a time. Never fan out requests.
+  // The lawyer's vault is style-only, so keep a short style sample locally
+  // instead of spending Gemini requests summarizing unrelated template text.
+  const vault = sources.find((source) => /خزانة المحامي/.test(source.label));
+  const caseSources = sources
+    .filter((source) => !/خزانة المحامي/.test(source.label))
     .map((source) => ({ label: source.label, text: String(source.text || '').trim() }))
     .filter((source) => source.text);
-  const sourceText = normalized.map((source) => `[${source.label}]\n${source.text}`).join('\n\n');
-  const chunkSize = 7200;
-  const chunks: string[] = [];
-  for (let offset = 0; offset < sourceText.length; offset += chunkSize) {
-    chunks.push(sourceText.slice(offset, offset + chunkSize));
+
+  const vaultText = String(vault?.text || '').trim();
+  const styleSample = vaultText
+    ? `[نموذج أسلوب وبنية من خزانة المحامي — دون وقائع قضية أخرى]\n${vaultText.slice(0, 6500)}`
+    : '';
+
+  const sourceText = caseSources.map((source) => `[${source.label}]\n${source.text}`).join('\n\n');
+  if (!sourceText && !styleSample) return '';
+
+  // One small request per packet, with a strict sequential await. A maximum
+  // of four context requests prevents the old 20–30-call quota drain.
+  const packetSize = 15000;
+  const packets: string[] = [];
+  for (let offset = 0; offset < sourceText.length; offset += packetSize) {
+    packets.push(sourceText.slice(offset, offset + packetSize));
   }
-  const maxChunks = 30;
-  if (chunks.length > maxChunks) {
-    const error: any = new Error(`حجم ملف القضية كبير جداً للمعالجة الآمنة في طلب واحد (${chunks.length} جزءاً). قسّم المستند أو أرفق ملخصاً مركزاً؛ لم يبدأ توليد المذكرة ولم يُخصم رصيد.`);
+  const maxPackets = 4;
+  if (packets.length > maxPackets) {
+    const error: any = new Error(`ملف القضية يتجاوز الحد الآمن الذي يستطيع العقل القانوني تقسيمه إلى ${maxPackets} طلبات متتابعة صغيرة. قلّل النص الخام أو أرفق ملخصاً للمواد الأقل أهمية؛ لم يبدأ توليد المذكرة ولم يُخصم رصيد.`);
     error.statusCode = 413;
     throw error;
   }
 
   const summaries: string[] = [];
-  for (let index = 0; index < chunks.length; index += 1) {
+  for (let index = 0; index < packets.length; index += 1) {
     if (Date.now() + 35000 >= deadlineAt) {
-      const error: any = new Error('انتهى الوقت المتاح لتجهيز سياق القضية المختصر قبل بدء الصياغة. قلّل حجم الملف أو أعد المحاولة.');
+      const error: any = new Error('انتهى الوقت المتاح لتجهيز حزمة القضية قبل بدء الصياغة. تم حفظ ما سبق؛ أعد المحاولة لاحقاً.');
       error.statusCode = 504;
       throw error;
     }
-    // Stay below common free-tier request/minute limits; keep calls sequential.
+
+    // Requests are deliberately serial: wait for this packet's complete
+    // response before the controller sends the next one.
     if (index > 0) await new Promise((resolve) => setTimeout(resolve, 4200));
-    const chunk = chunks[index];
+    console.info('[counter-brief] legal brain sending context packet', {
+      packet: index + 1,
+      totalPackets: packets.length,
+      packetCharacters: packets[index].length,
+      mode: 'serial-await-response',
+    });
+
     const response = await executeWithKeyRotation(async (ai) => ai.models.generateContent({
       model: 'gemini-3.5-flash',
-      contents: `لخّص هذا الجزء من ملف قضية لمحامٍ مصري في حزمة وقائع مرجعية شديدة الدقة لا تتجاوز 70 كلمة. احتفظ حرفياً بالأسماء والصفات والتواريخ والمبالغ وأرقام الدعوى والمواد والأحكام والمستندات والطلبات والاقتباسات المهمة. سجّل كل واقعة مع مصدرها/موضعها إن ظهر، وميّز ادعاء الطرف عن الثابت، والتناقضات والنواقص. لا تستنتج ولا تختلق ولا تسقط معلومة قانونية مهمة. لا تكتب مذكرة ولا مقدمة. هذا الجزء ${index + 1} من ${chunks.length}:\n\n${chunk}`,
-      config: { temperature: 0.1, maxOutputTokens: 450, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+      contents: `أنت مساعد العقل القانوني في مرحلة تجهيز سياق مذكرة. استخرج من هذا الجزء فقط ملخصاً مرجعياً دقيقاً لا يتجاوز 250 كلمة. حافظ على الأسماء والصفات والتواريخ والمبالغ وأرقام الدعوى والمواد والأحكام والمستندات والطلبات والدفوع المهمة. اربط كل معلومة بمصدرها أو موضعها إن ظهر، وميّز بين الادعاء والثابت والاستنتاج، واذكر التناقضات والنواقص. لا تختلق ولا تسقط معلومة جوهرية، ولا تكتب المذكرة. packet ${index + 1}/${packets.length}:\n\n${packets[index]}`,
+      config: { temperature: 0.1, maxOutputTokens: 900, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
     }), undefined, undefined, false, { deadlineAt });
+
     const summary = String(response?.text || '').trim();
     if (!summary) {
-      const error: any = new Error(`تعذر إعداد ملخص قانوني للجزء ${index + 1} من ملف القضية؛ لم يبدأ توليد المذكرة.`);
+      const error: any = new Error(`لم يصل رد مكتمل من Gemini على حزمة السياق ${index + 1}؛ لم يبدأ توليد المذكرة.`);
       error.statusCode = 502;
       throw error;
     }
-    summaries.push(`[حزمة الجزء ${index + 1}]\n${summary}`);
+    summaries.push(`[حزمة القضية ${index + 1}]\n${summary}`);
+    console.info('[counter-brief] legal brain received context packet', {
+      packet: index + 1,
+      responseCharacters: summary.length,
+      nextPacketWillWait: true,
+    });
   }
 
-  const pack = summaries.join('\n\n');
+  const pack = [summaries.join('\n\n'), styleSample].filter(Boolean).join('\n\n');
   const estimatedTokens = Math.ceil(pack.length / 3) + 2000;
-  console.info('[counter-brief] bounded legal context pack prepared', {
+  console.info('[counter-brief] legal brain context plan ready', {
     sourceCharacters: sourceText.length,
-    chunkCount: chunks.length,
+    packetCount: packets.length,
     packedCharacters: pack.length,
     estimatedFinalInputTokens: estimatedTokens,
-    estimateOnly: true,
+    controller: 'serial',
   });
   if (estimatedTokens > 4500) {
-    const error: any = new Error('حزمة القضية المختصرة ما زالت أكبر من حد المدخلات الآمن (نحو 4500 توكن). اختصر المستندات أو قلّل عددها قبل الصياغة؛ لم يبدأ توليد المذكرة.');
+    const error: any = new Error('حزمة القضية بعد التلخيص ما زالت أكبر من حد المدخلات الآمن (نحو 4500 توكن). قلّل سياق المستندات قبل الصياغة؛ لم يبدأ توليد المذكرة.');
     error.statusCode = 413;
     throw error;
   }
