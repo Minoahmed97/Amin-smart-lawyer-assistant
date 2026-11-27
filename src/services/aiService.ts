@@ -340,7 +340,7 @@ async function requestSavedJob<T extends Record<string, any>>(
         method: 'POST',
         headers,
         body: JSON.stringify({
-          taskType: type,
+          taskType: String(jobPayload._routeTaskType || type),
           payload: jobPayload,
           jobId,
           deferQueue: type === 'ocr' && lifecycle?.deferQueue === true,
@@ -796,6 +796,8 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
     const requestPayload = {
       ...requestParams,
       effectiveWorkType,
+      taskMode: 'drafting',
+      _routeTaskType: 'deconstruct',
       vaultContext: lawyerVaultContext,
       caseAnalysisContext: '',
     };
