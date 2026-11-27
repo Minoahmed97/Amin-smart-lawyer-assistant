@@ -133,19 +133,23 @@ function createDraftingContextPack(sources: Array<{ label: string; text: string 
   return pack;
 }
 
-function readDraftingState(value: unknown): { stage: number; initialDraft: string; legalDraft: string } {
+function readDraftingState(value: unknown): Record<string, any> & { stage: number; initialDraft: string; legalDraft: string } {
   let parsed: any = value;
   if (typeof value === 'string') {
     try { parsed = JSON.parse(value); } catch { parsed = null; }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { stage: 0, initialDraft: '', legalDraft: '' };
+    return { stage: 0, initialDraft: '', legalDraft: '', phase: 'chunk', chunkIndex: 0, masterSummary: '', sourceChunks: [] };
   }
-  const stage = Math.max(0, Math.min(2, Math.floor(Number(parsed.stage) || 0)));
   return {
-    stage,
+    ...parsed,
+    stage: Math.max(0, Math.min(2, Math.floor(Number(parsed.stage) || 0))),
     initialDraft: typeof parsed.initialDraft === 'string' ? parsed.initialDraft : '',
     legalDraft: typeof parsed.legalDraft === 'string' ? parsed.legalDraft : '',
+    phase: typeof parsed.phase === 'string' ? parsed.phase : 'chunk',
+    chunkIndex: Math.max(0, Number(parsed.chunkIndex) || 0),
+    masterSummary: typeof parsed.masterSummary === 'string' ? parsed.masterSummary : '',
+    sourceChunks: Array.isArray(parsed.sourceChunks) ? parsed.sourceChunks.filter((item: unknown) => typeof item === 'string') : [],
   };
 }
 
@@ -173,7 +177,7 @@ function redactProviderMessage(value: unknown): string {
 }
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
-async function logDraftingPromptTokens(ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number, systemInstruction = EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION): Promise<void> {
+async function logDraftingPromptTokens(ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number, systemInstruction = EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION, maxInputTokens?: number): Promise<void> {
   const systemCharacters = systemInstruction.length;
   let inputTokens: number | null = null;
   let modelInputTokenLimit: number | null = null;
@@ -205,6 +209,14 @@ async function logDraftingPromptTokens(ai: any, model: string, prompt: string, c
     continuationCount,
     accumulatedCharacters,
   });
+  if (maxInputTokens && inputTokens === null) {
+    const error: any = new Error('تعذر حساب توكنز الطلب النهائي؛ أوقف العقل القانوني الإرسال حتى لا يتجاوز الحد المحدد.');
+    error.status = 503; error.statusCode = 503; throw error;
+  }
+  if (maxInputTokens && inputTokens !== null && inputTokens > maxInputTokens) {
+    const error: any = new Error(`تم إيقاف إرسال الطلب لأن حجمه ${inputTokens} توكن ويتجاوز الحد التشغيلي ${maxInputTokens} توكن.`);
+    error.status = 413; error.statusCode = 413; error.inputTokens = inputTokens; error.inputTokenLimit = maxInputTokens; throw error;
+  }
   if (inputTokens !== null && modelInputTokenLimit !== null && inputTokens > modelInputTokenLimit) {
     const error: any = new Error(`حجم الطلب (${inputTokens} توكن) يتجاوز حد مدخلات النموذج (${modelInputTokenLimit} توكن). يجب تقليل سياق الصياغة قبل الإرسال.`);
     error.status = 400;
@@ -232,7 +244,7 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number; systemInstruction?: string; maxOutputTokens?: number } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number; systemInstruction?: string; maxOutputTokens?: number; maxInputTokens?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
@@ -262,7 +274,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
     ? '[استكمال مستند قانوني — لا تعِد إرسال أو إعادة تحليل المستندات الأصلية] ' +
       (continuationBasePrompt ? continuationBasePrompt + '\\n' : '') +
       'النص السابق محفوظ بالكامل في المهمة. هذا آخر جزء منه للربط فقط؛ ما قبله مكتمل ولا تعِد كتابته: ' +
-      accumulatedText.slice(-8000) +
+      accumulatedText.slice(-(options.maxInputTokens ? 1800 : 8000)) +
       '\\n\\nتابع من آخر جملة مباشرة، وأكمل الأقسام والحجج والطلبات والخاتمة التي لم تُكتب بعد. لا تكرر السابق ولا تختصر ما تبقى. التزم بالوقائع والطلبات والأسماء والأرقام التي ظهرت في النص السابق. إذا احتجت إلى معلومة غير موجودة، اذكر أنها تحتاج تحققاً ولا تخترعها. أضف علامة الاكتمال ' +
       completionMarker + ' في نهاية المستند فقط بعد إتمامه بالكامل.'
     : optimizedPrompt;
@@ -286,7 +298,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           activePairLabel = `Gemini / ${model}`;
           const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
 
-          await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length, systemInstruction);
+          await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length, systemInstruction, options.maxInputTokens);
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
@@ -447,7 +459,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         activePair = `${key}::${model}`;
         activePairLabel = `Gemini / ${model}`;
         const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
-        await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length, systemInstruction);
+        await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length, systemInstruction, options.maxInputTokens);
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
@@ -601,82 +613,87 @@ export default async function handler(req: any, res: any) {
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
-    // Durable legal-brain stages: one Gemini call-chain at a time, with a saved checkpoint between stages.
-    // The first pass receives case facts only; lawyer strategy and vault style are deliberately deferred.
+    // Legal drafting only: sequential source chunks, one Gemini request per queue run.
+    // The exact final request is counted by Gemini and capped at 3,000 input tokens.
     if (body?.stream === true && body?._jobId) {
       const savedState = readDraftingState(body?._draftingState);
-      const stage = savedState.stage;
-      const caseOnlyPack = createDraftingContextPack([
+      const MAX_INPUT_TOKENS = 3000;
+      const casePack = createDraftingContextPack([
         { label: 'وقائع القضية والمستندات', text: facts },
-      ], 9000);
-      const lawyerInstructionPack = createDraftingContextPack([
         { label: 'دفوع المحامي', text: defenses || '' },
         { label: 'طلبات المحامي', text: requests || '' },
         { label: 'تعليمات المحامي الإضافية', text: customInstructions || '' },
         { label: 'التحليل القانوني السابق', text: typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '' },
-      ], 4800);
-      const vaultStyleSample = String(vaultContext || '').trim().slice(0, 3000);
+      ], 15500);
+      const vaultStyleSample = String(vaultContext || '').trim().replace(/\[بصمة أسلوب المحامي[^\]]*\]/g, '').slice(0, 500);
       const caseMetadata = [
         workTypeInstruction,
         'المحكمة: ' + (courtType || 'المحكمة المختصة') + ' | الدائرة: ' + (circuit || ''),
         'الموكل وصفته: ' + (clientName || 'غير محدد') + ' — ' + (clientRole || 'غير محدد'),
         'الخصم: ' + (opponentName || 'غير محدد') + ' | رقم الدعوى: ' + (caseNumber || '') + ' | الجلسة: ' + (sessionDate || ''),
-      ].join('\\n');
-      const stageDeadline = draftingAnalysisDeadline;
-      const baseDraftSystem = 'أنت محرر قانوني مصري. أنشئ مسودة أولية كاملة من الوقائع والمستندات المعروضة فقط. لا تضف دفوعاً استراتيجية أو تعليمات خاصة غير موجودة في هذه المرحلة، ولا تستخدم نموذج خزانة أو وقائع قضية أخرى. لا تختلق أسماء أو تواريخ أو أرقاماً أو مواد قانونية. إذا كانت معلومة لازمة غير موجودة، ضع تنبيهاً موجزاً داخل المسودة بأنها تحتاج استكمالاً. اكتب المستند المطلوب بالعربية القانونية المصرية، ثم أضف علامة الاكتمال التي يحددها طلب المستخدم في آخر النص.';
-      const styleOnlySystem = 'أنت محرر قانوني مصري متخصص في ضبط أسلوب وبناء المستند. لا تغيّر الوقائع أو الأسماء أو التواريخ أو المبالغ أو الأرقام أو الطلبات أو الأسانيد التي سبق تدقيقها. استخدم نموذج الخزانة للأسلوب والبناء فقط، ولا تنقل منه أي بيانات لقضية أخرى. لا تضف معلومة جديدة ولا تحذف نقطة جوهرية. أخرج المستند كاملاً.';
-      const yieldAfterCheckpoint = (nextState: { stage: number; initialDraft?: string; legalDraft?: string }) => {
-        res.write(JSON.stringify({ type: 'checkpoint', state: nextState }) + '\\n');
-        res.write(JSON.stringify({ type: 'yield' }) + '\\n');
+      ].join('\n');
+      let sourceChunks: string[] = savedState.sourceChunks.length ? [...savedState.sourceChunks] : [];
+      if (!sourceChunks.length) {
+        for (let offset = 0; offset < casePack.length; offset += 1500) sourceChunks.push(casePack.slice(offset, offset + 1500));
+      }
+      const emitCheckpoint = (state: Record<string, any>) => {
+        res.write(JSON.stringify({ type: 'checkpoint', state }) + '\n';
+        res.write(JSON.stringify({ type: 'yield' }) + '\n');
         return res.end();
       };
-
-      if (stage === 0) {
-        const basePrompt = '[المرحلة الأولى من العقل القانوني — مسودة الوقائع فقط]\\n' +
-          '[بيانات القضية]\\n' + caseMetadata +
-          '\\n\\n[وقائع القضية والمستندات — مقتطفات محلية منتقاة]\\n' + caseOnlyPack +
-          '\\n\\nاكتب المسودة الأولية الكاملة لنوع المستند المطلوب اعتماداً على الوقائع أعلاه وحدها. لا تُدخل في هذه المرحلة دفوعاً أو طلبات أو تعليمات استراتيجية منفصلة، ولا تستخدم التحليل السابق أو الخزانة. احفظ كل واقعة جوهرية وكل اسم وتاريخ ومبلغ ورقم وارد. إذا كان النص كبيراً، نظّم المستند بعناوين واضحة دون تكرار. أخرج المستند فقط بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، ثم علامة الاكتمال.';
-        const initialDraft = await generateDeepLegalResponse(basePrompt, undefined, {
-          legalResearch: false,
-          systemInstruction: baseDraftSystem,
-          maxOutputTokens: 8192,
-          deadlineAt: stageDeadline,
-          continuationContext: '[استكمال المسودة الأولية من الوقائع فقط. لا تضف دفوعاً أو استراتيجية أو نموذج خزانة. أكمل من آخر جزء دون إعادة السابق.]',
-        });
-        if (!initialDraft.trim()) throw new Error('لم تُنتج المرحلة الأولى مسودة أولية صالحة.');
-        return yieldAfterCheckpoint({ stage: 1, initialDraft });
+      const stageDeadline = draftingAnalysisDeadline;
+      const stageSystem = 'أنت العقل القانوني المصري. عالج الجزء الحالي بالتتابع. احفظ بدقة أسماء الأشخاص وصفاتهم والتواريخ والمبالغ والأرقام والوقائع والأدلة والدفوع والطلبات. لا تختلق ولا تسقط معلومة جوهرية. لا تكشف سلسلة التفكير.';
+      if (savedState.stage === 0) {
+        const index = savedState.chunkIndex;
+        if (index >= sourceChunks.length) return emitCheckpoint({ ...savedState, stage: 1, phase: 'final-draft', sourceChunks });
+        const prompt = '[العقل القانوني — معالجة متتابعة للجزء ' + (index + 1) + ' من ' + sourceChunks.length + ']\n' +
+          '[بيانات القضية]\n' + caseMetadata +
+          '\n\n[السجل المختصر المحفوظ من الأجزاء السابقة]\n' + String(savedState.masterSummary || '').slice(-1500) +
+          '\n\n[الجزء الحالي فقط من النص الأصلي]\n' + sourceChunks[index] +
+          '\n\nادمج الجزء الحالي في السجل المحفوظ، واحتفظ بالتفاصيل المحددة كاملة. رتّب السجل في نقاط عملية ولا يتجاوز الناتج 1800 حرف. حافظ على التعارضات والنواقص دون حسم مختلق.';
+        let merged = '';
+        try {
+          merged = await generateDeepLegalResponse(prompt, undefined, {
+            legalResearch: false, systemInstruction: stageSystem, maxOutputTokens: 1800,
+            maxInputTokens: MAX_INPUT_TOKENS, deadlineAt: stageDeadline,
+            continuationContext: 'أكمل دمج الجزء الحالي في السجل القانوني دون إعادة الأجزاء السابقة.',
+          });
+        } catch (error: any) {
+          const message = String(error?.message || error);
+          if ((Number(error?.statusCode || error?.status) === 413 || /يتجاوز الحد التشغيلي/.test(message)) && sourceChunks[index].length > 300) {
+            const current = sourceChunks[index];
+            const midpoint = Math.floor(current.length / 2);
+            sourceChunks.splice(index, 1, current.slice(0, midpoint), current.slice(midpoint));
+            return emitCheckpoint({ ...savedState, stage: 0, phase: 'chunk', sourceChunks });
+          }
+          throw error;
+        }
+        if (!merged.trim()) throw new Error('لم تُحفظ خلاصة الجزء القانوني رقم ' + (index + 1) + '.');
+        return emitCheckpoint({ ...savedState, stage: 0, phase: 'chunk', chunkIndex: index + 1, masterSummary: merged.trim(), sourceChunks });
       }
-
-      if (stage === 1) {
-        if (!savedState.initialDraft.trim()) throw new Error('نقطة حفظ المرحلة الأولى مفقودة؛ أعد تشغيل الصياغة من البداية.');
-        const legalPrompt = '[المرحلة الثانية من العقل القانوني — تطبيق دفوع وتعليمات المحامي]\\n' +
-          '[بيانات القضية]\\n' + caseMetadata +
-          '\\n\\n[المسودة الأولية المحفوظة]\\n' + savedState.initialDraft +
-          '\\n\\n[دفوع المحامي وطلباته وتعليماته والتحليل السابق — مقتطفات منتقاة]\\n' + lawyerInstructionPack +
-          '\\n\\n[نموذج أسلوب وبنية من خزانة المحامي — الأسلوب فقط، لا تنقل وقائع أو أسماء أو أرقام أو دفوع أو طلبات لقضية أخرى]\\n' + vaultStyleSample.slice(0, 3000) +
-          '\\n\\nراجع المسودة كاملةً وطبّق دفوع المحامي وطلباته وتعليماته والاستنتاجات المدعومة من التحليل السابق. اختبر قوة موقف الخصم والتناقضات والنواقص، وصحح ما يلزم دون اختلاق. لا تضف أو تحذف أو توسّع طلباً قضائياً حدده المحامي. استخدم نموذج الخزانة للأسلوب والبناء فقط. أخرج توصية مهنية موجزة بين [[AMIN_STRATEGY]] و[[/AMIN_STRATEGY]] ثم المستند النهائي الكامل بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، مع علامة الاكتمال في النهاية.';
-        const legalDraft = await generateDeepLegalResponse(legalPrompt, undefined, {
-          legalResearch,
-          systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
-          maxOutputTokens: 8192,
-          deadlineAt: stageDeadline,
-          continuationContext: '[استكمال مرحلة تطبيق الدفوع والتعليمات على المسودة المحفوظة. لا تعِد المسودة من البداية، ولا تستخدم نموذج الخزانة. حافظ على الطلبات المحددة وأكمل المستند كله.]',
+      if (savedState.stage === 1) {
+        const masterSummary = String(savedState.masterSummary || '').trim();
+        if (!masterSummary) throw new Error('السجل القانوني الموحد مفقود؛ لم يبدأ تحرير المستند.');
+        const finalPrompt = '[المرحلة النهائية — تحرير المستند القانوني]\n' +
+          '[بيانات القضية]\n' + caseMetadata +
+          '\n\n[السجل القانوني الموحد الناتج عن معالجة الأجزاء بالتتابع]\n' + masterSummary +
+          '\n\n[نموذج الأسلوب والبنية — عينة قصيرة فقط]\n' + vaultStyleSample +
+          '\n\nاكتب المستند النهائي الكامل بالنوع الذي حدده المحامي. طبّق دفوعه وطلباته وتعليماته المحفوظة في السجل، ولا تضف أو تحذف أو توسّع طلبًا قضائيًا. حافظ على الأسماء والصفات والتواريخ والمبالغ والأرقام. ميّز الادعاء عن الثابت، ولا تختلق مادة أو حكمًا. أخرج المستند بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]] ثم علامة الاكتمال.';
+        const finalDraft = await generateDeepLegalResponse(finalPrompt, undefined, {
+          legalResearch, systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION, maxOutputTokens: 8192,
+          maxInputTokens: MAX_INPUT_TOKENS, deadlineAt: stageDeadline,
+          continuationContext: '[استكمال المستند النهائي من السجل الموحد فقط. لا تعِد إرسال الوقائع الأصلية أو الخزانة. أكمل من حيث انتهى النص السابق دون تكرار.]',
         });
-        if (!legalDraft.trim()) throw new Error('لم تُنتج المرحلة الثانية نتيجة قانونية صالحة.');
-        return yieldAfterCheckpoint({ stage: 2, legalDraft });
+        if (!finalDraft.trim()) throw new Error('لم تُنتج المرحلة النهائية مسودة قانونية صالحة.');
+        return emitCheckpoint({ ...savedState, stage: 2, phase: 'complete', legalDraft: finalDraft.trim(), sourceChunks });
       }
-
-      if (!savedState.legalDraft.trim()) throw new Error('نقطة حفظ المرحلة القانونية مفقودة؛ أعد تشغيل الصياغة من البداية.');
-      // Stage 1 now applies the lawyer's style sample. Avoid resending the
-      // entire completed legal draft to Gemini for a third generation pass.
       const finalText = String(savedState.legalDraft || '').trim();
-      if (!finalText) throw new Error('لم تُنتج المرحلة القانونية نتيجة صالحة.');
-      const streamChunkSize = 1200;
-      for (let offset = 0; offset < finalText.length; offset += streamChunkSize) {
-        res.write(JSON.stringify({ type: 'chunk', text: finalText.slice(offset, offset + streamChunkSize) }) + '\n');
+      if (!finalText) throw new Error('نقطة حفظ المستند النهائي مفقودة؛ أعد تشغيل الصياغة من البداية.');
+      for (let offset = 0; offset < finalText.length; offset += 1200) {
+        res.write(JSON.stringify({ type: 'chunk', text: finalText.slice(offset, offset + 1200) }) + '\n';
       }
       await consumeOperation(req, 'gemini-operation');
-      res.write(JSON.stringify({ type: 'done' }) + '\\n');
+      res.write(JSON.stringify({ type: 'done' }) + '\n');
       return res.end();
     }
 
