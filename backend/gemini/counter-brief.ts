@@ -158,7 +158,7 @@ function classifyGeminiFailure(error: any): string {
     if (/RequestsPerDay|per.?day|RPD/i.test(message)) return 'quota_requests_per_day';
     return 'quota_or_rate_limit_unspecified';
   }
-  if (status === 503 || status === 504 || /deadline|timed?\\s*out|temporarily unavailable/i.test(message)) return 'provider_or_function_timeout';
+  if (status === 503 || status === 504 || /deadline|timed?\s*out|temporarily unavailable/i.test(message)) return 'provider_or_function_timeout';
   if (status === 400 || /INVALID_ARGUMENT/i.test(message)) return 'request_or_context_invalid';
   return 'provider_error_other';
 }
