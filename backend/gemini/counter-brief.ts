@@ -26,11 +26,17 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
  * Long source material is summarized in small, serial requests so no single
  * Gemini request receives the entire vault/analysis/case file.
  */
-async function createDraftingContextPack(sources: Array<{ label: string; text: string }>, deadlineAt: number): Promise<string> {
-  // Legal drafting controller: prepare a bounded set of source packets and
-  // send them to Gemini strictly one at a time. Never fan out requests.
-  // The lawyer's vault is style-only, so keep a short style sample locally
-  // instead of spending Gemini requests summarizing unrelated template text.
+/**
+ * Prepare a compact drafting context locally before the first actual drafting
+ * request. Do not spend Gemini quota on a separate summarization pass.
+ *
+ * The local selector is intentionally conservative and deterministic: it
+ * preserves exact excerpts, prioritizes lawyer-provided defenses/requests and
+ * legally anchored sentences, and keeps source order in the final pack.
+ * It does not claim to replace legal judgment; the model must identify any
+ * material missing fact rather than inventing it.
+ */
+function createDraftingContextPack(sources: Array<{ label: string; text: string }>): string {
   const vault = sources.find((source) => /خزانة المحامي/.test(source.label));
   const caseSources = sources
     .filter((source) => !/خزانة المحامي/.test(source.label))
@@ -39,78 +45,96 @@ async function createDraftingContextPack(sources: Array<{ label: string; text: s
 
   const vaultText = String(vault?.text || '').trim();
   const styleSample = vaultText
-    ? `[نموذج أسلوب وبنية من خزانة المحامي — دون وقائع قضية أخرى]\n${vaultText.slice(0, 6500)}`
+    ? `[نموذج أسلوب وبنية من خزانة المحامي — دون وقائع قضية أخرى]\n${vaultText.slice(0, 3000)}`
     : '';
+  const MAX_CASE_CONTEXT_CHARS = 15500;
+  const priorityLabels = /دفوع المحامي|طلبات المحامي|تعليمات المحامي/i;
+  const legalAnchor = /(?:\d{1,4}[\/\-]\d{1,4}|\d{4}|\d+(?:[.,]\d+)?\s*(?:جنيه|قرش|متر|سهم|٪|%))|(?:مادة|قانون|طعن|حكم|دعوى|محضر|عقد|إقرار|تقرير|جلسة|مدعى|المدعى|الخصم|دفع|طلب|إثبات|إخطار|إنذار|تاريخ|وفاة|تسليم|استلام|تزوير|بطلان|اختصاص|تقادم|ميعاد|مستند|شاهد|خبير|مصلحة|صفة|ملكية|حيازة|تعويض)/i;
 
-  const sourceText = caseSources.map((source) => `[${source.label}]\n${source.text}`).join('\n\n');
-  if (!sourceText && !styleSample) return '';
-
-  // One small request per packet, with a strict sequential await. A maximum
-  // of four context requests prevents the old 20–30-call quota drain.
-  const packetSize = 15000;
-  const packets: string[] = [];
-  for (let offset = 0; offset < sourceText.length; offset += packetSize) {
-    packets.push(sourceText.slice(offset, offset + packetSize));
-  }
-  const maxPackets = 4;
-  if (packets.length > maxPackets) {
-    const error: any = new Error(`ملف القضية يتجاوز الحد الآمن الذي يستطيع العقل القانوني تقسيمه إلى ${maxPackets} طلبات متتابعة صغيرة. قلّل النص الخام أو أرفق ملخصاً للمواد الأقل أهمية؛ لم يبدأ توليد المذكرة ولم يُخصم رصيد.`);
-    error.statusCode = 413;
-    throw error;
-  }
-
-  const summaries: string[] = [];
-  for (let index = 0; index < packets.length; index += 1) {
-    if (Date.now() + 35000 >= deadlineAt) {
-      const error: any = new Error('انتهى الوقت المتاح لتجهيز حزمة القضية قبل بدء الصياغة. تم حفظ ما سبق؛ أعد المحاولة لاحقاً.');
-      error.statusCode = 504;
-      throw error;
-    }
-
-    // Requests are deliberately serial: wait for this packet's complete
-    // response before the controller sends the next one.
-    if (index > 0) await new Promise((resolve) => setTimeout(resolve, 4200));
-    console.info('[counter-brief] legal brain sending context packet', {
-      packet: index + 1,
-      totalPackets: packets.length,
-      packetCharacters: packets[index].length,
-      mode: 'serial-await-response',
+  const candidates: Array<{ sourceIndex: number; sentenceIndex: number; label: string; text: string; score: number }> = [];
+  caseSources.forEach((source, sourceIndex) => {
+    const parts = source.text
+      .replace(/\r/g, '')
+      .split(/(?<=[.!؟؛])\s+|\n{1,}/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    parts.forEach((part, sentenceIndex) => {
+      const normalized = part.replace(/\s+/g, ' ');
+      if (!normalized) return;
+      let score = 0;
+      if (priorityLabels.test(source.label)) score += 100;
+      if (legalAnchor.test(normalized)) score += 24;
+      if (/\d/.test(normalized)) score += 12;
+      if (/(?:أولاً|ثانياً|ثالثاً|رابعاً|خامساً|الوقائع|الطلبات|الدفاع|الدفوع|النتيجة|لذلك|بناءً عليه)/i.test(normalized)) score += 10;
+      if (normalized.length >= 40 && normalized.length <= 1200) score += 5;
+      if (normalized.length > 2200) score -= 8;
+      // Preserve the opening and closing context, where case identity and
+      // operative requests commonly appear, without taking a large raw block.
+      if (sentenceIndex < 3) score += 8;
+      if (sentenceIndex >= parts.length - 3) score += 8;
+      candidates.push({ sourceIndex, sentenceIndex, label: source.label, text: normalized, score });
     });
-
-    const response = await executeWithKeyRotation(async (ai) => ai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: `أنت مساعد العقل القانوني في مرحلة تجهيز سياق مذكرة. استخرج من هذا الجزء فقط ملخصاً مرجعياً دقيقاً لا يتجاوز 250 كلمة. حافظ على الأسماء والصفات والتواريخ والمبالغ وأرقام الدعوى والمواد والأحكام والمستندات والطلبات والدفوع المهمة. اربط كل معلومة بمصدرها أو موضعها إن ظهر، وميّز بين الادعاء والثابت والاستنتاج، واذكر التناقضات والنواقص. لا تختلق ولا تسقط معلومة جوهرية، ولا تكتب المذكرة. packet ${index + 1}/${packets.length}:\n\n${packets[index]}`,
-      config: { temperature: 0.1, maxOutputTokens: 900, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
-    }), undefined, undefined, false, { deadlineAt });
-
-    const summary = String(response?.text || '').trim();
-    if (!summary) {
-      const error: any = new Error(`لم يصل رد مكتمل من Gemini على حزمة السياق ${index + 1}؛ لم يبدأ توليد المذكرة.`);
-      error.statusCode = 502;
-      throw error;
-    }
-    summaries.push(`[حزمة القضية ${index + 1}]\n${summary}`);
-    console.info('[counter-brief] legal brain received context packet', {
-      packet: index + 1,
-      responseCharacters: summary.length,
-      nextPacketWillWait: true,
-    });
-  }
-
-  const pack = [summaries.join('\n\n'), styleSample].filter(Boolean).join('\n\n');
-  const estimatedTokens = Math.ceil(pack.length / 3) + 2000;
-  console.info('[counter-brief] legal brain context plan ready', {
-    sourceCharacters: sourceText.length,
-    packetCount: packets.length,
-    packedCharacters: pack.length,
-    estimatedFinalInputTokens: estimatedTokens,
-    controller: 'serial',
   });
-  if (estimatedTokens > 4500) {
-    const error: any = new Error('حزمة القضية بعد التلخيص ما زالت أكبر من حد المدخلات الآمن (نحو 4500 توكن). قلّل سياق المستندات قبل الصياغة؛ لم يبدأ توليد المذكرة.');
-    error.statusCode = 413;
-    throw error;
+
+  // First reserve explicit lawyer instructions, defenses, and requests.
+  const selected = new Map<string, typeof candidates[number]>();
+  let used = 0;
+  const addCandidate = (candidate: typeof candidates[number], prefix = '') => {
+    const key = `${candidate.sourceIndex}:${candidate.sentenceIndex}`;
+    if (selected.has(key)) return;
+    const text = prefix + candidate.text;
+    if (used + text.length + 2 > MAX_CASE_CONTEXT_CHARS) return;
+    selected.set(key, candidate);
+    used += text.length + 2;
+  };
+
+  candidates
+    .filter((candidate) => priorityLabels.test(candidate.label))
+    .sort((a, b) => b.score - a.score || a.sourceIndex - b.sourceIndex || a.sentenceIndex - b.sentenceIndex)
+    .forEach((candidate) => addCandidate(candidate));
+
+  // Then take the strongest anchored excerpts, while retaining representation
+  // from each source rather than letting one long attachment consume the pack.
+  const bySource = new Map<number, typeof candidates>();
+  candidates.forEach((candidate) => {
+    const list = bySource.get(candidate.sourceIndex) || [];
+    list.push(candidate);
+    bySource.set(candidate.sourceIndex, list);
+  });
+  for (const [sourceIndex, list] of bySource.entries()) {
+    list.sort((a, b) => b.score - a.score || a.sentenceIndex - b.sentenceIndex);
+    list.slice(0, 8).forEach((candidate) => addCandidate(candidate));
   }
+  candidates
+    .sort((a, b) => b.score - a.score || a.sourceIndex - b.sourceIndex || a.sentenceIndex - b.sentenceIndex)
+    .forEach((candidate) => addCandidate(candidate));
+
+  const excerpts = Array.from(selected.values())
+    .sort((a, b) => a.sourceIndex - b.sourceIndex || a.sentenceIndex - b.sentenceIndex);
+  const grouped = new Map<string, string[]>();
+  excerpts.forEach((excerpt) => {
+    const list = grouped.get(excerpt.label) || [];
+    list.push(excerpt.text);
+    grouped.set(excerpt.label, list);
+  });
+  const casePack = Array.from(grouped.entries())
+    .map(([label, items]) => `[مقتطفات منتقاة محليًا من: ${label}]\n${items.join('\n')}`)
+    .join('\n\n');
+
+  const pack = [
+    '[العقل القانوني — سياق محلي منتقى من النص الأصلي. المقتطفات ليست تلخيصًا مولدًا من Gemini؛ تحقق من ترابطها، واذكر أي نقص جوهري، ولا تفترض أن الجزء غير المعروض غير موجود.]',
+    casePack,
+    styleSample,
+  ].filter(Boolean).join('\n\n');
+
+  console.info('[counter-brief] local legal context selection ready', {
+    sourceCharacters: caseSources.reduce((sum, source) => sum + source.text.length, 0),
+    selectedExcerptCount: excerpts.length,
+    selectedCaseCharacters: used,
+    packedCharacters: pack.length,
+    geminiPreparationRequests: 0,
+    controller: 'local-select-then-sequential-draft',
+  });
   return pack;
 }
 
@@ -494,14 +518,14 @@ export default async function handler(req: any, res: any) {
       : 'نوع المستند غير محدد مسبقاً: حدّد داخلياً أنسب نوع مستند قانوني للرد على المادة المنقولة (مذكرة رد/دفاع، عريضة/صحيفة دعوى، صحيفة طعن، حافظة مستندات، إنذار أو غير ذلك) بناءً على الغرض والطلبات والوقائع، ولا تفترض تلقائياً أنها مذكرة دفاع.';
 
     const draftingAnalysisDeadline = Date.now() + 270000;
-    const draftingContextPack = await createDraftingContextPack([
+    const draftingContextPack = createDraftingContextPack([
       { label: 'وقائع القضية والمستندات', text: facts },
       { label: 'دفوع المحامي', text: defenses || '' },
       { label: 'طلبات المحامي', text: requests || '' },
       { label: 'تعليمات المحامي الإضافية', text: customInstructions || '' },
       { label: 'التحليل القانوني السابق', text: typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '' },
       { label: 'خزانة المحامي — أسلوب وبنية فقط', text: typeof vaultContext === 'string' ? vaultContext : '' },
-    ], draftingAnalysisDeadline);
+    ]);
     const draftingFactsContext = draftingContextPack;
     // All large user-provided sources are incorporated into this bounded pack.
     // Do not resend their raw forms in the final generation or continuation.
