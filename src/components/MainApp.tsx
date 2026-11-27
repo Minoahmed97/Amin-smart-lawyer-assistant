@@ -442,6 +442,7 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
           <>
             <div style={{ display: activeTab === 'deconstruct' && (aiWorkMode === 'deconstruct' || aiWorkMode === 'reply') ? 'block' : 'none' }}>
               <DeconstructView
+                key={aiWorkMode}
                 userId={userId}
                 taskMode={aiWorkMode === 'reply' ? 'reply' : 'deconstruct'}
                 caseContext={draftingData.caseContext}
