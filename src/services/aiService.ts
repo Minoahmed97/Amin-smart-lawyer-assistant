@@ -45,7 +45,7 @@ export function formatFriendlyLegalAiError(rawMsg: string): string {
 }
 
 
-type SavedJobType = 'counter-brief' | 'deconstruct' | 'qualify' | 'refine' | 'ocr';
+type SavedJobType = 'counter-brief' | 'deconstruct' | 'reply' | 'qualify' | 'refine' | 'ocr';
 
 export interface SavedOcrJob {
   jobId: string;
@@ -525,7 +525,7 @@ export async function resumeDraftCounterBrief(
 }
 
 
-export async function resumeSavedAiTask(type: 'deconstruct' | 'qualify', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
+export async function resumeSavedAiTask(type: 'deconstruct' | 'reply' | 'qualify', jobId: string, onChunk?: (text: string) => void, userId?: string): Promise<string> {
   const payload = readTaskPayload(type, userId) || {};
   const partial = readTaskPartial(type, userId);
   if (partial) payload._resumePartialText = partial;
@@ -756,6 +756,7 @@ export async function deconstructBrief( params: { taskMode?: 'deconstruct' | 're
 
   const payload = {
     taskMode: params.taskMode || 'deconstruct',
+    ...(params.taskMode === 'reply' ? { _routeTaskType: 'deconstruct' } : {}),
     opponentBriefText: params.opponentBriefText,
     courtType: params.courtType || '',
     caseNature: params.caseNature || '',
@@ -767,7 +768,8 @@ export async function deconstructBrief( params: { taskMode?: 'deconstruct' | 're
   };
 
   try {
-    const result = await requestSavedJob('deconstruct', payload, onChunk, params.userId);
+    const jobType: SavedJobType = params.taskMode === 'reply' ? 'reply' : 'deconstruct';
+    const result = await requestSavedJob(jobType, payload, onChunk, params.userId);
     return cleanDirectResponse(result);
   } catch (err: any) {
     throw new Error(err?.message || 'تعذر إتمام العملية عبر الخادم المركزي.');
