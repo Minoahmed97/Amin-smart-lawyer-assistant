@@ -67,8 +67,9 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
   const [additionalFacts, setAdditionalFacts] = useState<string>(() => {
     return persistentStorage.getItem('judicial_deconstruct_addfacts', '');
   });
+  const resultStorageKey = taskMode === 'reply' ? 'judicial_reply_result' : 'judicial_deconstruct_result';
   const [analysisResult, setAnalysisResult] = useState<string>(() => {
-    return persistentStorage.getItem('judicial_deconstruct_result', '');
+    return persistentStorage.getItem(resultStorageKey, '');
   });
   const [uploadedDocName, setUploadedDocName] = useState<string>(() => {
     return persistentStorage.getItem('judicial_deconstruct_docname', '');
@@ -107,7 +108,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_addfacts'); else persistentStorage.setItem('judicial_deconstruct_addfacts', additionalFacts);
   }, [additionalFacts]);
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_result'); else persistentStorage.setItem('judicial_deconstruct_result', analysisResult);
+    if (clearPersistenceRef.current) persistentStorage.removeItem(resultStorageKey); else persistentStorage.setItem(resultStorageKey, analysisResult);
   }, [analysisResult]);
   useEffect(() => {
     if (clearPersistenceRef.current) persistentStorage.removeItem('judicial_deconstruct_docname'); else persistentStorage.setItem('judicial_deconstruct_docname', uploadedDocName);
@@ -136,8 +137,9 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     persistentStorage.removeItem('judicial_deconstruct_position');
     persistentStorage.removeItem('judicial_deconstruct_addfacts');
     persistentStorage.removeItem('judicial_deconstruct_result');
+    persistentStorage.removeItem('judicial_reply_result');
     persistentStorage.removeItem('judicial_deconstruct_docname');
-    try { localStorage.removeItem(`amin_ai_job_deconstruct_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`); } catch {}
+    try { localStorage.removeItem(`amin_ai_job_deconstruct_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`); localStorage.removeItem(`amin_ai_job_reply_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`); } catch {}
     try { const prefix = `amin_legal_followup_deconstruct_` + (String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')) + '_'; for (let i = localStorage.length - 1; i >= 0; i -= 1) { const key = localStorage.key(i); if (key && key.startsWith(prefix)) { localStorage.removeItem(key); localStorage.removeItem(`${key}_pending_job`); } } } catch {}
   };
 
@@ -149,28 +151,30 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     const operationId = resultOperationRef.current;
     let jobId = '';
     try {
-      jobId = localStorage.getItem(`amin_ai_job_deconstruct_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`) || '';
+      const taskJobType = taskMode === 'reply' ? 'reply' : 'deconstruct';
+      jobId = localStorage.getItem(`amin_ai_job_${taskJobType}_${String(userId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}`) || '';
     } catch {}
     if (!jobId) return () => { active = false; };
     setIsLoading(true);
     setDeconstructError('');
-    void resumeSavedAiTask('deconstruct', jobId, (chunk) => {
+    const taskJobType = taskMode === 'reply' ? 'reply' : 'deconstruct';
+    void resumeSavedAiTask(taskJobType, jobId, (chunk) => {
       if (active && operationId === resultOperationRef.current) setAnalysisResult((current) => {
         const next = !current ? chunk : chunk.startsWith(current) ? chunk : current.startsWith(chunk) ? current : current + chunk;
-        persistentStorage.setItem('judicial_deconstruct_result', next);
+        persistentStorage.setItem(resultStorageKey, next);
         return next;
       });
     }, userId).then((result) => {
       if (!active || operationId !== resultOperationRef.current) return;
       setAnalysisResult(result);
-      persistentStorage.setItem('judicial_deconstruct_result', result);
+      persistentStorage.setItem(resultStorageKey, result);
     }).catch((err: any) => {
       if (active && operationId === resultOperationRef.current) setDeconstructError(err?.message || 'تعذر استعادة المهمة المحفوظة.');
     }).finally(() => {
       if (active && operationId === resultOperationRef.current) setIsLoading(false);
     });
     return () => { active = false; };
-  }, [userId]);
+  }, [userId, taskMode]);
 
   const handleDeconstruct = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -198,7 +202,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
       }, (chunk) => {
         if (operationId === resultOperationRef.current) setAnalysisResult((current) => {
           const next = current + chunk;
-          persistentStorage.setItem('judicial_deconstruct_result', next);
+          persistentStorage.setItem(resultStorageKey, next);
           return next;
         });
       });
@@ -742,7 +746,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     onChange={(e) => {
                       const updated = combineLegalStrategyOutput(legalStrategyRecommendation, e.target.value);
                       setAnalysisResult(updated);
-                      persistentStorage.setItem('judicial_deconstruct_result', updated);
+                      persistentStorage.setItem(resultStorageKey, updated);
                     }}
                     className="w-full p-4 border border-amber-500/60 rounded-xl text-white bg-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500 font-sans"
                     style={{
@@ -842,7 +846,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
           </div>
         </div>
       </div>
-      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisReport} onResultChange={(nextResult) => { const updated = combineLegalStrategyOutput(legalStrategyRecommendation, nextResult); setAnalysisResult(updated); persistentStorage.setItem('judicial_deconstruct_result', updated); }} />}
+      {analysisResult && <LegalFollowupChat taskType="deconstruct" userId={userId} originalContext={`${opponentBriefText}\nالمحكمة: ${courtType}\nطبيعة النزاع: ${caseNature}\nموقفنا: ${ourPosition}\nوقائع إضافية: ${additionalFacts}`} result={analysisReport} onResultChange={(nextResult) => { const updated = combineLegalStrategyOutput(legalStrategyRecommendation, nextResult); setAnalysisResult(updated); persistentStorage.setItem(resultStorageKey, updated); }} />}
     </div>
   );
 };
