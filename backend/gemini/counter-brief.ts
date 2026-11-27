@@ -22,11 +22,6 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
 
 
 /**
- * Build a bounded drafting context pack before the final document request.
- * Long source material is summarized in small, serial requests so no single
- * Gemini request receives the entire vault/analysis/case file.
- */
-/**
  * Prepare a compact drafting context locally before the first actual drafting
  * request. Do not spend Gemini quota on a separate summarization pass.
  *
@@ -527,7 +522,7 @@ export default async function handler(req: any, res: any) {
       { label: 'خزانة المحامي — أسلوب وبنية فقط', text: typeof vaultContext === 'string' ? vaultContext : '' },
     ]);
     const draftingFactsContext = draftingContextPack;
-    // All large user-provided sources are incorporated into this bounded pack.
+    // Selected excerpts from the user-provided sources are incorporated into this bounded pack.
     // Do not resend their raw forms in the final generation or continuation.
     const draftingPriorAnalysisContext = '';
     const draftingDefensesContext = 'تم تضمين دفوع المحامي في حزمة السياق القانوني المختصرة أعلاه.';
@@ -545,7 +540,7 @@ ${workTypeInstruction}
 الموكل وصفته: ${clientName || 'غير محدد'} — ${clientRole || 'الصفة تحتاج تحديداً إذا لم تحسمها الوقائع'}
 الخصم: ${opponentName || 'غير محدد'} | رقم الدعوى: ${caseNumber || ''} | الجلسة: ${sessionDate || ''}
 
-[وقائع القضية وسجل الأدلة الكامل]
+[مقتطفات منتقاة من الوقائع والمستندات — راجع الترابط ولا تعتبر غير المقتبس غير موجود]
 ${draftingFactsContext}
 
 [دفوع المحامي]
@@ -574,7 +569,7 @@ ${draftingPriorAnalysisContext}
       '[سياق استكمال مختصر — مرجع القضية الحالي]',
       workTypeInstruction,
       `المحكمة: ${courtType || ''}؛ الدائرة: ${circuit || ''}؛ الموكل: ${clientName || ''}؛ الصفة: ${clientRole || ''}؛ الخصم: ${opponentName || ''}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}`,
-      'تم حفظ حزمة الوقائع والدفوع والطلبات والتحليل والخزانة المختصرة في الطلب الأول؛ لا تعِد إرسالها أو إعادة تلخيصها.',
+      'تم إرسال مقتطفات مختارة من الوقائع والدفوع والطلبات والتحليل ونموذج الأسلوب في الطلب الأول؛ لا تعِد إرسالها أو إعادة تلخيصها.',
       'التزم بطلبات المحامي المحددة في الطلب الأول دون إضافة أو حذف أو توسيع.',
       'التزم بالنوع والطلبات المحددة، ولا تختلق وقائع أو أسانيد. أكمل المستند من حيث انتهى النص السابق وبنفس بصمة المحامي.'
     ].join('\n\n');
