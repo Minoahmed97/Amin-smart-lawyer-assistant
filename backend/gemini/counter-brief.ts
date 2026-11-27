@@ -681,7 +681,7 @@ export default async function handler(req: any, res: any) {
         if (!merged.trim()) throw new Error('لم تُحفظ خلاصة الجزء القانوني رقم ' + (index + 1) + '.');
         const nextChunkSummaries = [...chunkSummaries];
         nextChunkSummaries[index] = merged.trim();
-        const cumulativeLedger = nextChunkSummaries.map((summary, summaryIndex) => '[سجل الجزء ' + (summaryIndex + 1) + ']\\n' + summary).join('\\n\\n');
+        const cumulativeLedger = nextChunkSummaries.map((summary, summaryIndex) => '[سجل الجزء ' + (summaryIndex + 1) + ']\n' + summary).join('\n\n');
         return emitCheckpoint({
           ...savedState,
           stage: 0,
