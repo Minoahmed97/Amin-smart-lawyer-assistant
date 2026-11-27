@@ -61,11 +61,17 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
     return 'deconstruct';
   });
 
-  const [aiWorkMode, setAiWorkMode] = useState<'deconstruct' | 'drafting'>(() => {
+  const [aiWorkMode, setAiWorkMode] = useState<'deconstruct' | 'reply' | 'drafting'>(() => {
     try {
+      const savedMode = persistentStorage.getItem('judicial_ai_work_mode', '');
+      if (savedMode === 'deconstruct' || savedMode === 'reply' || savedMode === 'drafting') return savedMode;
       return persistentStorage.getItem('judicial_active_tab', '') === 'draft' ? 'drafting' : 'deconstruct';
     } catch { return 'deconstruct'; }
   });
+
+  useEffect(() => {
+    persistentStorage.setItem('judicial_ai_work_mode', aiWorkMode);
+  }, [aiWorkMode]);
 
   useEffect(() => {
     if (activeTab) {
@@ -427,15 +433,17 @@ export const MainApp: React.FC<MainAppProps> = ({ user, onLogout }) => {
         {activeTab === 'deconstruct' && (
           <div className="mx-auto mb-4 flex max-w-7xl flex-wrap items-center gap-2 px-3 sm:px-6 lg:px-8">
             <span className="text-sm font-bold text-slate-300">نوع المهمة:</span>
-            <button type="button" onClick={() => setAiWorkMode('deconstruct')} aria-pressed={aiWorkMode === 'deconstruct'} className={`rounded-xl border px-4 py-2 text-sm font-bold transition-colors ${aiWorkMode === 'deconstruct' ? 'border-amber-400 bg-amber-600 text-white' : 'border-slate-600 bg-slate-900 text-slate-300'}`}>التفنيد والرد على المستندات</button>
+            <button type="button" onClick={() => setAiWorkMode('deconstruct')} aria-pressed={aiWorkMode === 'deconstruct'} className={`rounded-xl border px-4 py-2 text-sm font-bold transition-colors ${aiWorkMode === 'deconstruct' ? 'border-amber-400 bg-amber-600 text-white' : 'border-slate-600 bg-slate-900 text-slate-300'}`}>التفنيد</button>
+            <button type="button" onClick={() => setAiWorkMode('reply')} aria-pressed={aiWorkMode === 'reply'} className={`rounded-xl border px-4 py-2 text-sm font-bold transition-colors ${aiWorkMode === 'reply' ? 'border-amber-400 bg-amber-600 text-white' : 'border-slate-600 bg-slate-900 text-slate-300'}`}>الرد على المستندات</button>
             <button type="button" onClick={() => setAiWorkMode('drafting')} aria-pressed={aiWorkMode === 'drafting'} className={`rounded-xl border px-4 py-2 text-sm font-bold transition-colors ${aiWorkMode === 'drafting' ? 'border-amber-400 bg-amber-600 text-white' : 'border-slate-600 bg-slate-900 text-slate-300'}`}>الصياغة القانونية</button>
           </div>
         )}
         {(
           <>
-            <div style={{ display: activeTab === 'deconstruct' && aiWorkMode === 'deconstruct' ? 'block' : 'none' }}>
+            <div style={{ display: activeTab === 'deconstruct' && (aiWorkMode === 'deconstruct' || aiWorkMode === 'reply') ? 'block' : 'none' }}>
               <DeconstructView
                 userId={userId}
+                taskMode={aiWorkMode === 'reply' ? 'reply' : 'deconstruct'}
                 caseContext={draftingData.caseContext}
                 onSwitchTab={handleTabChange}
                 onTransferToDrafting={handleTransferFromDeconstruct}
