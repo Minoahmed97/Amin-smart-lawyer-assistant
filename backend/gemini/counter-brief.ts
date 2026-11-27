@@ -695,7 +695,7 @@ export default async function handler(req: any, res: any) {
       if (savedState.stage === 1) {
         const masterSummary = createDraftingContextPack(
           chunkSummaries.map((summary, index) => ({ label: 'سجل الجزء ' + (index + 1), text: summary })),
-          14000,
+          4500,
         ).trim() || String(savedState.masterSummary || '').trim();
         if (!masterSummary) throw new Error('السجل القانوني الموحد مفقود؛ لم يبدأ تحرير المستند.');
 
