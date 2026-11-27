@@ -796,6 +796,7 @@ export async function draftCounterBrief(params: { courtType?: string; circuit?: 
     const { userId: _userId, caseAnalysisContext: _caseAnalysisContext, ...requestParams } = params;
     const requestPayload = {
       ...requestParams,
+      caseContext: params.caseContext ? JSON.stringify(params.caseContext) : '',
       effectiveWorkType,
       taskMode: 'drafting',
       _routeTaskType: 'deconstruct',
