@@ -173,19 +173,46 @@ function redactProviderMessage(value: unknown): string {
 }
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
-async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number, systemInstruction = EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION): Promise<void> {
-  // The key-rotation adapter exposes generation methods, not the SDK token-count endpoint.
-  // Never call ai.models.countTokens here: estimate request size from characters only, non-blockingly.
+async function logDraftingPromptTokens(ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number, systemInstruction = EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION): Promise<void> {
   const systemCharacters = systemInstruction.length;
-  console.info('[counter-brief] Gemini request size estimate', {
+  let inputTokens: number | null = null;
+  let modelInputTokenLimit: number | null = null;
+  let countTokensError = '';
+  try {
+    const counted = await ai.models.countTokens({
+      model,
+      contents: prompt,
+      config: { systemInstruction },
+    });
+    const count = Number(counted?.totalTokens);
+    if (Number.isFinite(count) && count >= 0) inputTokens = count;
+  } catch (error: any) {
+    countTokensError = String(error?.message || error).slice(0, 240);
+  }
+  try {
+    const modelInfo = await ai.models.get({ model });
+    const limit = Number(modelInfo?.inputTokenLimit);
+    if (Number.isFinite(limit) && limit > 0) modelInputTokenLimit = limit;
+  } catch {}
+  console.info('[counter-brief] Gemini request token count', {
     model,
     promptCharacters: prompt.length,
     systemInstructionCharacters: systemCharacters,
-    estimatedInputTokens: Math.ceil((prompt.length + systemCharacters) / 2),
-    tokenEstimateMethod: 'conservative characters/2 heuristic; not provider token counting',
+    actualInputTokens: inputTokens,
+    modelInputTokenLimit,
+    countTokensSource: inputTokens === null ? 'provider-count-unavailable' : 'Gemini models.countTokens',
+    countTokensError: countTokensError || undefined,
     continuationCount,
     accumulatedCharacters,
   });
+  if (inputTokens !== null && modelInputTokenLimit !== null && inputTokens > modelInputTokenLimit) {
+    const error: any = new Error(`حجم الطلب (${inputTokens} توكن) يتجاوز حد مدخلات النموذج (${modelInputTokenLimit} توكن). يجب تقليل سياق الصياغة قبل الإرسال.`);
+    error.status = 400;
+    error.statusCode = 400;
+    error.inputTokens = inputTokens;
+    error.inputTokenLimit = modelInputTokenLimit;
+    throw error;
+  }
 }
 
 function isBlockedFinishReason(reason: unknown): boolean {
@@ -626,7 +653,8 @@ export default async function handler(req: any, res: any) {
           '[بيانات القضية]\\n' + caseMetadata +
           '\\n\\n[المسودة الأولية المحفوظة]\\n' + savedState.initialDraft +
           '\\n\\n[دفوع المحامي وطلباته وتعليماته والتحليل السابق — مقتطفات منتقاة]\\n' + lawyerInstructionPack +
-          '\\n\\nراجع المسودة كاملةً وطبّق دفوع المحامي وطلباته وتعليماته والاستنتاجات المدعومة من التحليل السابق. اختبر قوة موقف الخصم والتناقضات والنواقص، وصحح ما يلزم دون اختلاق. لا تضف أو تحذف أو توسّع طلباً قضائياً حدده المحامي. لا تستخدم الخزانة في هذه المرحلة. أخرج توصية مهنية موجزة بين [[AMIN_STRATEGY]] و[[/AMIN_STRATEGY]] ثم المستند الكامل بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، مع علامة الاكتمال في النهاية.';
+          '\\n\\n[نموذج أسلوب وبنية من خزانة المحامي — الأسلوب فقط، لا تنقل وقائع أو أسماء أو أرقام أو دفوع أو طلبات لقضية أخرى]\\n' + vaultStyleSample.slice(0, 3000) +
+          '\\n\\nراجع المسودة كاملةً وطبّق دفوع المحامي وطلباته وتعليماته والاستنتاجات المدعومة من التحليل السابق. اختبر قوة موقف الخصم والتناقضات والنواقص، وصحح ما يلزم دون اختلاق. لا تضف أو تحذف أو توسّع طلباً قضائياً حدده المحامي. استخدم نموذج الخزانة للأسلوب والبناء فقط. أخرج توصية مهنية موجزة بين [[AMIN_STRATEGY]] و[[/AMIN_STRATEGY]] ثم المستند النهائي الكامل بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]، مع علامة الاكتمال في النهاية.';
         const legalDraft = await generateDeepLegalResponse(legalPrompt, undefined, {
           legalResearch,
           systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
@@ -639,24 +667,14 @@ export default async function handler(req: any, res: any) {
       }
 
       if (!savedState.legalDraft.trim()) throw new Error('نقطة حفظ المرحلة القانونية مفقودة؛ أعد تشغيل الصياغة من البداية.');
-      const stylePrompt = '[المرحلة الثالثة من العقل القانوني — ضبط الأسلوب والبنية فقط]\\n' +
-        '[المسودة القانونية المدققة من المرحلة السابقة — المرجع الوحيد للوقائع والطلبات]\\n' + savedState.legalDraft +
-        '\\n\\n[نموذج أسلوب وبنية من خزانة المحامي — لا تنقل وقائع أو أسماء أو أرقاماً]\\n' + vaultStyleSample +
-        '\\n\\nاضبط الصياغة النهائية لتقترب من أسلوب وبناء النموذج الشخصي فقط، مع الحفاظ على مضمون المسودة القانونية المدققة كاملةً. لا تضف أو تحذف دفاعاً أو طلباً أو واقعة أو سنداً. أخرج التوصية المهنية والمستند كاملاً بنفس العلامات [[AMIN_STRATEGY]] و[[AMIN_DOCUMENT]]، وأضف علامة الاكتمال في آخر النص فقط.';
-      let finalStreamedAny = false;
-      const finalText = await generateDeepLegalResponse(stylePrompt, (text) => {
-        if (!text) return;
-        finalStreamedAny = true;
-        res.write(JSON.stringify({ type: 'chunk', text }) + '\\n');
-      }, {
-        legalResearch: false,
-        systemInstruction: styleOnlySystem,
-        maxOutputTokens: 8192,
-        resumeText: typeof _resumePartialText === 'string' ? _resumePartialText : '',
-        deadlineAt: stageDeadline,
-        continuationContext: '[استكمال المرحلة النهائية لضبط الأسلوب فقط. حافظ على النص الذي وصل بالفعل، واستكمل المستند دون تكراره. لا تغير الوقائع أو الطلبات أو الدفوع المدققة. نموذج الأسلوب: ' + vaultStyleSample.slice(0, 1800) + '\\nالمسودة القانونية المرجعية (مقتطف تعريف وربط): ' + savedState.legalDraft.slice(0, 2500) + ']',
-      });
-      if (!finalText.trim()) throw new Error('لم تُنتج المرحلة النهائية مستنداً صالحاً.');
+      // Stage 1 now applies the lawyer's style sample. Avoid resending the
+      // entire completed legal draft to Gemini for a third generation pass.
+      const finalText = String(savedState.legalDraft || '').trim();
+      if (!finalText) throw new Error('لم تُنتج المرحلة القانونية نتيجة صالحة.');
+      const streamChunkSize = 1200;
+      for (let offset = 0; offset < finalText.length; offset += streamChunkSize) {
+        res.write(JSON.stringify({ type: 'chunk', text: finalText.slice(offset, offset + streamChunkSize) }) + '\\n');
+      }
       await consumeOperation(req, 'gemini-operation');
       res.write(JSON.stringify({ type: 'done' }) + '\\n');
       return res.end();
