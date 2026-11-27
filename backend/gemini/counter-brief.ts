@@ -680,18 +680,54 @@ export default async function handler(req: any, res: any) {
       if (savedState.stage === 1) {
         const masterSummary = String(savedState.masterSummary || '').trim();
         if (!masterSummary) throw new Error('السجل القانوني الموحد مفقود؛ لم يبدأ تحرير المستند.');
-        const finalPrompt = '[المرحلة النهائية — تحرير المستند القانوني]\n' +
+
+        // Durable final drafting: each section is a separate Gemini generation
+        // and is checkpointed before the next section is requested.
+        const finalSections = [
+          { title: 'الديباجة والوقائع والإجراءات', instruction: 'اكتب ديباجة المستند المناسبة، ثم الوقائع والإجراءات والتسلسل الزمني ذي الصلة. لا تكتب الطلبات الختامية الآن.' },
+          { title: 'الدفوع والأسانيد', instruction: 'اكتب الدفوع القانونية المرتبطة بالوقائع والأدلة، مع تطبيق كل دفع على وقائع القضية. لا تكرر الديباجة والوقائع إلا بقدر لازم.' },
+          { title: 'المناقشة والردود', instruction: 'اكتب المناقشة القانونية والرد على حجج الخصم والتناقضات ومواطن القوة والضعف، دون اختلاق سند أو واقعة.' },
+          { title: 'الطلبات والخاتمة', instruction: 'اكتب الطلبات الختامية والخاتمة المناسبة فقط، ملتزمًا حرفيًا بطلبات المحامي المحفوظة في السجل، دون إضافة أو حذف أو توسيع.' },
+        ];
+        const sectionIndex = Math.max(0, Math.floor(Number(savedState.finalSectionIndex) || 0));
+        const completedSections = Array.isArray(savedState.finalSections)
+          ? savedState.finalSections.filter((item: unknown) => typeof item === 'string')
+          : [];
+        if (sectionIndex >= finalSections.length) {
+          const assembled = completedSections.join('\n\n').trim();
+          if (!assembled) throw new Error('لم تُحفظ أجزاء المستند النهائي؛ لم يتم إعلان اكتمال الصياغة.');
+          return emitCheckpoint({ ...savedState, stage: 2, phase: 'complete', legalDraft: assembled, finalSections: completedSections, sourceChunks });
+        }
+        const section = finalSections[sectionIndex];
+        const previousTail = completedSections.join('\n\n').slice(-1800);
+        const finalPrompt = '[تحرير جزء ' + (sectionIndex + 1) + ' من ' + finalSections.length + ' — ' + section.title + ']\n' +
           '[بيانات القضية]\n' + caseMetadata +
-          '\n\n[السجل القانوني الموحد الناتج عن معالجة الأجزاء بالتتابع]\n' + masterSummary +
+          '\n\n[السجل القانوني الموحد من الأجزاء السابقة]\n' + masterSummary +
           '\n\n[نموذج الأسلوب والبنية — عينة قصيرة فقط]\n' + vaultStyleSample +
-          '\n\nاكتب المستند النهائي الكامل بالنوع الذي حدده المحامي. طبّق دفوعه وطلباته وتعليماته المحفوظة في السجل، ولا تضف أو تحذف أو توسّع طلبًا قضائيًا. حافظ على الأسماء والصفات والتواريخ والمبالغ والأرقام. ميّز الادعاء عن الثابت، ولا تختلق مادة أو حكمًا. أخرج المستند بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]] ثم علامة الاكتمال.';
-        const finalDraft = await generateDeepLegalResponse(finalPrompt, undefined, {
-          legalResearch, systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION, maxOutputTokens: 8192,
-          maxInputTokens: MAX_INPUT_TOKENS, deadlineAt: stageDeadline,
-          continuationContext: '[استكمال المستند النهائي من السجل الموحد فقط. لا تعِد إرسال الوقائع الأصلية أو الخزانة. أكمل من حيث انتهى النص السابق دون تكرار.]',
+          '\n\n[ما سبق تحريره — آخر جزء فقط لمنع التكرار]\n' + previousTail +
+          '\n\n[المطلوب في هذا الجزء]\n' + section.instruction +
+          '\n\nاكتب هذا الجزء وحده بصياغة قانونية مصرية كاملة، واحفظ الأسماء والصفات والتواريخ والمبالغ والأرقام. لا تخترع واقعة أو مادة أو حكمًا. لا تضع طلبات ختامية إلا في الجزء المخصص لها. اختم بعلامة الاكتمال الداخلية.';
+        const sectionText = await generateDeepLegalResponse(finalPrompt, undefined, {
+          legalResearch: sectionIndex === 0 ? legalResearch : false,
+          systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+          maxOutputTokens: 2800,
+          maxInputTokens: MAX_INPUT_TOKENS,
+          deadlineAt: stageDeadline,
+          continuationContext: '[استكمال الجزء الحالي فقط من السجل القانوني المحفوظ. لا تعِد إرسال النص الأصلي أو الخزانة. أكمل الجزء الحالي دون تكرار ما سبق.]',
         });
-        if (!finalDraft.trim()) throw new Error('لم تُنتج المرحلة النهائية مسودة قانونية صالحة.');
-        return emitCheckpoint({ ...savedState, stage: 2, phase: 'complete', legalDraft: finalDraft.trim(), sourceChunks });
+        const cleanedSection = sectionText.replace(/\[\[AMIN_DOCUMENT\]\]|\[\[\/AMIN_DOCUMENT\]\]/g, '').trim();
+        if (!cleanedSection) throw new Error('لم يُحفظ الجزء النهائي رقم ' + (sectionIndex + 1) + '.');
+        const nextSections = [...completedSections, cleanedSection];
+        const assembled = nextSections.join('\n\n').trim();
+        return emitCheckpoint({
+          ...savedState,
+          stage: 1,
+          phase: 'final-draft',
+          finalSectionIndex: sectionIndex + 1,
+          finalSections: nextSections,
+          legalDraft: assembled,
+          sourceChunks,
+        });
       }
       const finalText = String(savedState.legalDraft || '').trim();
       if (!finalText) throw new Error('نقطة حفظ المستند النهائي مفقودة؛ أعد تشغيل الصياغة من البداية.');
