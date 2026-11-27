@@ -150,6 +150,9 @@ ${vaultContext || ''}
 [تنسيق الإخراج]
 أخرج توصية موجزة للمحامي بين [[AMIN_STRATEGY]] و[[/AMIN_STRATEGY]]، ثم المستند كاملاً وحده بين [[AMIN_DOCUMENT]] و[[/AMIN_DOCUMENT]]. لا تخلط التوصية بمتن المستند.` : '';
     const prompt = isDrafting ? draftingPrompt : deconstructPrompt;
+    const finalPrompt = taskMode === 'reply'
+      ? `${prompt}\n\n[تعليمات حاسمة لوضع الرد على المستندات]\nأخرج توصية موجزة داخل [[AMIN_STRATEGY]] ثم مستند الرد القضائي فقط داخل [[AMIN_DOCUMENT]]. لا تخرج تقرير التفنيد أو تحليلًا مطولًا أو قائمة نقاط تحليلية مستقلة. اجعل متن المستند هو الرد القانوني المقابل، مع معالجة ما يلزم من ادعاءات الخصم داخل صياغة الرد، والالتزام بالوقائع والأدلة والطلبات المحددة.`
+      : prompt;
 
     if (body?.stream === true) {
       res.statusCode = 200;
@@ -179,7 +182,7 @@ ${vaultContext || ''}
       try {
         // Forward actual model chunks as they arrive. The generator keeps
         // handling continuation internally while the client sees live output.
-        await generateDeepLegalResponse(prompt, writeChunk, { resumeText: typeof body?._resumePartialText === 'string' ? body._resumePartialText : '' });
+        await generateDeepLegalResponse(finalPrompt, writeChunk, { resumeText: typeof body?._resumePartialText === 'string' ? body._resumePartialText : '' });
         if (!streamedAny) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
         await consumeOperation(req, 'gemini-operation');
         res.write(JSON.stringify({ type: 'done' }) + '\n');
@@ -195,7 +198,7 @@ ${vaultContext || ''}
       }
     }
 
-    const resultText = await generateDeepLegalResponse(prompt);
+    const resultText = await generateDeepLegalResponse(finalPrompt);
     if (!resultText.trim()) throw new Error('لم تُنتج خدمة الذكاء الاصطناعي نتيجة صالحة.');
     const usage = await consumeOperation(req, 'gemini-operation');
     return res.json({ result: resultText, remainingCredits: usage.remainingCredits, trialRemaining: usage.trialRemaining });
