@@ -31,7 +31,7 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
  * It does not claim to replace legal judgment; the model must identify any
  * material missing fact rather than inventing it.
  */
-function createDraftingContextPack(sources: Array<{ label: string; text: string }>): string {
+function createDraftingContextPack(sources: Array<{ label: string; text: string }>, maxCaseContextChars = 15500): string {
   const vault = sources.find((source) => /خزانة المحامي/.test(source.label));
   const caseSources = sources
     .filter((source) => !/خزانة المحامي/.test(source.label))
@@ -42,7 +42,7 @@ function createDraftingContextPack(sources: Array<{ label: string; text: string 
   const styleSample = vaultText
     ? `[نموذج أسلوب وبنية من خزانة المحامي — دون وقائع قضية أخرى]\n${vaultText.slice(0, 3000)}`
     : '';
-  const MAX_CASE_CONTEXT_CHARS = 15500;
+  const MAX_CASE_CONTEXT_CHARS = Math.max(1000, Math.min(15500, Math.floor(maxCaseContextChars)));
   const priorityLabels = /دفوع المحامي|طلبات المحامي|تعليمات المحامي/i;
   const legalAnchor = /(?:\d{1,4}[\/\-]\d{1,4}|\d{4}|\d+(?:[.,]\d+)?\s*(?:جنيه|قرش|متر|سهم|٪|%))|(?:مادة|قانون|طعن|حكم|دعوى|محضر|عقد|إقرار|تقرير|جلسة|مدعى|المدعى|الخصم|دفع|طلب|إثبات|إخطار|إنذار|تاريخ|وفاة|تسليم|استلام|تزوير|بطلان|اختصاص|تقادم|ميعاد|مستند|شاهد|خبير|مصلحة|صفة|ملكية|حيازة|تعويض)/i;
 
@@ -173,16 +173,16 @@ function redactProviderMessage(value: unknown): string {
 }
 
 /** Finish reasons that represent a provider refusal/filter, not a normal continuation point. */
-async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number): Promise<void> {
+async function logDraftingPromptTokens(_ai: any, model: string, prompt: string, continuationCount: number, accumulatedCharacters: number, systemInstruction = EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION): Promise<void> {
   // The key-rotation adapter exposes generation methods, not the SDK token-count endpoint.
   // Never call ai.models.countTokens here: estimate request size from characters only, non-blockingly.
-  const systemCharacters = EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION.length;
+  const systemCharacters = systemInstruction.length;
   console.info('[counter-brief] Gemini request size estimate', {
     model,
     promptCharacters: prompt.length,
     systemInstructionCharacters: systemCharacters,
-    estimatedInputTokens: Math.ceil((prompt.length + systemCharacters) / 3),
-    tokenCountIsEstimate: true,
+    estimatedInputTokens: Math.ceil((prompt.length + systemCharacters) / 2),
+    tokenEstimateMethod: 'conservative characters/2 heuristic; not provider token counting',
     continuationCount,
     accumulatedCharacters,
   });
@@ -205,13 +205,17 @@ function mergeContinuation(previous: string, next: string): string {
   return next;
 }
 
-export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number } = {}, ): Promise<string> {
+export async function generateDeepLegalResponse( prompt: string, onChunk?: (text: string) => void, options: { legalResearch?: boolean; resumeText?: string; resumeGeminiKey?: string; resumeGeminiModel?: string; continuationContext?: string; deadlineAt?: number; systemInstruction?: string; maxOutputTokens?: number } = {}, ): Promise<string> {
   // Performance-critical path: the previous implementation generated a full
   // hidden audit response and then sent a second full generation request for
   // the final answer. That doubled model latency and was especially noticeable
   // on long legal documents. The system instruction already requires internal
   // verification, so perform the review inside a single generation request.
   const completionMarker = '[[AMIN_STREAM_COMPLETE_9F7C2A]]';
+  const systemInstruction = String(options.systemInstruction || EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION);
+  const outputTokenLimit = Number.isFinite(Number(options.maxOutputTokens)) && Number(options.maxOutputTokens) > 0
+    ? Math.min(32768, Math.floor(Number(options.maxOutputTokens)))
+    : (onChunk ? 8192 : 32768);
   const researchInstruction = options.legalResearch ? '\n\n[بحث قانوني موثق إلزامي] استخدم أداة البحث المتاحة للبحث عن المصادر المصرية الأولية والرسمية ذات الصلة بالمهمة الحالية. أعط الأولوية لمواقع الجهات الرسمية والتشريعات المنشورة والأحكام المنشورة من مصادر قضائية موثوقة. لا تعتبر مقتطف نتيجة البحث نصاً كاملاً للحكم أو القانون. لا تذكر إلا ما تدعمه المصادر التي وصلت إليها فعلاً، وأدرج روابط مباشرة للمصادر بجوار الادعاءات القانونية المستندة إليها. إذا لم تجد مصدراً موثوقاً أو تعذر التحقق من نص أو رقم حكم أو طعن، فصرح بذلك ولا تختلقه. افصل بوضوح بين النص الرسمي، والشرح، والاستنتاج القانوني.\n' : '';
   const optimizedPrompt = `${prompt}${researchInstruction} [تعليمات كفاءة الإخراج] أنجز المطلوب في طلب توليد واحد قدر الإمكان. لا تكرر التحليل أو تعيد صياغة الفكرة نفسها في أكثر من موضع، ولا تضف مقدمات أو خاتمات إنشائية أو عناوين مكررة. اجعل كل فقرة تضيف حجة أو واقعة أو تطبيقاً أو طلباً جديداً، مع الحفاظ على جميع النقاط القانونية الجوهرية وعدم اختصار ما يؤثر في النتيجة. راجع الوقائع والطلبات ومخاطر الاختلاق داخلياً مراجعة مركزة، ولا تعرض خطوات التفكير. أخرج المستند المطلوب مباشرة. [علامة اكتمال داخلية إلزامية] بعد إتمام جميع أجزاء النتيجة المطلوبة بالكامل، وفي آخر النص فقط، أضف هذه العلامة حرفياً: ${completionMarker}. لا تضف العلامة قبل اكتمال المستند. لا تشرح العلامة ولا تجعلها جزءاً من المحتوى القانوني.`;
 
@@ -255,7 +259,7 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
           activePairLabel = `Gemini / ${model}`;
           const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
 
-          await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length);
+          await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length, systemInstruction);
           return (async function* () {
             let pendingMarkerTail = '';
             let receivedText = false;
@@ -263,9 +267,9 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
               model,
               contents: segmentPrompt,
               config: {
-                systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+                systemInstruction,
                 temperature: 0.15,
-                maxOutputTokens: 8192,
+                maxOutputTokens: outputTokenLimit,
                 ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
                 thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
               },
@@ -416,14 +420,14 @@ export async function generateDeepLegalResponse( prompt: string, onChunk?: (text
         activePair = `${key}::${model}`;
         activePairLabel = `Gemini / ${model}`;
         const providerSearchEnabled = options.legalResearch && process.env.GEMINI_ENABLE_GOOGLE_SEARCH === 'true';
-        await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length);
+        await logDraftingPromptTokens(ai, model, segmentPrompt, continuationCount, accumulatedText.length, systemInstruction);
         const response = await ai.models.generateContent({
           model,
           contents: segmentPrompt,
           config: {
-            systemInstruction: EGYPTIAN_LEGAL_SYSTEM_INSTRUCTION,
+            systemInstruction,
             temperature: 0.15,
-            maxOutputTokens: 32768,
+            maxOutputTokens: outputTokenLimit,
             ...(providerSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
           },
         });
