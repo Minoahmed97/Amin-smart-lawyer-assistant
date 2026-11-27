@@ -24,7 +24,6 @@ export default async function handler(req: any, res: any) {
       requests,
       customInstructions,
       caseAnalysisContext,
-      caseContext,
       circuit,
       briefType,
       customJudicialWorkType,
@@ -133,7 +132,7 @@ ${caseAnalysisContext || ''}
 طابق التحليل السابق مع الوقائع الحالية، ولا تنقل استنتاجاً أو دفعاً دون سند.
 
 [ملف القضية المنظم]
-${caseContext || ''}
+${caseContextText || ''}
 
 [خزانة المحامي — بصمة أسلوب وبنية فقط]
 ${vaultContext || ''}
