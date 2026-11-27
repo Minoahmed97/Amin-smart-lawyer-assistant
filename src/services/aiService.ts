@@ -746,7 +746,7 @@ async function callDirectGeminiApi(_prompt: string, _systemInstruction = EGYPTIA
   throw new Error('تعذر الاتصال بالخادم المركزي للذكاء الاصطناعي.');
 }
 
-export async function deconstructBrief( params: { opponentBriefText: string; courtType?: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; caseContext?: LegalCaseContext; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
+export async function deconstructBrief( params: { taskMode?: 'deconstruct' | 'reply'; opponentBriefText: string; caseNature?: string; judicialWorkType?: string; ourPosition?: string; additionalFacts?: string; caseContext?: LegalCaseContext; userId?: string; }, onChunk?: (text: string) => void ): Promise<string> {
   await throttleRequests();
   const lawyerVaultContext = getLawyerStyleContext({
     courtType: params.courtType,
@@ -755,6 +755,7 @@ export async function deconstructBrief( params: { opponentBriefText: string; cou
   }, params.userId);
 
   const payload = {
+    taskMode: params.taskMode || 'deconstruct',
     opponentBriefText: params.opponentBriefText,
     courtType: params.courtType || '',
     caseNature: params.caseNature || '',
