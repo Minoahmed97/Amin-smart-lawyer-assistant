@@ -657,11 +657,10 @@ export default async function handler(req: any, res: any) {
       if (savedState.stage === 0) {
         const index = savedState.chunkIndex;
         if (index >= sourceChunks.length) return emitCheckpoint({ ...savedState, stage: 1, phase: 'final-draft', sourceChunks });
-        const prompt = '[العقل القانوني — معالجة متتابعة للجزء ' + (index + 1) + ' من ' + sourceChunks.length + ']\n' +
+        const prompt = '[العقل القانوني — استخراج سجل وقائع من الجزء ' + (index + 1) + ' من ' + sourceChunks.length + ']\n' +
           '[بيانات القضية]\n' + caseMetadata +
-          '\n\n[السجل المختصر المحفوظ من الأجزاء السابقة]\n' + String(savedState.masterSummary || '').slice(-1500) +
-          '\n\n[الجزء الحالي فقط من النص الأصلي]\n' + sourceChunks[index] +
-          '\n\nادمج الجزء الحالي في السجل المحفوظ، واحتفظ بالتفاصيل المحددة كاملة. رتّب السجل في نقاط عملية ولا يتجاوز الناتج 1800 حرف. حافظ على التعارضات والنواقص دون حسم مختلق.';
+          '\n\n[الجزء الحالي من النص الأصلي — استخرج هذا الجزء مستقلاً دون افتراض أن ملخص الأجزاء السابقة يحتوي عليه]\n' + sourceChunks[index] +
+          '\n\nاستخرج سجلاً مركزاً يحفظ أسماء الأشخاص وصفاتهم، التواريخ، المبالغ، أرقام القضايا والمستندات والمواد والأحكام، الوقائع والأدلة والدفوع والطلبات والتعارضات والنواقص. لا تدمج أو تستبدل سجل جزء سابق ولا تحذف التفاصيل المحددة. الناتج في حدود 1800 حرف تقريباً، دون اختلاق.';
         let merged = '';
         try {
           merged = await generateDeepLegalResponse(prompt, undefined, {
@@ -680,10 +679,24 @@ export default async function handler(req: any, res: any) {
           throw error;
         }
         if (!merged.trim()) throw new Error('لم تُحفظ خلاصة الجزء القانوني رقم ' + (index + 1) + '.');
-        return emitCheckpoint({ ...savedState, stage: 0, phase: 'chunk', chunkIndex: index + 1, masterSummary: merged.trim(), sourceChunks });
+        const nextChunkSummaries = [...chunkSummaries];
+        nextChunkSummaries[index] = merged.trim();
+        const cumulativeLedger = nextChunkSummaries.map((summary, summaryIndex) => '[سجل الجزء ' + (summaryIndex + 1) + ']\\n' + summary).join('\\n\\n');
+        return emitCheckpoint({
+          ...savedState,
+          stage: 0,
+          phase: 'chunk',
+          chunkIndex: index + 1,
+          chunkSummaries: nextChunkSummaries,
+          masterSummary: cumulativeLedger,
+          sourceChunks,
+        });
       }
       if (savedState.stage === 1) {
-        const masterSummary = String(savedState.masterSummary || '').trim();
+        const masterSummary = createDraftingContextPack(
+          chunkSummaries.map((summary, index) => ({ label: 'سجل الجزء ' + (index + 1), text: summary })),
+          14000,
+        ).trim() || String(savedState.masterSummary || '').trim();
         if (!masterSummary) throw new Error('السجل القانوني الموحد مفقود؛ لم يبدأ تحرير المستند.');
 
         // Durable final drafting: each section is a separate Gemini generation
