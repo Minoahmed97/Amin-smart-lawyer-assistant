@@ -23,7 +23,7 @@ const FINAL_REVIEW_INSTRUCTION = `هذه المهمة خضعت لتدقيق أو
 
 
 
-const DRAFTING_COMPRESSION_CHUNK = 9000;
+const DRAFTING_COMPRESSION_CHUNK = 6000;
 const DRAFTING_CHECKPOINT_VERSION = 2;
 
 type DraftingCompressionEntry = {
@@ -32,6 +32,8 @@ type DraftingCompressionEntry = {
   pass: number;
   workingText: string;
   chunks: string[];
+  /** Persist exact chunk boundaries so a failed large chunk can be subdivided safely. */
+  sourceChunks?: string[];
 };
 
 type DraftingCheckpoint = {
@@ -138,9 +140,12 @@ async function compressDraftingInput(
   let current = entryMatches && saved!.workingText ? saved!.workingText : original;
   let pass = entryMatches ? Math.max(0, Number(saved!.pass || 0)) : 0;
   let savedChunks = entryMatches && Array.isArray(saved!.chunks) ? saved!.chunks : [];
+  let savedSourceChunks = entryMatches && Array.isArray(saved!.sourceChunks) ? saved!.sourceChunks : [];
 
   for (; pass < 4 && current.length > targetChars;) {
-    const chunks = splitDraftingInput(current);
+    const chunks = savedSourceChunks.length && savedSourceChunks.join('') && savedSourceChunks.join('').length <= current.length + 100
+      ? [...savedSourceChunks]
+      : splitDraftingInput(current, DRAFTING_COMPRESSION_CHUNK);
     const reusableSavedChunks = savedChunks.length === chunks.length ? savedChunks : [];
     const summaries: string[] = Array.from({ length: chunks.length }, (_, index) =>
       typeof reusableSavedChunks[index] === 'string' ? reusableSavedChunks[index] : '');
@@ -188,19 +193,43 @@ async function compressDraftingInput(
         // fresh invocation instead of letting the request deadline mask the
         // provider's 503/504 or repeating already-completed work.
         if (checkpoint && checkpointContext) {
+          let retrySourceChunks = [...chunks];
+          let retrySummaries = [...summaries];
+          // A provider 504 on one oversized compression segment must not trap
+          // the durable job on the same boundary forever. Split only the
+          // failed segment; retain completed summaries and persist boundaries.
+          if (temporaryProviderFailure && chunks[i].length > 1800) {
+            const failedChunk = chunks[i];
+            const midpoint = Math.floor(failedChunk.length / 2);
+            const searchRadius = Math.floor(failedChunk.length * 0.2);
+            let splitAt = midpoint;
+            for (let distance = 0; distance <= searchRadius; distance += 1) {
+              const candidates = [midpoint - distance, midpoint + distance];
+              const found = candidates.find((position) =>
+                position > 0 && position < failedChunk.length &&
+                /[\\s،؛:]/.test(failedChunk[position - 1]) &&
+                /[\\s،؛:]/.test(failedChunk[position]));
+              if (found) { splitAt = found; break; }
+            }
+            retrySourceChunks.splice(i, 1, failedChunk.slice(0, splitAt), failedChunk.slice(splitAt));
+            retrySummaries.splice(i, 1, '', '');
+            console.warn('[counter-brief] split failed compression chunk for retry', {
+              section: label, pass: pass + 1, failedChunkIndex: i + 1,
+              previousChunkCharacters: failedChunk.length,
+              nextChunkCharacters: [retrySourceChunks[i].length, retrySourceChunks[i + 1].length],
+              providerStatus: providerStatus || 'unknown',
+            });
+          }
           checkpoint.entries[label] = {
             sourceHash, sourceLength: original.length, pass,
-            workingText: current, chunks: summaries,
+            workingText: current, chunks: retrySummaries, sourceChunks: retrySourceChunks,
           };
           await persistDraftingCheckpoint(checkpointContext.jobId, checkpointContext.userId, checkpoint);
           if (temporaryProviderFailure && checkpointContext.yieldEachChunk) {
-            console.warn('[counter-brief] yielded drafting compression after transient Gemini failure', {
-              section: label, pass: pass + 1, chunkIndex: i + 1, chunkCount: chunks.length,
-              providerStatus: providerStatus || 'unknown', completedChunks: summaries.filter(Boolean).length,
+            console.warn('[counter-brief] saved drafting compression checkpoint after transient Gemini failure', {
+              section: label, pass: pass + 1, chunkIndex: i + 1, chunkCount: retrySourceChunks.length,
+              providerStatus: providerStatus || 'unknown', completedChunks: retrySummaries.filter(Boolean).length,
             });
-            // Do not emit a stage-yield on a failed provider request.
-            // processJob treats yield as immediate stage continuation, which
-            // would requeue this same failed chunk in a tight loop.
           }
         }
         throw providerError;
@@ -219,7 +248,7 @@ async function compressDraftingInput(
       });
       const updatedEntry: DraftingCompressionEntry = {
         sourceHash, sourceLength: original.length, pass,
-        workingText: current, chunks: summaries,
+        workingText: current, chunks: summaries, sourceChunks: chunks,
       };
       if (checkpoint) {
         checkpoint.entries[label] = updatedEntry;
