@@ -36,7 +36,7 @@ async function createDraftingContextPack(sources: Array<{ label: string; text: s
   for (let offset = 0; offset < sourceText.length; offset += chunkSize) {
     chunks.push(sourceText.slice(offset, offset + chunkSize));
   }
-  const maxChunks = 16;
+  const maxChunks = 30;
   if (chunks.length > maxChunks) {
     const error: any = new Error(`حجم ملف القضية كبير جداً للمعالجة الآمنة في طلب واحد (${chunks.length} جزءاً). قسّم المستند أو أرفق ملخصاً مركزاً؛ لم يبدأ توليد المذكرة ولم يُخصم رصيد.`);
     error.statusCode = 413;
@@ -55,8 +55,8 @@ async function createDraftingContextPack(sources: Array<{ label: string; text: s
     const chunk = chunks[index];
     const response = await executeWithKeyRotation(async (ai) => ai.models.generateContent({
       model: 'gemini-3.5-flash',
-      contents: `لخّص هذا الجزء من ملف قضية لمحامٍ مصري في حزمة وقائع مرجعية شديدة الدقة لا تتجاوز 350 كلمة. احتفظ حرفياً بالأسماء والصفات والتواريخ والمبالغ وأرقام الدعوى والمواد والأحكام والمستندات والطلبات والاقتباسات المهمة. سجّل كل واقعة مع مصدرها/موضعها إن ظهر، وميّز ادعاء الطرف عن الثابت، والتناقضات والنواقص. لا تستنتج ولا تختلق ولا تسقط معلومة قانونية مهمة. لا تكتب مذكرة ولا مقدمة. هذا الجزء ${index + 1} من ${chunks.length}:\n\n${chunk}`,
-      config: { temperature: 0.1, maxOutputTokens: 900, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+      contents: `لخّص هذا الجزء من ملف قضية لمحامٍ مصري في حزمة وقائع مرجعية شديدة الدقة لا تتجاوز 70 كلمة. احتفظ حرفياً بالأسماء والصفات والتواريخ والمبالغ وأرقام الدعوى والمواد والأحكام والمستندات والطلبات والاقتباسات المهمة. سجّل كل واقعة مع مصدرها/موضعها إن ظهر، وميّز ادعاء الطرف عن الثابت، والتناقضات والنواقص. لا تستنتج ولا تختلق ولا تسقط معلومة قانونية مهمة. لا تكتب مذكرة ولا مقدمة. هذا الجزء ${index + 1} من ${chunks.length}:\n\n${chunk}`,
+      config: { temperature: 0.1, maxOutputTokens: 450, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
     }), undefined, undefined, false, { deadlineAt });
     const summary = String(response?.text || '').trim();
     if (!summary) {
@@ -68,7 +68,7 @@ async function createDraftingContextPack(sources: Array<{ label: string; text: s
   }
 
   const pack = summaries.join('\n\n');
-  const estimatedTokens = Math.ceil(pack.length / 3) + 1800;
+  const estimatedTokens = Math.ceil(pack.length / 3) + 2000;
   console.info('[counter-brief] bounded legal context pack prepared', {
     sourceCharacters: sourceText.length,
     chunkCount: chunks.length,
@@ -76,8 +76,8 @@ async function createDraftingContextPack(sources: Array<{ label: string; text: s
     estimatedFinalInputTokens: estimatedTokens,
     estimateOnly: true,
   });
-  if (estimatedTokens > 6000) {
-    const error: any = new Error('حزمة القضية المختصرة ما زالت أكبر من حد المدخلات الآمن (نحو 6000 توكن). اختصر المستندات أو قلّل عددها قبل الصياغة؛ لم يبدأ توليد المذكرة.');
+  if (estimatedTokens > 4500) {
+    const error: any = new Error('حزمة القضية المختصرة ما زالت أكبر من حد المدخلات الآمن (نحو 4500 توكن). اختصر المستندات أو قلّل عددها قبل الصياغة؛ لم يبدأ توليد المذكرة.');
     error.statusCode = 413;
     throw error;
   }
@@ -466,13 +466,19 @@ export default async function handler(req: any, res: any) {
     const draftingAnalysisDeadline = Date.now() + 210000;
     const draftingContextPack = await createDraftingContextPack([
       { label: 'وقائع القضية والمستندات', text: facts },
+      { label: 'دفوع المحامي', text: defenses || '' },
+      { label: 'طلبات المحامي', text: requests || '' },
+      { label: 'تعليمات المحامي الإضافية', text: customInstructions || '' },
       { label: 'التحليل القانوني السابق', text: typeof caseAnalysisContext === 'string' ? caseAnalysisContext : '' },
       { label: 'خزانة المحامي — أسلوب وبنية فقط', text: typeof vaultContext === 'string' ? vaultContext : '' },
     ], draftingAnalysisDeadline);
     const draftingFactsContext = draftingContextPack;
-    // Prior analysis and vault have been incorporated into the bounded pack;
-    // never resend the raw versions in the final generation prompt.
+    // All large user-provided sources are incorporated into this bounded pack.
+    // Do not resend their raw forms in the final generation or continuation.
     const draftingPriorAnalysisContext = '';
+    const draftingDefensesContext = 'تم تضمين دفوع المحامي في حزمة السياق القانوني المختصرة أعلاه.';
+    const draftingRequestsContext = 'تم تضمين طلبات المحامي في حزمة السياق القانوني المختصرة أعلاه؛ التزم بها دون إضافة أو حذف.';
+    const draftingInstructionsContext = 'تم تضمين تعليمات المحامي في حزمة السياق القانوني المختصرة أعلاه.';
 
     const legalResearch = /(?:بحث\s+(?:قانوني|عن|في)|تحقق\s+(?:من|من صحة)|مصادر\s+(?:رسمية|موثوقة)|أحكام\s+(?:النقض|الإدارية العليا)|المحكمة\s+الإدارية\s+العليا|رقم\s+طعن|رقم\s+الطعن|مبدأ\s+قضائي|سابقة\s+قضائية|نص\s+المادة|المادة\s+رقم|قانون\s+رقم|آخر\s+تعديل|أحدث\s+تعديل)/i.test([facts, defenses, requests, customInstructions].filter(Boolean).join(' '));
 
@@ -489,13 +495,13 @@ ${workTypeInstruction}
 ${draftingFactsContext}
 
 [دفوع المحامي]
-${defenses || 'لم تُدخل دفوع محددة.'}
+${draftingDefensesContext}
 
 [طلبات المحامي — التزم بها دون إضافة أو حذف أو توسيع]
-${requests || 'لم تُحدد طلبات صراحةً؛ لا تفترض تفويضاً مفتوحاً.'}
+${draftingRequestsContext}
 
 [تعليمات المحامي الإضافية]
-${customInstructions || 'لا توجد.'}
+${draftingInstructionsContext}
 
 ${draftingPriorAnalysisContext ? `[تحليل سابق مرتبط بالقضية]
 ${draftingPriorAnalysisContext}
@@ -516,10 +522,8 @@ ${vaultContext}
       '[سياق استكمال مختصر — مرجع القضية الحالي]',
       workTypeInstruction,
       `المحكمة: ${courtType || ''}؛ الدائرة: ${circuit || ''}؛ الموكل: ${clientName || ''}؛ الصفة: ${clientRole || ''}؛ الخصم: ${opponentName || ''}؛ رقم الدعوى: ${caseNumber || ''}؛ الجلسة: ${sessionDate || ''}`,
-      `حزمة الوقائع والتحليل والخزانة المختصرة: ${String(draftingFactsContext || '')}`,
-      `دفوع المحامي: ${String(defenses || '')}`,
-      `طلبات المحامي: ${String(requests || '')}`,
-      `تعليمات المحامي: ${String(customInstructions || '')}`,
+      'تم حفظ حزمة الوقائع والدفوع والطلبات والتحليل والخزانة المختصرة في الطلب الأول؛ لا تعِد إرسالها أو إعادة تلخيصها.',
+      'التزم بطلبات المحامي المحددة في الطلب الأول دون إضافة أو حذف أو توسيع.',
       'التزم بالنوع والطلبات المحددة، ولا تختلق وقائع أو أسانيد. أكمل المستند من حيث انتهى النص السابق وبنفس بصمة المحامي.'
     ].join('\n\n');
 
