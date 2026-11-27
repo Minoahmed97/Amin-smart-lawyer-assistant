@@ -36,6 +36,7 @@ import type { LegalCaseContext } from '../types.ts';
 
 interface DeconstructViewProps {
   userId: string;
+  taskMode?: 'deconstruct' | 'reply';
   caseContext?: LegalCaseContext;
   onSwitchTab?: (tab: 'draft' | 'deconstruct' | 'qualify' | 'defenses' | 'vault') => void;
   onTransferToDrafting?: (facts: string, defenses: string, caseNature?: string, responseWorkType?: string, analysisContext?: string) => void;
@@ -43,6 +44,7 @@ interface DeconstructViewProps {
 
 export const DeconstructView: React.FC<DeconstructViewProps> = ({
   userId,
+  taskMode = 'deconstruct',
   caseContext,
   onSwitchTab,
   onTransferToDrafting,
@@ -184,6 +186,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
     setAnalysisResult('');
     try {
       const result = await deconstructBrief({
+        taskMode,
         opponentBriefText,
         courtType,
         caseNature,
@@ -313,7 +316,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-base sm:text-xl font-bold text-white">
-                  التفنيد والرد على المستندات
+                  {taskMode === 'reply' ? 'الرد على المستندات' : 'التفنيد والرد على المستندات'}
                 </h2>
                 <span className="text-[11px] bg-[#b45309]/30 text-amber-300 px-2 py-0.5 rounded border border-[#b45309] font-semibold">
                   تحليل استراتيجي متقدم
@@ -535,7 +538,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
               ) : (
                 <>
                   <Sparkles className="w-5 h-5 text-amber-200" />
-                  <span>التفنيد والرد على المستندات</span>
+                  <span>{taskMode === 'reply' ? 'الرد على المستندات' : 'التفنيد والرد على المستندات'}</span>
                 </>
               )}
             </button>
@@ -788,7 +791,7 @@ export const DeconstructView: React.FC<DeconstructViewProps> = ({
                     تقرير التفنيد والرد والمذكرة المقابلة سيظهر هنا
                   </h4>
                   <p className="text-xs max-w-md leading-relaxed text-slate-400">
-                    الصق مذكرة الخصم أو ارفع ملف وورد أو ملف بي دي إف على اليمين ثم اضغط زر التفنيد والرد.
+                    الصق المستند أو ارفعه ثم اضغط زر {taskMode === 'reply' ? 'الرد على المستندات' : 'التفنيد والرد'}.
                   </p>
                 </div>
               )}
