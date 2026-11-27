@@ -824,7 +824,9 @@ async function requeueDraftingStage(jobId: string, userId: string, partialText: 
   );
   if (!updated.ok) throw new Error(`تعذر إعادة مرحلة الصياغة إلى الطابور (${updated.status}).`);
   const changed = await updated.json().catch(() => []);
-  if (!Array.isArray(changed) || !changed.length) return;
+  if (!Array.isArray(changed) || !changed.length) {
+    throw new Error('لم يتم تثبيت انتقال مرحلة الصياغة إلى الطابور؛ لم تُسجل قاعدة البيانات أي تحديث.');
+  }
   try {
     await enqueueDurableAiJob(jobId);
   } catch (queueError: any) {
@@ -842,6 +844,10 @@ async function processJob(jobId: string, userId: string, token: string, taskType
   let fullText = typeof payload._resumePartialText === 'string' ? payload._resumePartialText : '';
   let persistedLength = fullText.length;
   let pendingWrite = Promise.resolve();
+  const queuePersistence = (values: Record<string, unknown>) => {
+    const write = pendingWrite.then(() => patchJob(jobId, userId, values));
+    pendingWrite = taskType === 'counter-brief' ? write : write.catch(() => {});
+  };
   let streamError = '';
   let stageYielded = false;
   let handlerJson: any = null;
@@ -867,7 +873,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
     },
     write(raw: string) {
       this.headersSent = true;
-      const lines = String(raw).split(/\r?\n/).filter(Boolean);
+      const lines = String(raw).split(/\\n|\r?\n/).filter(Boolean);
       for (const line of lines) {
         const candidate = line.startsWith('data:') ? line.slice(5).trim() : line.trim();
         try {
@@ -877,7 +883,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
             if (state && typeof state === 'object' && !Array.isArray(state)) {
               payload._draftingState = JSON.stringify(state);
               const payloadSnapshot = { ...payload };
-              pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { payload: payloadSnapshot })).catch(() => {});
+              queuePersistence({ payload: payloadSnapshot });
             } else if (typeof state === 'string' && state.length <= 120000) {
               try {
                 const parsed = JSON.parse(state);
@@ -897,7 +903,7 @@ async function processJob(jobId: string, userId: string, token: string, taskType
             if (taskType !== 'ocr' || fullText.length - persistedLength >= 800) {
               persistedLength = fullText.length;
               const snapshot = fullText;
-              pendingWrite = pendingWrite.then(() => patchJob(jobId, userId, { partial_result: snapshot })).catch(() => {});
+              queuePersistence({ partial_result: snapshot });
             }
           } else if (event.type === 'error') {
             streamError = String(event.error || 'فشلت المهمة.');
