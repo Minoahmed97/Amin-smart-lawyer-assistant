@@ -340,7 +340,7 @@ function safePayload(input: any, taskType: string) {
   }
   const requiredByType: Record<string, string> = {
     'counter-brief': 'facts',
-    deconstruct: 'opponentBriefText',
+    deconstruct: payload.taskMode === 'drafting' ? 'facts' : 'opponentBriefText',
     qualify: 'disputeDetails',
     refine: 'draftText',
   };
