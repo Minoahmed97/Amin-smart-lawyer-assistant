@@ -56,6 +56,9 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   onCaseContextChange,
   caseSelectionRevision = 0,
 }) => {
+  // Keep the generated document isolated per lawyer so navigating between app views
+  // cannot replace or clear this drafting result.
+  const draftResultStorageKey = `amin_judicial_draft_result_user_${sanitizeDraftJobUserId(userId)}`;
   const [formData, setFormData] = useState<DraftingFormData>(() => {
     const saved = persistentStorage.getJSON<DraftingFormData>('amin_judicial_draft_form');
     if (saved) {
@@ -105,7 +108,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   const extractedDocumentBatchRef = useRef(false);
   const [documentTextInserted, setDocumentTextInserted] = useState(false);
   const [generatedBrief, setGeneratedBrief] = useState<string>(() => {
-    return persistentStorage.getItem('amin_judicial_draft_result', '');
+    return persistentStorage.getItem(draftResultStorageKey, '') || persistentStorage.getItem('amin_judicial_draft_result', '');
   });
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isRefining, setIsRefining] = useState<boolean>(false);
@@ -235,8 +238,15 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
   }, [formData]);
 
   useEffect(() => {
-    if (clearPersistenceRef.current) persistentStorage.removeItem('amin_judicial_draft_result'); else persistentStorage.setItem('amin_judicial_draft_result', generatedBrief || '');
-  }, [generatedBrief]);
+    if (clearPersistenceRef.current) {
+      persistentStorage.removeItem('amin_judicial_draft_result');
+      persistentStorage.removeItem(draftResultStorageKey);
+    } else {
+      const result = generatedBrief || '';
+      persistentStorage.setItem('amin_judicial_draft_result', result);
+      persistentStorage.setItem(draftResultStorageKey, result);
+    }
+  }, [generatedBrief, draftResultStorageKey]);
 
   useEffect(() => {
     if (clearPersistenceRef.current) persistentStorage.removeItem('amin_judicial_draft_docname'); else persistentStorage.setItem('amin_judicial_draft_docname', uploadedDocName || '');
@@ -337,7 +347,8 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     });
     setGeneratedBrief('');
     persistentStorage.removeItem('amin_judicial_draft_result');
-  }, [caseSelectionRevision]);
+    persistentStorage.removeItem(draftResultStorageKey);
+  }, [caseSelectionRevision, draftResultStorageKey]);
 
   useEffect(() => { clearPersistenceRef.current = false; });
 
@@ -372,6 +383,7 @@ export const DraftingView: React.FC<DraftingViewProps> = ({
     setRefineNote('');
     persistentStorage.removeItem('amin_judicial_draft_form');
     persistentStorage.removeItem('amin_judicial_draft_result');
+    persistentStorage.removeItem(draftResultStorageKey);
     persistentStorage.removeItem('amin_judicial_draft_docname');
     try {
       const storageUser = sanitizeDraftJobUserId(userId);
